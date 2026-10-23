@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">오토브리프</string>
+    <string name="monitor_channel">주행 기록</string>
+    <string name="monitor_text">계기판 주행거리를 운행기록부에 기록하고 있습니다.</string>
+</resources>

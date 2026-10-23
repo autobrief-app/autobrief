@@ -1,0 +1,87 @@
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.serialization")
+}
+
+android {
+    namespace = "app.autobrief.car"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "app.autobrief.car"
+        minSdk = 28
+        targetSdk = 34
+        versionCode = 6
+        versionName = "1.6.0"
+    }
+
+    // AAOS car APIs (CarPropertyManager for speed, CarUxRestrictionsManager for driving restrictions)
+    useLibrary("android.car")
+
+    signingConfigs {
+        // The keystore and its password never live in this repository: CI or the builder passes them in.
+        create("release") {
+            val path = System.getenv("AUTOBRIEF_KEYSTORE_PATH")
+            if (path != null) {
+                storeFile = file(path)
+                storePassword = System.getenv("AUTOBRIEF_KEYSTORE_PASSWORD")
+                keyAlias = "autobrief"
+                keyPassword = System.getenv("AUTOBRIEF_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // R8 stays off until the shrunk build has been run on the Pleos emulator
+            // (the Vehicle SDK uses Gson reflection).
+            isMinifyEnabled = false
+            if (System.getenv("AUTOBRIEF_KEYSTORE_PATH") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    buildFeatures {
+        compose = true
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.15"
+    }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.isReturnDefaultValues = true
+    }
+}
+
+dependencies {
+    implementation("ai.pleos.playground:Vehicle:2.3.2")
+    implementation("ai.pleos.playground:NaviHelper:3.0.5")
+
+    val composeBom = platform("androidx.compose:compose-bom:2024.02.02")
+    implementation(composeBom)
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.activity:activity-compose:1.8.2")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
+
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.12.2")
+    testImplementation("androidx.test:core:1.5.0")
+}
