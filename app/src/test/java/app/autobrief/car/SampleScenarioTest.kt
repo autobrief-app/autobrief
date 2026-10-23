@@ -152,7 +152,7 @@ class SampleScenarioTest {
         val year = TaxPeriods.businessYear(2026, 1)
         val october = TaxPeriods.month(2026, 10)
         val yearSheet = core.exportSheet(year, banner)
-        val monthSheet = core.exportSheet(october, banner)
+        val monthSheet = core.exportSheet(october, banner, businessYear = false)
         File(dir, "운행기록부_2026_사업연도_가상예시.xlsx").writeBytes(LogbookExport.toXlsx(yearSheet))
         File(dir, "운행기록부_2026_사업연도_가상예시.csv").writeBytes(LogbookExport.toCsv(yearSheet))
         File(dir, "운행기록부_2026-10_가상예시.xlsx").writeBytes(LogbookExport.toXlsx(monthSheet))
