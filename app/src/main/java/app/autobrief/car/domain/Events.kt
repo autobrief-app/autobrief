@@ -34,8 +34,11 @@ sealed interface NaviEvent {
     data object RouteEnded : NaviEvent
 }
 
-/** Vehicle-side effects the core asks for; the Android layer decides whether the car allows them. */
+/**
+ * Vehicle-side effects the core asks for. Both calls answer asynchronously on the main thread; a
+ * refusal (vehicle or approved permission scope does not allow it) answers null / false.
+ */
 interface VehicleControl {
-    /** Returns false when the vehicle or its approved permission scope does not allow it. */
-    fun setAmbientBrightness(value: Int): Boolean
+    fun readAmbientBrightness(onResult: (Int?) -> Unit)
+    fun setAmbientBrightness(value: Int, onResult: (Boolean) -> Unit)
 }

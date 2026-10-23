@@ -71,14 +71,14 @@ private val TIME = DateTimeFormatter.ofPattern("MM-dd HH:mm")
 @Composable
 fun AutoBriefScreen(
     core: AutoBriefCore,
-    restrictedFlow: StateFlow<Boolean>?,
     startTab: MutableState<Int>,
     consentRequest: MutableState<ConsentRequest?>,
     onExported: () -> Unit,
     exportDir: File,
 ) {
-    val restricted by (restrictedFlow ?: remember { MutableStateFlow(false) }).collectAsState()
+    val restricted by core.restricted.collectAsState()
     val vehicle by core.vehicle.collectAsState()
+    val demo = core.settings.collectAsState().value.demoMode
     MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Color(0xFF0E121A), surface = Panel)) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.padding(24.dp)) {
@@ -93,6 +93,7 @@ fun AutoBriefScreen(
                     Text("기어 ${gearLabel(vehicle.gear)}  계기판 ${vehicle.odometerKm?.let { "%,.1f km".format(it) } ?: "-"}", color = Muted, fontSize = 18.sp)
                 }
                 Spacer(Modifier.height(12.dp))
+                if (demo) Text("시연 모드: 가상 신호 버튼이 켜져 있고, 가족 알림은 보내지 않습니다.", color = Color(0xFFFFC56B), fontSize = 17.sp)
                 if (restricted) {
                     DrivingView(core)
                     return@Column
@@ -149,14 +150,16 @@ private fun LogbookTab(core: AutoBriefCore, exportDir: File, onExported: () -> U
         "상반기" to TaxPeriods.half(year, fy, 1),
         "하반기" to TaxPeriods.half(year, fy, 2),
         "사업연도" to TaxPeriods.businessYear(year, fy),
+        "지난 사업연도" to TaxPeriods.businessYear(year - 1, fy),
     )
     val (periodName, period) = periods[periodChoice]
+    val wholeYear = periodChoice >= 3
 
     val pending = trips.filter { it.purpose == TripPurpose.UNCLASSIFIED }.sortedByDescending { it.startEpochMs }
     Card {
         Text("목적을 정해야 할 주행 ${pending.size}건", fontSize = 20.sp, fontWeight = FontWeight.Bold)
         if (pending.isEmpty()) Text("모든 주행의 목적이 정해져 있습니다.", color = Muted)
-        pending.take(5).forEach { trip -> PendingTrip(core, trip, settings.users.getOrNull(settings.defaultUserIndex)) }
+        pending.take(5).forEach { trip -> PendingTrip(core, trip, settings.users, settings.defaultUserIndex) }
     }
     Card {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -176,7 +179,7 @@ private fun LogbookTab(core: AutoBriefCore, exportDir: File, onExported: () -> U
         }
         Spacer(Modifier.height(8.dp))
         Button(enabled = s.rowCount > 0, onClick = {
-            val sheet = core.exportSheet(period)
+            val sheet = core.exportSheet(period, businessYear = wholeYear)
             val base = "운행기록부_${period.start}_${period.endInclusive}"
             exportDir.mkdirs()
             val xlsx = LogbookExport.toXlsx(sheet)
@@ -191,20 +194,32 @@ private fun LogbookTab(core: AutoBriefCore, exportDir: File, onExported: () -> U
 }
 
 @Composable
-private fun PendingTrip(core: AutoBriefCore, trip: TripRecord, defaultUser: CarUser?) {
+private fun PendingTrip(core: AutoBriefCore, trip: TripRecord, users: List<CarUser>, defaultIndex: Int) {
     var memo by remember(trip.id) { mutableStateOf("") }
+    var userIndex by remember(trip.id) { mutableStateOf(defaultIndex.coerceIn(0, (users.size - 1).coerceAtLeast(0))) }
     Column(Modifier.padding(vertical = 8.dp)) {
         Text(
             "${TIME.format(java.time.Instant.ofEpochMilli(trip.startEpochMs).atZone(app.autobrief.car.domain.KST))}  " +
                 "${"%,.1f".format(trip.startOdometerKm)} → ${"%,.1f".format(trip.endOdometerKm)} km (${"%.1f".format(trip.distanceKm)} km)" +
                 (trip.destinationName?.let { "  목적지 ${DisplayMasking.mask(it)}" } ?: "") +
-                (trip.routeTollEstimateKrw?.let { "  내비 예상 통행료 ${"%,d".format(it)}원" } ?: ""),
+                (trip.routeTollEstimateKrw?.takeIf { it > 0 }?.let { "  내비 예상 통행료 ${"%,d".format(it)}원" } ?: ""),
             fontSize = 17.sp,
         )
         OutlinedTextField(value = memo, onValueChange = { memo = it }, label = { Text("비고(거래처, 목적)") }, singleLine = true)
+        if (users.isNotEmpty()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("④사용자", color = Muted)
+                users.forEachIndexed { i, u ->
+                    val label = "${u.name}(${u.department})"
+                    if (i == userIndex) Button(onClick = {}) { Text(label) } else OutlinedButton(onClick = { userIndex = i }) { Text(label) }
+                }
+            }
+        } else {
+            Text("설정 탭에서 사용자(④)를 먼저 등록해 주세요.", color = Muted)
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(TripPurpose.COMMUTE, TripPurpose.BUSINESS, TripPurpose.PERSONAL).forEach { p ->
-                OutlinedButton(onClick = { core.classifyTrip(trip.id, p, defaultUser, memo, "화면") }) { Text(p.label) }
+                OutlinedButton(onClick = { core.classifyTrip(trip.id, p, users.getOrNull(userIndex), memo, "화면") }) { Text(p.label) }
             }
         }
     }
@@ -226,11 +241,12 @@ private fun SleepTab(core: AutoBriefCore) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("잠들면 실내 조명 낮추기", fontSize = 17.sp)
             Spacer(Modifier.width(12.dp))
-            Switch(checked = settings.dimAmbientOnSleep, onCheckedChange = { core.updateSettings(settings.copy(dimAmbientOnSleep = it)) })
+            Switch(checked = settings.dimAmbientOnSleep, onCheckedChange = { core.setDimAmbient(it) })
         }
-        if (vehicle.ambientBrightnessBounds == null) Text("이 차량은 조명 조절을 앱에 열어 두지 않았습니다.", color = Muted)
+        val refused by core.ambientRefused.collectAsState()
+        if (vehicle.ambientBrightnessBounds == null || refused) Text("이 차량은 조명 조절을 앱에 열어 두지 않았습니다.", color = Muted)
         sleep.driverHint?.let { Text(it, fontSize = 19.sp, color = Accent) }
-        Text("좌석별 스피커를 끄는 기능은 외부 앱에 열려 있지 않아, 순정 '후석 취침 모드' 안내와 조용한 음성비서 응답으로 대신합니다.", color = Muted)
+        Text("좌석별 스피커를 끄는 기능은 외부 앱에 열려 있지 않아, 순정 '후석 취침 모드' 안내와 조용한 알림, 오토브리프 기능의 음성비서 응답을 효과음으로 바꾸는 것으로 대신합니다.", color = Muted)
     }
     Card {
         SeatPos.values().forEach { pos ->
@@ -247,31 +263,24 @@ private fun SleepTab(core: AutoBriefCore) {
             )
         }
     }
-    DemoSeatSignals(core)
+    if (settings.demoMode) DemoSeatSignals(core)
 }
 
-/** Virtual Console has no backrest or per-seat belt card: these buttons inject labelled demo values. */
+/** Virtual Console has no backrest or per-seat belt card: in demo mode these buttons inject labelled demo values. */
 @Composable
 private fun DemoSeatSignals(core: AutoBriefCore) {
-    var demo by remember { mutableStateOf(false) }
     Card {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("시연용 가상 좌석 신호", fontSize = 17.sp)
-            Spacer(Modifier.width(12.dp))
-            Switch(checked = demo, onCheckedChange = { demo = it })
-        }
-        if (demo) {
-            Text("가상 콘솔에 등받이와 좌석별 벨트 항목이 없어, 시연할 때만 값을 넣습니다. 실제 차량에서는 SDK 값을 씁니다.", color = Muted)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = {
-                    core.onVehicle(VehicleEvent.BackrestBounds(SeatPos.values().associateWith { 0..100 }))
-                    core.onVehicle(VehicleEvent.SeatOccupancy(SeatPos.ROW2_RIGHT, true))
-                    core.onVehicle(VehicleEvent.SeatBelt(SeatPos.ROW2_RIGHT, true))
-                    core.onVehicle(VehicleEvent.ReadingLight(SeatPos.ROW2_RIGHT, false))
-                    core.onVehicle(VehicleEvent.Backrest(SeatPos.ROW2_RIGHT, 28))
-                }) { Text("2열 오른쪽 등받이 젖힘(가상)") }
-                OutlinedButton(onClick = { core.onVehicle(VehicleEvent.Backrest(SeatPos.ROW2_RIGHT, 95)) }) { Text("다시 세움(가상)") }
-            }
+        Text("시연용 가상 좌석 신호", fontSize = 17.sp, fontWeight = FontWeight.Bold)
+        Text("가상 콘솔에 등받이와 좌석별 벨트 항목이 없어, 시연할 때만 값을 넣습니다. 실제 차량에서는 SDK 값을 씁니다.", color = Muted)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                core.onVehicle(VehicleEvent.BackrestBounds(SeatPos.values().associateWith { 0..100 }))
+                core.onVehicle(VehicleEvent.SeatOccupancy(SeatPos.ROW2_RIGHT, true))
+                core.onVehicle(VehicleEvent.SeatBelt(SeatPos.ROW2_RIGHT, true))
+                core.onVehicle(VehicleEvent.ReadingLight(SeatPos.ROW2_RIGHT, false))
+                core.onVehicle(VehicleEvent.Backrest(SeatPos.ROW2_RIGHT, 28))
+            }) { Text("2열 오른쪽 등받이 젖힘(가상)") }
+            OutlinedButton(onClick = { core.onVehicle(VehicleEvent.Backrest(SeatPos.ROW2_RIGHT, 95)) }) { Text("다시 세움(가상)") }
         }
     }
 }
@@ -314,7 +323,7 @@ private fun CustodyTab(core: AutoBriefCore, consentRequest: MutableState<Consent
                     pin = ""
                 }) { Text("차주 PIN으로 종료") }
             }
-            VirtualDrivingSignals(core)
+            if (settings.demoMode) VirtualDrivingSignals(core)
         }
         message?.let { Text(it, color = Accent) }
     }
@@ -387,16 +396,25 @@ private fun VirtualDrivingSignals(core: AutoBriefCore) {
 @Composable
 private fun SettingsTab(core: AutoBriefCore) {
     val settings by core.settings.collectAsState()
+    val session by core.custody.collectAsState()
+    if (session != null) {
+        Card { Text("대리운전 모드 중에는 설정을 바꿀 수 없습니다. 도착하거나 차주 PIN으로 종료한 뒤 바꿔 주세요.", fontSize = 18.sp) }
+        return
+    }
     var entity by remember { mutableStateOf(settings.entityName) }
     var bizNo by remember { mutableStateOf(settings.businessNumber) }
     var model by remember { mutableStateOf(settings.vehicleModel) }
     var plate by remember { mutableStateOf(settings.plateNumber) }
     var fyStart by remember { mutableStateOf(settings.fiscalYearStartMonth.toString()) }
+    var users by remember { mutableStateOf(settings.users) }
+    var defaultUser by remember { mutableStateOf(settings.defaultUserIndex) }
     var userName by remember { mutableStateOf("") }
     var userDept by remember { mutableStateOf("") }
     var archive by remember { mutableStateOf(settings.archiveWebhookUrl) }
     var family by remember { mutableStateOf(settings.familyWebhookUrl) }
-    var pin by remember { mutableStateOf("") }
+    var demoMode by remember { mutableStateOf(settings.demoMode) }
+    var newPin by remember { mutableStateOf("") }
+    var currentPin by remember { mutableStateOf("") }
     var saved by remember { mutableStateOf<String?>(null) }
     Card {
         Text("운행기록부 머리글", fontSize = 18.sp, fontWeight = FontWeight.Bold)
@@ -405,14 +423,20 @@ private fun SettingsTab(core: AutoBriefCore) {
         Field("차종", model) { model = it }
         Field("자동차등록번호", plate) { plate = it }
         Field("사업연도 시작 월(1~12)", fyStart) { fyStart = it.filter(Char::isDigit).take(2) }
-        Text("사용자: " + (settings.users.joinToString(", ") { "${it.name}(${it.department})" }.ifEmpty { "없음" }))
+        Text("사용자(④), 고른 사람이 기본값입니다", fontSize = 17.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            users.forEachIndexed { i, u ->
+                val label = "${u.name}(${u.department})"
+                if (i == defaultUser) Button(onClick = {}) { Text(label) } else OutlinedButton(onClick = { defaultUser = i }) { Text(label) }
+            }
+        }
         Row {
             Field("사용자 성명", userName) { userName = it }
             Spacer(Modifier.width(8.dp))
             Field("부서", userDept) { userDept = it }
         }
         OutlinedButton(onClick = {
-            if (userName.isNotBlank()) core.updateSettings(settings.copy(users = settings.users + CarUser(userName.trim(), userDept.trim())))
+            if (userName.isNotBlank()) users = users + CarUser(userName.trim(), userDept.trim())
             userName = ""; userDept = ""
         }) { Text("사용자 추가") }
     }
@@ -423,20 +447,30 @@ private fun SettingsTab(core: AutoBriefCore) {
         Text("웹훅이 받은 내용을 클라우드 저장소, 이메일, 메신저로 넘깁니다. 차량은 문자를 직접 보내지 않습니다.", color = Muted)
     }
     Card {
-        Text("차주 PIN (대리운전 모드 종료용)", fontSize = 18.sp, fontWeight = FontWeight.Bold)
-        Field("새 PIN 4~8자리", pin) { pin = it.filter(Char::isDigit).take(8) }
+        Text("차주 PIN과 시연 모드", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        Field("새 PIN 4~8자리 (바꿀 때만)", newPin) { newPin = it.filter(Char::isDigit).take(8) }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("시연 모드(가상 신호 버튼, 가족 알림 끔)", fontSize = 17.sp)
+            Spacer(Modifier.width(12.dp))
+            Switch(checked = demoMode, onCheckedChange = { demoMode = it })
+        }
+        if (core.custodyPinSet) {
+            Field("현재 PIN (PIN, 보내기 주소, 시연 모드를 바꿀 때)", currentPin) { currentPin = it.filter(Char::isDigit).take(8) }
+        }
     }
     Button(onClick = {
         val month = fyStart.toIntOrNull()?.coerceIn(1, 12) ?: 1
-        core.updateSettings(
-            core.settings.value.copy(
-                entityName = entity.trim(), businessNumber = bizNo.trim(), vehicleModel = model.trim(), plateNumber = plate.trim(),
-                fiscalYearStartMonth = month, archiveWebhookUrl = archive, familyWebhookUrl = family,
-            ),
+        val next = settings.copy(
+            entityName = entity.trim(), businessNumber = bizNo.trim(), vehicleModel = model.trim(), plateNumber = plate.trim(),
+            fiscalYearStartMonth = month, users = users, defaultUserIndex = defaultUser,
+            archiveWebhookUrl = archive, familyWebhookUrl = family, demoMode = demoMode,
         )
-        if (pin.length >= 4) core.setCustodyPin(pin)
-        pin = ""
-        saved = "저장했습니다."
+        saved = when (core.saveOwnerSettings(next, newPin.takeIf { it.length >= 4 }, currentPin)) {
+            AutoBriefCore.SettingsResult.SAVED -> "저장했습니다."
+            AutoBriefCore.SettingsResult.PIN_REQUIRED -> "PIN, 보내기 주소, 시연 모드를 바꾸려면 현재 PIN이 필요합니다."
+            AutoBriefCore.SettingsResult.LOCKED_DURING_CUSTODY -> "대리운전 모드 중에는 저장할 수 없습니다."
+        }
+        newPin = ""; currentPin = ""
     }) { Text("저장") }
     saved?.let { Text(it, color = Accent) }
 }

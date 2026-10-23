@@ -38,8 +38,34 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
     val records: List<TripRecord> get() = rows.toList()
     val tripInProgress: Boolean get() = open != null
 
-    fun onOdometer(km: Double) {
+    /** Gear left P before the first odometer value arrived (cold start): the trip opens at that first value. */
+    private var pendingStart: OpenTrip? = null
+
+    fun onOdometer(km: Double): List<TripRecord> {
         latestOdometerKm = km
+        val pending = pendingStart ?: return emptyList()
+        pendingStart = null
+        if (open != null) return emptyList()
+        val added = gapRowIfMoved(km, pending.startEpochMs)
+        open = pending.copy(startOdometerKm = km)
+        return added
+    }
+
+    private fun gapRowIfMoved(odo: Double, nowEpochMs: Long): List<TripRecord> {
+        val last = rows.lastOrNull() ?: return emptyList()
+        if (odo - last.endOdometerKm < GAP_THRESHOLD_KM) return emptyList()
+        val gapRow = TripRecord(
+            id = "GAP-${nowEpochMs}",
+            startEpochMs = last.endEpochMs,
+            endEpochMs = nowEpochMs,
+            startOdometerKm = last.endOdometerKm,
+            endOdometerKm = odo,
+            purpose = TripPurpose.UNLOGGED_GAP,
+            user = null,
+            memo = "앱이 기록하지 못한 주행(비업무로 처리)",
+        )
+        rows += gapRow
+        return listOf(gapRow)
     }
 
     /** Returns the rows added by this event (a closed trip, possibly preceded by a gap row). */
@@ -52,27 +78,16 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
     ): List<TripRecord> {
         val previous = lastGear
         lastGear = gear
-        val odo = latestOdometerKm ?: return emptyList()
         if (gear == Gear.UNKNOWN) return emptyList()
+        val odo = latestOdometerKm
+        if (odo == null) {
+            // remember the departure; the trip opens when the first odometer value arrives
+            pendingStart = if (gear != Gear.PARK) OpenTrip(nowEpochMs, 0.0, routeTollEstimateKrw, destinationName, designatedDriver) else null
+            return emptyList()
+        }
         val added = mutableListOf<TripRecord>()
         if (gear != Gear.PARK && open == null && previous != gear) {
-            rows.lastOrNull()?.let { last ->
-                val gap = odo - last.endOdometerKm
-                if (gap >= GAP_THRESHOLD_KM) {
-                    val gapRow = TripRecord(
-                        id = "GAP-${nowEpochMs}",
-                        startEpochMs = last.endEpochMs,
-                        endEpochMs = nowEpochMs,
-                        startOdometerKm = last.endOdometerKm,
-                        endOdometerKm = odo,
-                        purpose = TripPurpose.UNLOGGED_GAP,
-                        user = null,
-                        memo = "앱이 기록하지 못한 주행(비업무로 처리)",
-                    )
-                    rows += gapRow
-                    added += gapRow
-                }
-            }
+            added += gapRowIfMoved(odo, nowEpochMs)
             open = OpenTrip(nowEpochMs, odo, routeTollEstimateKrw, destinationName, designatedDriver)
         } else if (gear == Gear.PARK) {
             val trip = open ?: return added
@@ -98,8 +113,11 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
         return added
     }
 
-    /** The newest finished trip that still needs a purpose (what a voice command refers to). */
+    /** The newest finished trip that still needs a purpose. */
     fun latestUnclassified(): TripRecord? = rows.lastOrNull { it.purpose == TripPurpose.UNCLASSIFIED }
+
+    /** The last trip that actually ended (gap rows excluded): the only one a voice command may label. */
+    fun lastTrip(): TripRecord? = rows.lastOrNull { it.purpose != TripPurpose.UNLOGGED_GAP }
 
     fun classify(id: String, purpose: TripPurpose, user: CarUser?, memo: String, source: String): TripRecord? {
         require(purpose != TripPurpose.UNCLASSIFIED && purpose != TripPurpose.UNLOGGED_GAP) { "not a user purpose: $purpose" }

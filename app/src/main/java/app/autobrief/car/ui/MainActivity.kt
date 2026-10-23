@@ -27,11 +27,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         VehicleMonitorService.start(this)
         requestRuntimePermissions()
-        handleGleoIntent(intent)
+        // a recreated activity (day/night switch, rotation) must not replay the Gleo request
+        if (savedInstanceState == null) handleGleoIntent(intent)
         setContent {
             AutoBriefScreen(
                 core = core,
-                restrictedFlow = VehicleMonitorService.restrictedFlow,
                 startTab = startTab,
                 consentRequest = consentRequest,
                 onExported = { VehicleMonitorService.start(this, VehicleMonitorService.ACTION_FLUSH) },
@@ -52,11 +52,12 @@ class MainActivity : ComponentActivity() {
         startTab.value = 2
         val reply = if (core.custodyPinSet) {
             consentRequest.value = ConsentRequest(notifyFamily = notify)
-            AutoBriefCore.GleoReply("asking", "The designated driver must agree on the screen before the mode starts.")
+            AutoBriefCore.GleoReply("success", "The designated driver consent screen is open on the display.")
         } else {
             AutoBriefCore.GleoReply("fail", "The owner has not set a PIN for designated driver mode yet.")
         }
         sendGleoResponse(this, GleoContract.START_DESIGNATED_DRIVER_MODE, reply, core.gleoMode())
+        setIntent(Intent())
     }
 
     private fun requestRuntimePermissions() {

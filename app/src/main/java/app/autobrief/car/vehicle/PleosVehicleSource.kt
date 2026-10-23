@@ -29,6 +29,7 @@ import app.autobrief.car.model.SeatPos
  * (odometer, gear), CAR_SEATS, CAR_LIGHTS, CAR_DOORS, CAR_INFO.
  */
 class PleosVehicleSource(context: Context, private val emit: (VehicleEvent) -> Unit) : VehicleControl {
+    // emit() posts to the main thread itself (see VehicleMonitorService), so SDK callback threads are safe here
 
     private val vehicle = Vehicle(context.applicationContext)
     private val main = Handler(Looper.getMainLooper())
@@ -81,9 +82,11 @@ class PleosVehicleSource(context: Context, private val emit: (VehicleEvent) -> U
     private val doorListeners = doors.associateWith { door ->
         object : DoorLockStateListener {
             override fun onDoorLockStateUpdated(locked: Boolean?) {
-                doorLocks[door] = locked
-                val values = doors.map { doorLocks[it] }
-                emit(VehicleEvent.DoorsLocked(if (values.any { it == null }) null else values.all { it == true }))
+                val all = synchronized(doorLocks) {
+                    doorLocks[door] = locked
+                    doors.map { doorLocks[it] }
+                }
+                emit(VehicleEvent.DoorsLocked(if (all.any { it == null }) null else all.all { it == true }))
             }
             override fun onFailed(e: Exception) = issue("door lock", e)
         }
@@ -95,17 +98,38 @@ class PleosVehicleSource(context: Context, private val emit: (VehicleEvent) -> U
             emit(VehicleEvent.Connection(false, it.message))
             return
         }
-        // initialize() binds to the Pleos vehicle service asynchronously; register once it had time to bind
-        main.postDelayed({ register() }, BIND_DELAY_MS)
+        // initialize() binds to the Pleos vehicle service asynchronously: probe until it answers
+        probe(attempt = 0)
+    }
+
+    private var registered = false
+
+    private fun probe(attempt: Int) {
+        val delay = (BIND_DELAY_MS shl attempt.coerceAtMost(4)).coerceAtMost(MAX_RETRY_MS)
+        main.postDelayed({
+            runCatching {
+                vehicle.getOdometer().getCurrentDistanceDriven({ km ->
+                    main.post {
+                        emit(VehicleEvent.Connection(true))
+                        km?.let { emit(VehicleEvent.Odometer(it.toDouble())) }
+                        if (!registered) {
+                            registered = true
+                            register()
+                        }
+                    }
+                }, {
+                    issue("probe", it)
+                    main.post { probe(attempt + 1) }
+                })
+            }.onFailure {
+                issue("probe", it)
+                probe(attempt + 1)
+            }
+        }, delay)
     }
 
     private fun register() = runCatching {
-        val odometer = vehicle.getOdometer()
-        odometer.getCurrentDistanceDriven({ km ->
-            emit(VehicleEvent.Connection(true))
-            km?.let { emit(VehicleEvent.Odometer(it.toDouble())) }
-        }, { issue("odometer", it) })
-        odometer.registerDistanceDriven(odometerListener)
+        vehicle.getOdometer().registerDistanceDriven(odometerListener)
 
         val gear = vehicle.getGear()
         gear.getCurrentGearSelectionState({ emit(VehicleEvent.GearChanged(it.toGear())) }, { issue("gear", it) })
@@ -120,19 +144,18 @@ class PleosVehicleSource(context: Context, private val emit: (VehicleEvent) -> U
                 pos to (b.minValue..b.maxValue)
             }.toMap()))
         }, { issue("backrest bounds", it) })
+        val light = vehicle.getLight()
         seatValues.forEach { (pos, value) ->
             val area = SeatArea(value)
             val (occ, belt, back) = seatListeners.getValue(pos)
             seat.getCurrentSeatOccupancy(area, { emit(VehicleEvent.SeatOccupancy(pos, it)) }, { issue("seat occupancy", it) })
             seat.registerSeatOccupancy(area, occ)
+            seat.getCurrentSeatBeltBuckledState(area, { emit(VehicleEvent.SeatBelt(pos, it)) }, { issue("seat belt", it) })
             seat.registerSeatBeltBuckledState(area, belt)
             seat.getCurrentSeatBackrestAnglePosition(area, { emit(VehicleEvent.Backrest(pos, it)) }, { issue("backrest", it) })
             seat.registerSeatBackrestAnglePosition(area, back)
-        }
-
-        val light = vehicle.getLight()
-        seatValues.forEach { (pos, value) ->
-            light.registerReadingLightState(SeatArea(value), readingLightListeners.getValue(pos))
+            light.getCurrentReadingLightState(area, { st -> emit(VehicleEvent.ReadingLight(pos, st?.let { it == LightState.ON })) }, { issue("reading light", it) })
+            light.registerReadingLightState(area, readingLightListeners.getValue(pos))
         }
         light.checkAmbientLightBrightnessCapabilities({ _, bounds ->
             val first = bounds.entries.firstOrNull()
@@ -141,17 +164,31 @@ class PleosVehicleSource(context: Context, private val emit: (VehicleEvent) -> U
         }, { issue("ambient bounds", it) })
 
         val door = vehicle.getDoor()
-        doors.forEach { d -> door.registerDoorLockState(DoorArea(d), doorListeners.getValue(d)) }
+        doors.forEach { d ->
+            val area = DoorArea(d)
+            door.getDoorLockState(area, { doorListeners.getValue(d).onDoorLockStateUpdated(it) }, { issue("door lock", it) })
+            door.registerDoorLockState(area, doorListeners.getValue(d))
+        }
     }.onFailure {
         issue("register", it)
         emit(VehicleEvent.Connection(false, it.message))
     }
 
-    override fun setAmbientBrightness(value: Int): Boolean {
-        val area = ambientArea ?: return false
-        return runCatching {
-            vehicle.getLight().setAmbientLightBrightness(area, value, { _, _ -> }, { issue("ambient set", it) })
-        }.isSuccess
+    override fun readAmbientBrightness(onResult: (Int?) -> Unit) {
+        val area = ambientArea ?: return onResult(null)
+        runCatching {
+            vehicle.getLight().getAmbientLightBrightness(area, { v -> main.post { onResult(v) } }, { main.post { onResult(null) } })
+        }.onFailure { onResult(null) }
+    }
+
+    override fun setAmbientBrightness(value: Int, onResult: (Boolean) -> Unit) {
+        val area = ambientArea ?: return onResult(false)
+        runCatching {
+            vehicle.getLight().setAmbientLightBrightness(area, value, { _, _ -> main.post { onResult(true) } }, {
+                issue("ambient set", it)
+                main.post { onResult(false) }
+            })
+        }.onFailure { onResult(false) }
     }
 
     fun stop() {
@@ -189,5 +226,6 @@ class PleosVehicleSource(context: Context, private val emit: (VehicleEvent) -> U
     companion object {
         private const val TAG = "AutoBriefVehicle"
         private const val BIND_DELAY_MS = 1_500L
+        private const val MAX_RETRY_MS = 30_000L
     }
 }

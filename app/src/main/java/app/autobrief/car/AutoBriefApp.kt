@@ -17,6 +17,7 @@ class AutoBriefApp : Application() {
             initialTrips = files.loadTrips(),
             initialOutbox = files.loadOutbox(),
             initialReports = files.loadReports(),
+            initialActiveCustody = files.loadActiveCustody(),
             persistence = files,
         )
     }

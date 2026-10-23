@@ -74,7 +74,8 @@ class SampleScenarioTest {
         val core = AutoBriefCore(initialSettings = settings, clock = { now })
         val dimmed = mutableListOf<Int>()
         core.control = object : VehicleControl {
-            override fun setAmbientBrightness(value: Int): Boolean { dimmed += value; return true }
+            override fun readAmbientBrightness(onResult: (Int?) -> Unit) = onResult(100)
+            override fun setAmbientBrightness(value: Int, onResult: (Boolean) -> Unit) { dimmed += value; onResult(true) }
         }
 
         // history up to 2026-10-22, with one stretch the app missed (2026-03-14, 27 km)
@@ -157,9 +158,15 @@ class SampleScenarioTest {
         File(dir, "운행기록부_2026-10_가상예시.xlsx").writeBytes(LogbookExport.toXlsx(monthSheet))
         val ys = core.summary(year)
         val ms = core.summary(october)
+        // the numbers the proposal, the figures and the videos quote
         assertEquals(0, ys.unclassifiedCount)
         assertEquals(0, ys.continuityBreaks)
-        assertTrue(ys.businessUseRatio!! in 0.5..0.99)
+        assertEquals(487, ys.rowCount)
+        assertEquals(9636.0, ys.totalKm, 1e-9)
+        assertEquals(9117.0, ys.businessUseKm, 1e-9)
+        assertEquals("94.6", "%.1f".format(ys.businessUseRatio!! * 100))
+        assertEquals(36, ms.rowCount)
+        assertEquals(listOf(20, 100), dimmed) // dimmed to 20 %, then back to the level the cabin had
 
         val summary = buildJsonObject {
             put("label", banner)

@@ -9,23 +9,21 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.util.Log
 import app.autobrief.car.domain.VehicleEvent
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Standard AAOS car service, used where Pleos follows AAOS: vehicle speed (PERF_VEHICLE_SPEED, m/s,
  * needs the runtime permission android.car.permission.CAR_SPEED) and the driving UX restrictions an
  * app declaring distraction optimisation must honour.
  */
-class CarServices(private val context: Context, private val emit: (VehicleEvent) -> Unit) {
+class CarServices(
+    private val context: Context,
+    private val emit: (VehicleEvent) -> Unit,
+    private val onRestricted: (Boolean) -> Unit,
+) {
 
     private var car: Car? = null
     private var propertyManager: CarPropertyManager? = null
     private var uxManager: CarUxRestrictionsManager? = null
-    private val _restricted = MutableStateFlow(false)
-
-    /** True while driving: the screen must show its simplified, glanceable layout. */
-    val restricted: StateFlow<Boolean> = _restricted
 
     private val speedCallback = object : CarPropertyManager.CarPropertyEventCallback {
         override fun onChangeEvent(value: CarPropertyValue<*>) {
@@ -43,8 +41,8 @@ class CarServices(private val context: Context, private val emit: (VehicleEvent)
         runCatching {
             val ux = c.getCarManager(Car.CAR_UX_RESTRICTION_SERVICE) as CarUxRestrictionsManager
             uxManager = ux
-            _restricted.value = ux.currentCarUxRestrictions?.isRequiresDistractionOptimization == true
-            ux.registerListener { r -> _restricted.value = r.isRequiresDistractionOptimization }
+            onRestricted(ux.currentCarUxRestrictions?.isRequiresDistractionOptimization == true)
+            ux.registerListener { r -> onRestricted(r.isRequiresDistractionOptimization) }
         }.onFailure { Log.w(TAG, "ux restrictions: ${it.message}") }
         startSpeed()
     }

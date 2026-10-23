@@ -33,7 +33,15 @@ object LogbookExport {
         "⑧출·퇴근용(㎞)", "⑨일반 업무용(㎞)", "⑩비고",
     )
 
-    fun build(records: List<TripRecord>, settings: AppSettings, period: ClosedRange<LocalDate>, banner: String? = null): Sheet {
+    /** [businessYear] = the period is a whole 사업연도 (the form's own unit); otherwise it is labelled as a period extract. */
+    fun build(
+        records: List<TripRecord>,
+        settings: AppSettings,
+        period: ClosedRange<LocalDate>,
+        banner: String? = null,
+        businessYear: Boolean = true,
+    ): Sheet {
+        val unit = if (businessYear) "사업연도" else "기간"
         val inPeriod = records.filter { TripLogbook.localDate(it.startEpochMs) in period }.sortedBy { it.startEpochMs }
         val summary = TripLogbook.summarize(inPeriod)
         val rows = inPeriod.map { r ->
@@ -52,13 +60,13 @@ object LogbookExport {
         }
         val header = buildList {
             if (banner != null) add(banner)
-            add("사업연도: ${period.start} ~ ${period.endInclusive}    법인명(상호): ${settings.entityName}    사업자등록번호: ${settings.businessNumber}")
+            add("$unit: ${period.start} ~ ${period.endInclusive}    법인명(상호): ${settings.entityName}    사업자등록번호: ${settings.businessNumber}")
             add("1. 기본정보    ①차종: ${settings.vehicleModel}    ②자동차등록번호: ${settings.plateNumber}")
             add("2. 업무용 사용비율 계산")
         }
         val footer = listOf(
-            listOf("⑪사업연도 총주행 거리(㎞)", summary.totalKm),
-            listOf("⑫사업연도 업무용 사용거리(㎞)", summary.businessUseKm),
+            listOf("⑪${unit} 총주행 거리(㎞)", summary.totalKm),
+            listOf("⑫${unit} 업무용 사용거리(㎞)", summary.businessUseKm),
             listOf("⑬업무사용비율(⑫/⑪)", summary.businessUseRatio?.let { "%.1f%%".format(it * 100) } ?: "-"),
         )
         val note = buildString {
@@ -78,6 +86,7 @@ object LogbookExport {
         }
         if (r.designatedDriver) add("대리운전")
         if (r.classifiedBy == "음성") add("음성 지정")
+        r.routeTollEstimateKrw?.takeIf { it > 0 }?.let { add("내비 예상 통행료 ${"%,d".format(it)}원") }
         if (r.memo.isNotBlank()) add(r.memo)
     }.joinToString(", ")
 

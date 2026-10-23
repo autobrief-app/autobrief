@@ -61,6 +61,8 @@ data class AppSettings(
     /** SHA-256 of salt + PIN; empty = no PIN set yet. */
     val custodyPinHash: String = "",
     val custodyPinSalt: String = "",
+    /** Shows the labelled demo-signal buttons (the Virtual Console lacks some cards); family notices are off meanwhile. */
+    val demoMode: Boolean = false,
 )
 
 /** Passenger seats the sleep detector watches (the driver seat is never a sleep candidate). */
@@ -103,7 +105,17 @@ data class VehicleSnapshot(
 )
 
 @Serializable
-enum class CustodyEndReason { ARRIVED, OWNER_ENDED_EARLY }
+enum class CustodyEndReason { ARRIVED, OWNER_ENDED_EARLY, INTERRUPTED }
+
+/** A running designated-driver session, saved so a restart can report that recording stopped. */
+@Serializable
+data class ActiveCustody(
+    val sessionId: String,
+    val startEpochMs: Long,
+    val startOdometerKm: Double?,
+    val destinationLabel: String?,
+    val notifyFamily: Boolean,
+)
 
 @Serializable
 data class CustodyReport(
@@ -120,6 +132,10 @@ data class CustodyReport(
     val endReason: CustodyEndReason,
     val doorsLocked: Boolean?,
     val driverConsented: Boolean,
+    val intermediateStops: Int = 0,
+    /** 0 = no speed reading arrived (permission refused or no speed source), so the counts mean nothing. */
+    val speedSamples: Int = 0,
+    val speedLimitKnown: Boolean = false,
 ) {
     val distanceKm: Double?
         get() = if (startOdometerKm != null && endOdometerKm != null) endOdometerKm - startOdometerKm else null

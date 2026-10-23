@@ -60,9 +60,14 @@ class CustodySession(
         private set
     var intermediateStops = 0
         private set
+    var speedSamples = 0
+        private set
+    val speedLimitKnown: Boolean get() = speedLimitSeen
+    private var speedLimitSeen = false
 
     fun onSpeedLimit(limitKph: Int) {
         speedLimitKph = limitKph.takeIf { it > 0 }
+        if (speedLimitKph != null) speedLimitSeen = true
     }
 
     fun onArrivedSignal() {
@@ -70,6 +75,7 @@ class CustodySession(
     }
 
     fun onSpeed(kph: Double, nowEpochMs: Long) {
+        speedSamples++
         maxSpeedKph = max(maxSpeedKph, kph)
         val prev = lastSpeedKph
         val dtMs = nowEpochMs - lastSpeedMs
@@ -80,7 +86,7 @@ class CustodySession(
                 if (nowEpochMs - lastAccelEventMs > thresholds.eventMergeMs) harshAccelEvents++
                 lastAccelEventMs = nowEpochMs
             }
-            // a hard stop (ending at or below 5 km/h) counts as a hard brake too
+            // a stop to standstill is judged by the same low-speed threshold
             if (-rate >= brakeThreshold(kph)) {
                 if (nowEpochMs - lastBrakeEventMs > thresholds.eventMergeMs) harshBrakeEvents++
                 lastBrakeEventMs = nowEpochMs
@@ -139,6 +145,9 @@ class CustodySession(
         endReason = reason,
         doorsLocked = doorsLocked,
         driverConsented = driverConsented,
+        intermediateStops = intermediateStops,
+        speedSamples = speedSamples,
+        speedLimitKnown = speedLimitSeen,
     )
 }
 
@@ -150,19 +159,28 @@ object CustodyMessages {
         etaText?.let { append(" 도착 예정: $it.") }
     }
 
-    fun end(report: CustodyReport, timeText: String): String = when (report.endReason) {
+    /** [lockObserved]: true = the doors were seen locked after parking, false = not locked within the wait. */
+    fun end(report: CustodyReport, timeText: String, lockObserved: Boolean? = report.doorsLocked): String = when (report.endReason) {
         CustodyEndReason.ARRIVED -> buildString {
             append("[오토브리프] $timeText 목적지에 도착해 주차했습니다.")
             report.distanceKm?.let { append(" 주행 ${"%.0f".format(it)}km.") }
-            append(" 과속 ${report.overspeedEpisodes}회, 급가속 ${report.harshAccelEvents}회, 급감속 ${report.harshBrakeEvents}회.")
-            when (report.doorsLocked) {
+            if (report.speedSamples == 0) {
+                append(" 차량 속도를 받지 못해 과속, 급가속, 급감속은 측정하지 못했습니다.")
+            } else {
+                append(if (report.speedLimitKnown) " 과속 ${report.overspeedEpisodes}회," else " 과속은 제한속도 정보가 없어 판단하지 못했고,")
+                append(" 급가속 ${report.harshAccelEvents}회, 급감속 ${report.harshBrakeEvents}회.")
+            }
+            if (report.intermediateStops > 0) append(" 중간 정차 ${report.intermediateStops}회.")
+            when (lockObserved) {
                 true -> append(" 문 잠김 확인.")
-                false -> append(" 문이 잠기지 않았습니다.")
+                false -> append(" 주차 뒤 문 잠김은 확인되지 않았습니다.")
                 null -> {}
             }
         }
         CustodyEndReason.OWNER_ENDED_EARLY ->
             "[오토브리프] $timeText 차주가 대리운전 모드를 도착 전에 종료했습니다."
+        CustodyEndReason.INTERRUPTED ->
+            "[오토브리프] $timeText 앱이 다시 시작되어 대리운전 기록이 중간에 끊겼습니다. 도착 여부는 확인하지 못했습니다."
     }
 }
 

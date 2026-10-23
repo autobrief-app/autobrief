@@ -45,13 +45,26 @@ class VehicleMonitorService : Service() {
         core = applicationContext.core
         vehicle = PleosVehicleSource(this) { e -> scope.launch { core.onVehicle(e) } }
         navi = PleosNaviSource(this) { e -> scope.launch { core.onNavi(e) } }
-        car = CarServices(this) { e -> scope.launch { core.onVehicle(e) } }
+        car = CarServices(this, { e -> scope.launch { core.onVehicle(e) } }, { r -> scope.launch { core.setRestricted(r) } })
         sender = WebhookSender(core)
         core.control = vehicle
         vehicle.start()
         navi.start()
         car.start()
-        restrictedFlow = car.restricted
+        scope.launch {
+            // a quiet heads-up so the hint reaches the driver even when navigation is in front
+            core.sleep.collect { state ->
+                val nm = getSystemService(NotificationManager::class.java)
+                val hint = state.driverHint
+                if (hint == null) nm.cancel(SLEEP_NOTIFICATION_ID)
+                else nm.notify(SLEEP_NOTIFICATION_ID, Notification.Builder(this@VehicleMonitorService, SLEEP_CHANNEL)
+                    .setSmallIcon(android.R.drawable.ic_lock_idle_low_battery)
+                    .setContentTitle(getString(R.string.sleep_title))
+                    .setContentText(hint)
+                    .setOnlyAlertOnce(true)
+                    .build())
+            }
+        }
         scope.launch {
             var n = 0
             while (isActive) {
@@ -83,6 +96,12 @@ class VehicleMonitorService : Service() {
     private fun startAsForeground() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, getString(R.string.monitor_channel), NotificationManager.IMPORTANCE_MIN))
+        nm.createNotificationChannel(
+            NotificationChannel(SLEEP_CHANNEL, getString(R.string.sleep_channel), NotificationManager.IMPORTANCE_HIGH).apply {
+                setSound(null, null) // never wake the sleeper
+                enableVibration(false)
+            },
+        )
         val notification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .setContentTitle(getString(R.string.app_name))
@@ -100,13 +119,11 @@ class VehicleMonitorService : Service() {
         const val ACTION_SPEED_PERMISSION_GRANTED = "app.autobrief.car.SPEED_PERMISSION_GRANTED"
         const val ACTION_FLUSH = "app.autobrief.car.FLUSH"
         private const val CHANNEL = "monitor"
+        private const val SLEEP_CHANNEL = "sleep_hint"
         private const val NOTIFICATION_ID = 1
+        private const val SLEEP_NOTIFICATION_ID = 2
         private const val TICK_MS = 5_000L
         private const val FLUSH_EVERY_TICKS = 6
-
-        /** Driving restriction state for the screen; false when the service has not started. */
-        var restrictedFlow: kotlinx.coroutines.flow.StateFlow<Boolean>? = null
-            private set
 
         fun start(context: Context, action: String? = null) {
             val intent = Intent(context, VehicleMonitorService::class.java).setAction(action)
