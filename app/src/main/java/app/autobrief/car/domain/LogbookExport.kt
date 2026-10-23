@@ -77,6 +77,7 @@ object LogbookExport {
             else -> {}
         }
         if (r.designatedDriver) add("대리운전")
+        if (r.classifiedBy == "음성") add("음성 지정")
         if (r.memo.isNotBlank()) add(r.memo)
     }.joinToString(", ")
 
@@ -99,7 +100,9 @@ object LogbookExport {
             is Double -> if (c % 1.0 == 0.0) c.toLong().toString() else c.toString()
             else -> c.toString()
         }
-        if (s.any { it == ',' || it == '"' || it == '\n' }) "\"" + s.replace("\"", "\"\"") + "\"" else s
+        // a cell starting with = + - @ would run as a formula when the CSV is opened in a spreadsheet
+        val safe = if (c is String && s.isNotEmpty() && s[0] in "=+-@\t\r") "'$s" else s
+        if (safe.any { it == ',' || it == '"' || it == '\n' }) "\"" + safe.replace("\"", "\"\"") + "\"" else safe
     }
 
     /** Minimal OOXML workbook: inline strings, one bold style, merged title/header lines. */

@@ -26,6 +26,11 @@ fun intentParams(intent: Intent) = GleoContract.parseParams(
     intent.extras?.keySet()?.associateWith { key -> intent.extras?.get(key)?.toString() } ?: emptyMap(),
 )
 
+/**
+ * The app-integration guide sends this reply as an implicit broadcast and names no package or permission
+ * for Gleo, so the payload is kept to non-sensitive fields (status, an English sentence, distance and
+ * purpose) and never carries destinations, addresses or names.
+ */
 fun sendGleoResponse(context: Context, function: String, reply: AutoBriefCore.GleoReply, mode: String) {
     val response = Intent(GleoContract.RESPONSE_ACTION)
         .putExtra(GleoContract.EXTRA_PACKAGE_NAME, context.packageName)

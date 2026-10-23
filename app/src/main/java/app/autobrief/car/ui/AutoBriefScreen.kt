@@ -308,6 +308,7 @@ private fun CustodyTab(core: AutoBriefCore, consentRequest: MutableState<Consent
                     message = when (core.endCustodyEarly(pin)) {
                         AutoBriefCore.EndResult.ENDED -> "도착 전에 종료했습니다(가족에게 '도착 전 종료'로 알립니다)."
                         AutoBriefCore.EndResult.WRONG_PIN -> "PIN이 맞지 않습니다."
+                        AutoBriefCore.EndResult.LOCKED -> "PIN을 여러 번 틀려 잠시 막았습니다. 몇 분 뒤 다시 시도해 주세요."
                         AutoBriefCore.EndResult.NOT_ACTIVE -> null
                     }
                     pin = ""
@@ -349,7 +350,9 @@ private fun CustodyTab(core: AutoBriefCore, consentRequest: MutableState<Consent
             },
             confirmButton = {
                 Button(onClick = {
-                    core.startCustody(driverConsented = true, notifyFamily = notify)
+                    if (core.startCustody(driverConsented = true, notifyFamily = notify) == null) {
+                        message = "먼저 설정 탭에서 차주 PIN을 정해 주세요."
+                    }
                     consentRequest.value = null
                 }) { Text("동의하고 시작") }
             },

@@ -217,9 +217,12 @@ class AutoBriefCore(
         updateSettings(_settings.value.copy(custodyPinSalt = salt, custodyPinHash = sha256(salt + pin)))
     }
 
-    /** Starts only with the driver's on-screen consent; returns null when refused. */
+    val custodyPinSet: Boolean get() = _settings.value.custodyPinHash.isNotEmpty()
+
+    /** Starts only with the driver's on-screen consent and an owner PIN already set; returns null otherwise. */
     fun startCustody(driverConsented: Boolean, notifyFamily: Boolean): CustodySession? {
-        if (!driverConsented || _custody.value != null) return _custody.value.takeIf { driverConsented }
+        if (!driverConsented || !custodyPinSet) return null
+        _custody.value?.let { return it }
         val now = clock()
         val dest = _destination.value
         val destLabel = (dest?.name ?: routeName)?.let(DisplayMasking::mask)
@@ -233,13 +236,30 @@ class AutoBriefCore(
         return session
     }
 
-    enum class EndResult { ENDED, WRONG_PIN, NOT_ACTIVE }
+    enum class EndResult { ENDED, WRONG_PIN, LOCKED, NOT_ACTIVE }
 
+    private var wrongPinAttempts = 0
+    private var pinLockedUntil = 0L
+
+    /** Owner PIN check: fails closed without a PIN, and locks for a growing time after repeated misses. */
     fun endCustodyEarly(pin: String): EndResult {
         val session = _custody.value ?: return EndResult.NOT_ACTIVE
+        val now = clock()
+        if (now < pinLockedUntil) return EndResult.LOCKED
         val st = _settings.value
-        if (st.custodyPinHash.isNotEmpty() && sha256(st.custodyPinSalt + pin) != st.custodyPinHash) return EndResult.WRONG_PIN
-        finishCustody(session.endEarly(clock(), _vehicle.value.odometerKm, _vehicle.value.doorsLocked))
+        if (st.custodyPinHash.isEmpty() || sha256(st.custodyPinSalt + pin) != st.custodyPinHash) {
+            wrongPinAttempts++
+            if (wrongPinAttempts % PIN_ATTEMPTS_BEFORE_LOCK == 0) {
+                val rounds = wrongPinAttempts / PIN_ATTEMPTS_BEFORE_LOCK
+                pinLockedUntil = now + PIN_LOCK_MS * (1L shl (rounds - 1).coerceAtMost(4))
+                if (familyNotify) enqueueFamily("${session.sessionId}-pin-$wrongPinAttempts", "custody_pin_alert",
+                    "[오토브리프] 대리운전 모드 해제 PIN이 ${wrongPinAttempts}회 틀렸습니다.")
+                return EndResult.LOCKED
+            }
+            return EndResult.WRONG_PIN
+        }
+        wrongPinAttempts = 0
+        finishCustody(session.endEarly(now, _vehicle.value.odometerKm, _vehicle.value.doorsLocked))
         return EndResult.ENDED
     }
 
@@ -298,20 +318,21 @@ class AutoBriefCore(
                 "PERSONAL" -> TripPurpose.PERSONAL
                 else -> null
             }
-            val trip = logbook.latestUnclassified()
+            // voice may only label the trip that just ended, never older history
+            val trip = logbook.latestUnclassified()?.takeIf { clock() - it.endEpochMs <= VOICE_CLASSIFY_WINDOW_MS }
             when {
                 purpose == null -> GleoReply("asking", "Please say whether the trip was for commuting, business or personal use.")
-                trip == null -> GleoReply("fail", "There is no finished trip waiting for a purpose.")
+                trip == null -> GleoReply("fail", "There is no recently finished trip waiting for a purpose.")
                 else -> {
                     val user = params.str("user_name")?.let { n -> _settings.value.users.firstOrNull { it.name == n } }
-                    val updated = classifyTrip(trip.id, purpose, user, params.str("memo") ?: "", source = "음성")!!
+                    val updated = classifyTrip(trip.id, purpose, user, sanitizeMemo(params.str("memo")), source = "음성")!!
                     GleoReply(
                         "success",
                         "The last trip of ${"%.0f".format(updated.distanceKm)} km was logged as ${purpose.name.lowercase()} use.",
+                        // the reply is a broadcast: only distance and purpose, never destinations or addresses
                         JsonArray(listOf(buildJsonObject {
                             put("distanceKm", TripLogbook.round1(updated.distanceKm))
                             put("purpose", purpose.label)
-                            put("date", TripLogbook.localDate(updated.startEpochMs).toString())
                         })),
                     )
                 }
@@ -338,6 +359,14 @@ class AutoBriefCore(
 
     companion object {
         private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+        const val VOICE_CLASSIFY_WINDOW_MS = 30 * 60_000L
+        const val PIN_ATTEMPTS_BEFORE_LOCK = 5
+        const val PIN_LOCK_MS = 5 * 60_000L
+        private const val MEMO_MAX = 80
+
+        /** Memo text arrives from voice or the screen: one line, no control characters, bounded length. */
+        fun sanitizeMemo(raw: String?): String =
+            (raw ?: "").replace(Regex("[\\p{Cntrl}]"), " ").trim().take(MEMO_MAX)
 
         fun sha256(s: String): String =
             MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }

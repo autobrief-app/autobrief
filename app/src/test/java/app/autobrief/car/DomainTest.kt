@@ -250,8 +250,9 @@ class CoreAndGleoTest {
 
     @Test fun custodyNeedsConsentAndEarlyEndIsReportedAsEarly() {
         val c = core(AppSettings(familyWebhookUrl = "https://example.invalid/family"))
-        assertNull(c.startCustody(driverConsented = false, notifyFamily = true))
+        assertNull(c.startCustody(driverConsented = true, notifyFamily = true)) // no owner PIN yet: refused
         c.setCustodyPin("2580")
+        assertNull(c.startCustody(driverConsented = false, notifyFamily = true))
         c.onNavi(NaviEvent.Destination("우리집: 한빛마을 3단지 104동 1802호", null, 11_000, 1_500, null))
         assertNotNull(c.startCustody(driverConsented = true, notifyFamily = true))
         assertEquals("한빛마을 3단지 동·호수 비공개", c.custody.value!!.destinationLabel)
@@ -261,6 +262,44 @@ class CoreAndGleoTest {
         assertEquals(2, texts.size)
         assertTrue(texts.last().contains("도착 전에 종료"))
         assertTrue(c.outbox.value.all { it.deliveredEpochMs == null }) // nothing is "sent" until a webhook answers 2xx
+    }
+}
+
+class SecurityTest {
+    private var now = at(2026, 10, 23, 22)
+    private fun core() = AutoBriefCore(initialSettings = AppSettings(familyWebhookUrl = "https://example.invalid/f"), clock = { now })
+
+    @Test fun repeatedWrongPinsLockAndAlert() {
+        val c = core()
+        c.setCustodyPin("2580")
+        c.startCustody(driverConsented = true, notifyFamily = true)
+        repeat(4) { assertEquals(AutoBriefCore.EndResult.WRONG_PIN, c.endCustodyEarly("0000")) }
+        assertEquals(AutoBriefCore.EndResult.LOCKED, c.endCustodyEarly("0000"))
+        assertEquals(AutoBriefCore.EndResult.LOCKED, c.endCustodyEarly("2580")) // even the right PIN waits
+        now += AutoBriefCore.PIN_LOCK_MS + 1
+        assertEquals(AutoBriefCore.EndResult.ENDED, c.endCustodyEarly("2580"))
+        assertTrue(c.outbox.value.any { it.kind == "custody_pin_alert" })
+    }
+
+    @Test fun voiceCannotRelabelOldTrips() {
+        val c = core()
+        c.onVehicle(VehicleEvent.Odometer(100.0)); c.onVehicle(VehicleEvent.GearChanged(Gear.DRIVE))
+        now += 20 * 60_000
+        c.onVehicle(VehicleEvent.Odometer(120.0)); c.onVehicle(VehicleEvent.GearChanged(Gear.PARK))
+        now += AutoBriefCore.VOICE_CLASSIFY_WINDOW_MS + 1
+        assertEquals("fail", c.handleGleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("""{"purpose":"BUSINESS"}""")).status)
+        assertEquals(TripPurpose.UNCLASSIFIED, c.trips.value.single().purpose)
+    }
+
+    @Test fun csvNeutralisesFormulaCellsAndMemoIsBounded() {
+        val book = TripLogbook()
+        book.drive(at(2026, 1, 5), 10.0, at(2026, 1, 5, 10), 25.0)
+        book.classify(book.records.single().id, TripPurpose.BUSINESS, CarUser("=cmd", "영업팀"), "=HYPERLINK(\"x\")", "화면")
+        val csv = String(LogbookExport.toCsv(LogbookExport.build(book.records, AppSettings(), TaxPeriods.month(2026, 1))), Charsets.UTF_8)
+        assertTrue(csv.contains(",'=cmd,"))
+        assertFalse(csv.contains(",=cmd,"))
+        assertEquals(80, AutoBriefCore.sanitizeMemo("가".repeat(200)).length)
+        assertEquals("a b", AutoBriefCore.sanitizeMemo("a\nb"))
     }
 }
 

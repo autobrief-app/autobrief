@@ -50,12 +50,13 @@ class MainActivity : ComponentActivity() {
         val params = intentParams(intent)
         val notify = (params["notify_family"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: true
         startTab.value = 2
-        consentRequest.value = ConsentRequest(notifyFamily = notify)
-        sendGleoResponse(
-            this, GleoContract.START_DESIGNATED_DRIVER_MODE,
-            AutoBriefCore.GleoReply("asking", "The designated driver must agree on the screen before the mode starts."),
-            core.gleoMode(),
-        )
+        val reply = if (core.custodyPinSet) {
+            consentRequest.value = ConsentRequest(notifyFamily = notify)
+            AutoBriefCore.GleoReply("asking", "The designated driver must agree on the screen before the mode starts.")
+        } else {
+            AutoBriefCore.GleoReply("fail", "The owner has not set a PIN for designated driver mode yet.")
+        }
+        sendGleoResponse(this, GleoContract.START_DESIGNATED_DRIVER_MODE, reply, core.gleoMode())
     }
 
     private fun requestRuntimePermissions() {
