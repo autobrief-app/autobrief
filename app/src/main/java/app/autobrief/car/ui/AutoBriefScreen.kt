@@ -300,7 +300,7 @@ private fun CustodyTab(core: AutoBriefCore, consentRequest: MutableState<Consent
 
     val active = session
     Card {
-        Text("대리운전, 발렛 모드", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text("대리운전, 발레 모드", fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Text("순정 내비게이션은 그대로 쓰고, 이 앱은 주행 기록과 차주가 등록한 연락처로의 출발, 도착 알림을 맡습니다. 동, 호수는 이 앱 화면에서만 가립니다.", color = Muted)
         if (active == null) {
             if (settings.custodyPinHash.isEmpty()) Text("먼저 설정 탭에서 차주 PIN을 정해 주세요(기사님이 모드를 끄지 못하게 합니다).", color = Accent)
