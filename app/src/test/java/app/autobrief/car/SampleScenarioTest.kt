@@ -118,8 +118,23 @@ class SampleScenarioTest {
         now += 60_000; core.tick()
         val sleep = core.sleep.value
         assertEquals(setOf(SeatPos.ROW2_RIGHT), sleep.sleeping)
+        val rearReclinePct = Math.round(core.vehicle.value.seats.getValue(SeatPos.ROW2_RIGHT).reclineRatio!! * 100).toInt()
+        val rearHint = sleep.driverHint!!
         val gleoModeWhileAsleep = core.gleoMode()
         core.onVehicle(VehicleEvent.Backrest(SeatPos.ROW2_RIGHT, 95)) // sits up again
+
+        // Mode 2 again, front passenger (the short-form footage shows a front-seat sleeper)
+        now = t(today, 15, 30)
+        core.onVehicle(VehicleEvent.SeatOccupancy(SeatPos.ROW1_RIGHT, true))
+        core.onVehicle(VehicleEvent.SeatBelt(SeatPos.ROW1_RIGHT, true))
+        core.onVehicle(VehicleEvent.ReadingLight(SeatPos.ROW1_RIGHT, false))
+        core.onVehicle(VehicleEvent.Backrest(SeatPos.ROW1_RIGHT, 35))
+        now += 60_000; core.tick()
+        val front = core.sleep.value
+        assertEquals(setOf(SeatPos.ROW1_RIGHT), front.sleeping)
+        val frontReclinePct = Math.round(core.vehicle.value.seats.getValue(SeatPos.ROW1_RIGHT).reclineRatio!! * 100).toInt()
+        val frontHint = front.driverHint!!
+        core.onVehicle(VehicleEvent.Backrest(SeatPos.ROW1_RIGHT, 95))
 
         // Mode 3: designated driver 22:40 -> 23:06, 45,218 -> 45,229 km, one hard brake
         core.setCustodyPin("2580")
@@ -166,7 +181,9 @@ class SampleScenarioTest {
         assertEquals(9117.0, ys.businessUseKm, 1e-9)
         assertEquals("94.6", "%.1f".format(ys.businessUseRatio!! * 100))
         assertEquals(36, ms.rowCount)
-        assertEquals(listOf(20, 100), dimmed) // dimmed to 20 %, then back to the level the cabin had
+        assertEquals(listOf(20, 100, 20, 100), dimmed) // dimmed to 20 %, then back to the level the cabin had (rear, then front)
+        assertEquals(72, rearReclinePct)
+        assertEquals(65, frontReclinePct)
 
         val summary = buildJsonObject {
             put("label", banner)
@@ -179,7 +196,9 @@ class SampleScenarioTest {
             put("today_start_km", todayTrip.startOdometerKm); put("today_end_km", todayTrip.endOdometerKm)
             put("today_distance_km", todayTrip.distanceKm); put("today_toll_estimate_krw", todayTrip.routeTollEstimateKrw ?: -1)
             put("today_purpose", todayTrip.purpose.label); put("today_classified_by", todayTrip.classifiedBy ?: "")
-            put("sleep_seat", SeatPos.ROW2_RIGHT.label); put("sleep_recline_pct", 72); put("sleep_hold_s", 60)
+            put("sleep_seat", SeatPos.ROW2_RIGHT.label); put("sleep_recline_pct", rearReclinePct); put("sleep_hold_s", 60)
+            put("sleep_hint", rearHint)
+            put("sleep_front_seat", SeatPos.ROW1_RIGHT.label); put("sleep_front_recline_pct", frontReclinePct); put("sleep_front_hint", frontHint)
             put("sleep_ambient_dim_to", dimmed.firstOrNull() ?: -1); put("gleo_mode_while_asleep", gleoModeWhileAsleep)
             put("custody_destination", session.destinationLabel ?: ""); put("custody_start", "22:40"); put("custody_end", "23:06")
             put("custody_distance_km", report.distanceKm ?: -1.0); put("custody_overspeed", report.overspeedEpisodes)
