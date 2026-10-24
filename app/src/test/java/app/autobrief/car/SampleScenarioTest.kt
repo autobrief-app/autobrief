@@ -15,7 +15,9 @@ import app.autobrief.car.model.Gear
 import app.autobrief.car.model.SeatPos
 import app.autobrief.car.model.TripPurpose
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -141,10 +143,12 @@ class SampleScenarioTest {
         now = t(today, 22, 40)
         core.onNavi(NaviEvent.Destination("우리집: 한빛마을 3단지 104동 1802호", null, 11_000, 1_560, null))
         val session = core.startCustody(driverConsented = true, notifyFamily = true)!!
-        core.onNavi(NaviEvent.SpeedLimit(60))
+        val speedLimitKph = 60
+        core.onNavi(NaviEvent.SpeedLimit(speedLimitKph))
         core.onVehicle(VehicleEvent.GearChanged(Gear.DRIVE))
         // calm acceleration (+6 km/h per second), one hard brake 52 -> 34 km/h, calm stop
-        listOf(0.0, 6.0, 12.0, 18.0, 24.0, 30.0, 36.0, 42.0, 48.0, 52.0, 34.0, 40.0, 46.0, 52.0, 56.0, 48.0, 40.0, 32.0, 24.0, 16.0, 8.0, 0.0).forEachIndexed { i, v ->
+        val speeds = listOf(0.0, 6.0, 12.0, 18.0, 24.0, 30.0, 36.0, 42.0, 48.0, 52.0, 34.0, 40.0, 46.0, 52.0, 56.0, 48.0, 40.0, 32.0, 24.0, 16.0, 8.0, 0.0)
+        speeds.forEachIndexed { i, v ->
             now = t(today, 22, 41) + i * 1_000L
             core.onVehicle(VehicleEvent.Speed(v))
         }
@@ -204,6 +208,8 @@ class SampleScenarioTest {
             put("custody_distance_km", report.distanceKm ?: -1.0); put("custody_overspeed", report.overspeedEpisodes)
             put("custody_harsh_accel", report.harshAccelEvents); put("custody_harsh_brake", report.harshBrakeEvents)
             put("custody_max_speed_kph", report.maxSpeedKph); put("custody_doors_locked", report.doorsLocked == true)
+            put("custody_speed_limit_kph", speedLimitKph)
+            putJsonArray("custody_speed_trace_kph") { speeds.forEach { add(it) } } // one sample per second, as fed to the engine
             put("outbox_queued", core.outbox.value.size); put("outbox_delivered", core.outbox.value.count { it.deliveredEpochMs != null })
             put("custody_messages", core.outbox.value.joinToString(" | ") { it.payloadJson })
         }
