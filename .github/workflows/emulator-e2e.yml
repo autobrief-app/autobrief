@@ -1,0 +1,134 @@
+# End-to-end test of the AutoBrief demo kit (demo/) on a GitHub-hosted Linux runner.
+#
+# It boots the official Pleos Connect v2.1.0 emulator headless (hardware-accelerated with KVM),
+# installs the debug APK, loads the demo sample, plays the three driving scenarios through the
+# Vehicle Virtual Console and verifies the app's logcat (TRIP_CLOSED per scenario).
+#
+# NOTE: pushing or editing a file under .github/workflows/ needs a token with the `workflow`
+# scope. A token without it is rejected by GitHub with "refusing to allow ... to create or
+# update workflow ... without `workflow` scope".
+#
+# Needs in the repository: demo/, app/ (Gradle project) and tools/fleet-console/fleet_console.py
+# (the webhook receiver the demo sample posts to, reached from the emulator as 10.0.2.2:8787).
+
+name: emulator-e2e
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "demo/**"
+      - ".github/workflows/emulator-e2e.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    env:
+      PYTHONUNBUFFERED: "1" # stream the download/boot progress into the log as it happens
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Free disk space (never the Android SDK)
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:?}/CodeQL"
+          df -h /
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Show runner resources
+        run: |
+          nproc
+          free -g
+          df -h
+          ls -l /dev/kvm
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Point Gradle at the Android SDK
+        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - name: Install the Android emulator and platform-tools
+        # The default step shell has no pipefail, so `yes` getting SIGPIPE does not fail the step;
+        # the exit status is sdkmanager's.
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install emulator platform-tools
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+
+      - name: Cache the Pleos system image zip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/autobrief-pleos
+          key: pleos-x86_64-b4f858d5bcc6c71506d7edfc872bcb9e5a11acaa
+
+      - name: Build the debug APK
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Start the fleet console
+        # Output goes to a file: a background process that keeps the step's stdout open can make
+        # the step wait for it.
+        run: |
+          mkdir -p /tmp/fleet
+          nohup python3 tools/fleet-console/fleet_console.py --port 8787 --data /tmp/fleet > /tmp/fleet-console.log 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8787/api/state > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "the fleet console did not answer on :8787" >&2
+          cat /tmp/fleet-console.log >&2
+          exit 1
+
+      - name: Boot the emulator and install the app
+        run: >
+          python3 demo/setup_emulator.py --headless --no-browser
+          --apk app/build/outputs/apk/debug/app-debug.apk
+          --demo-sample --webhook http://10.0.2.2:8787/hook
+          --out e2e-out
+
+      - name: Start screen recording
+        # 1280x720: the emulator display is 2560x1440, above what the software encoder accepts.
+        # The recording stops by itself after 170 s; the collect step also stops it cleanly.
+        run: |
+          mkdir -p e2e-out
+          nohup adb shell screenrecord --size 1280x720 --time-limit 170 /sdcard/e2e.mp4 > e2e-out/screenrecord.log 2>&1 &
+
+      - name: Play the scenarios and verify
+        run: python3 demo/director.py --scenario all --mode auto --fast --verify --out e2e-out
+
+      - name: Collect the recording, logcat and fleet state
+        if: always()
+        # Best effort: when an earlier step failed the emulator or the console may not exist.
+        run: |
+          mkdir -p e2e-out
+          adb shell pkill -SIGINT screenrecord || echo "screenrecord was not running"
+          sleep 3
+          adb pull /sdcard/e2e.mp4 e2e-out/e2e.mp4 || echo "no screen recording to pull"
+          adb logcat -d > e2e-out/logcat.txt || echo "no logcat to dump"
+          curl -s http://127.0.0.1:8787/api/state > e2e-out/fleet_state.json || echo "no fleet state"
+          cp /tmp/fleet-console.log e2e-out/fleet-console.log || echo "no fleet console log"
+
+      - name: Upload e2e-out
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-out
+          path: e2e-out
+          retention-days: 14
+          if-no-files-found: warn
