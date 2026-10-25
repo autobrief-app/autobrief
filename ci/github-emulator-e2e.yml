@@ -46,6 +46,10 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+          # the udev rule does not always take effect in time on newer images; set the mode directly as well
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+          # without KVM the image boots only to a black screen (the car service never starts), so stop early
+          test -r /dev/kvm && test -w /dev/kvm || { echo "no usable /dev/kvm on this runner"; exit 1; }
 
       - name: Show runner resources
         run: |
