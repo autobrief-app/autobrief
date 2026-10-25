@@ -13,7 +13,7 @@
 ## 전날 준비 (약 30분, 처음 한 번은 이미지 4GB 내려받기 포함)
 
 1. `python3 demo/setup_emulator.py --apk apk/<배포 APK>` — 이미지 설치, 가상 기기 생성, 콜드 부팅, 앱 설치, 가상 콘솔 연결
-2. `python3 tools/fleet-console/fleet_console.py` — 관리자 화면, 브라우저에서 `http://127.0.0.1:8787/`
+2. `python3 tools/fleet-console/fleet_console.py --data ./fleet-data` — 관리자 화면, 브라우저에서 `http://127.0.0.1:8787/`
 3. 앱 설정에서 보내기 주소에 `http://10.0.2.2:8787/hook`을 넣고 저장 → 시연 모드 켜기 → '가상 예시 이력 불러오기'
    (관리자 화면에 1년치 원장이 들어오고 '정상'과 검증 코드가 보이면 준비 끝)
 4. 리허설: `python3 demo/director.py --scenario all --mode step` 을 처음부터 끝까지 두 번
@@ -34,14 +34,24 @@
 
 엑셀을 노트북으로 가져오기: `adb pull /sdcard/Android/data/app.autobrief.car/files/exports/demo/ .`
 
-음성비서(Gleo)가 에뮬레이터에서 응답하지 않으면, Gleo가 앱에 보내는 것과 같은 요청을 adb로 보내고 그렇다고 말합니다:
-`adb shell am broadcast -a GET_LOGBOOK_STATUS -p app.autobrief.car --es ACTION_PARAM '{"period":"THIS_MONTH"}'`
+음성비서(Gleo)가 에뮬레이터에서 응답하지 않으면 그렇다고 말하고 화면 기능으로 진행합니다. 앱의 음성 수신기는 Gleo만 가진
+권한이 있어야 열리므로 adb로 직접 흉내 낼 수 없습니다. 디버그 APK로 리허설할 때만 같은 요청을 이렇게 보낼 수 있습니다:
+`adb shell am broadcast -a app.autobrief.car.debug.DEMO -p app.autobrief.car --es cmd gleo --es function GET_LOGBOOK_STATUS --es params '{"period":"THIS_MONTH"}'`
+(응답은 `adb logcat -s AutoBriefLog`의 `GLEO_REPLY` 줄)
 
 ## 위변조 시연
 
 관리자 화면은 받은 원장 한 줄마다 해시를 다시 계산하고 앞 줄과 이어지는지 봅니다. 시연에서는 노트북에서
 "개인 운행을 업무로 바꾼 위조 기록"을 한 줄 보내 관리자 화면이 '변조 의심'으로 바뀌는 것을 보여 줍니다.
 위조 기록은 차의 기록을 바꾸지 않습니다(관리자 화면 쪽 사본에만 들어감).
+
+```
+python3 tools/fleet-console/forge_demo.py --data ./fleet-data
+```
+
+가장 최근의 '개인' 목적 기록을 '업무'로 바꾸고 해시를 다시 계산해 보냅니다. 관리자 화면은 같은 순번에 다른 내용이
+도착했다고 보고 '변조 의심'과 "같은 번호의 다른 기록이 도착했습니다 (seq N)"를 띄웁니다(이 서버에서 실제 원장 969줄로 확인).
+시연이 끝나면 `fleet-data` 폴더를 지우고 다시 불러오면 '정상'으로 돌아갑니다.
 
 ## 문제가 생기면
 
