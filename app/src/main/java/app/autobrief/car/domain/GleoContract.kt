@@ -14,9 +14,9 @@ import kotlinx.serialization.json.put
  */
 object GleoContract {
     const val LOG_TRIP_PURPOSE = "LOG_TRIP_PURPOSE"
-    const val SET_SLEEP_CARE = "SET_SLEEP_CARE"
-    const val START_DESIGNATED_DRIVER_MODE = "START_DESIGNATED_DRIVER_MODE"
-    val FUNCTIONS = setOf(LOG_TRIP_PURPOSE, SET_SLEEP_CARE, START_DESIGNATED_DRIVER_MODE)
+    const val GET_LOGBOOK_STATUS = "GET_LOGBOOK_STATUS"
+    const val SEND_LOGBOOK = "SEND_LOGBOOK"
+    val FUNCTIONS = setOf(LOG_TRIP_PURPOSE, GET_LOGBOOK_STATUS, SEND_LOGBOOK)
 
     const val EXTRA_ACTION_PARAM = "ACTION_PARAM"
     const val RESPONSE_ACTION = "ai.pleos.playground.intent.action.APP_ACTION_RESPONSE"
@@ -43,11 +43,11 @@ object GleoContract {
         }
     }
 
-    fun response(functionName: String, reply: AutoBriefCore.GleoReply, mode: String): String = buildJsonObject {
+    fun response(functionName: String, reply: AutoBriefCore.GleoReply): String = buildJsonObject {
         put("functionName", functionName)
         put("status", reply.status)
         put("message", reply.message)
         reply.data?.let { put("data", it.toString()) }
-        put("mode", mode)
+        put("mode", "voice")
     }.toString()
 }

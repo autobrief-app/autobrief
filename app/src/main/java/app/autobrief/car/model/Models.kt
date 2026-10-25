@@ -7,8 +7,8 @@ enum class Gear { PARK, REVERSE, NEUTRAL, DRIVE, UNKNOWN }
 
 /**
  * Logbook categories of the NTS form 「업무용승용차 운행기록부」: column ⑧ 출·퇴근용 and ⑨ 일반 업무용
- * count as business use; everything else is non-business. A trip stays UNCLASSIFIED until the user
- * picks a purpose — it is never assumed to be business.
+ * count as business use; everything else is non-business. A trip stays UNCLASSIFIED until a rule the
+ * owner set up (home/office/client places) or the user picks a purpose — it is never assumed to be business.
  */
 @Serializable
 enum class TripPurpose(val label: String, val countsAsBusiness: Boolean) {
@@ -17,11 +17,27 @@ enum class TripPurpose(val label: String, val countsAsBusiness: Boolean) {
     BUSINESS("일반 업무", true),
     PERSONAL("비업무", false),
     UNLOGGED_GAP("미기록 구간", false),
+    ;
+
+    val isUserPurpose: Boolean get() = this == COMMUTE || this == BUSINESS || this == PERSONAL
 }
 
-/** Column ④ 사용자: the person who used the car (not necessarily the driver, e.g. with a designated driver). */
+/** Who set a trip's purpose; shown in the remarks column so an auditor can tell the sources apart. */
+object ClassifiedBy {
+    const val SCREEN = "화면"
+    const val VOICE = "음성"
+    const val AUTO = "자동"
+}
+
+/** Column ④ 사용자: the person who used the car. */
 @Serializable
 data class CarUser(val name: String, val department: String)
+
+/** Where a trip's dashboard values came from. */
+object TripSource {
+    const val SDK = "SDK"
+    const val SAMPLE = "가상 예시"
+}
 
 @Serializable
 data class TripRecord(
@@ -36,11 +52,37 @@ data class TripRecord(
     /** NaviHelper DestinationInfo.tollFare at departure: the navigation's toll estimate for the route, not a charge. */
     val routeTollEstimateKrw: Int? = null,
     val destinationName: String? = null,
-    /** "화면" or "음성" once classified; null while unclassified. */
+    /** [ClassifiedBy] once classified; null while unclassified. */
     val classifiedBy: String? = null,
-    val designatedDriver: Boolean = false,
+    /** Place labels matched at departure and arrival ("집", "회사", a client name); coordinates are never stored. */
+    val startPlace: String? = null,
+    val endPlace: String? = null,
+    /** The rule that classified the trip automatically, e.g. "집→회사". */
+    val autoReason: String? = null,
+    /** The purpose changed after it was first set; the ledger keeps every version. */
+    val amended: Boolean = false,
+    val source: String = TripSource.SDK,
 ) {
     val distanceKm: Double get() = endOdometerKm - startOdometerKm
+}
+
+@Serializable
+data class GeoPoint(val lat: Double, val lon: Double)
+
+@Serializable
+enum class PlaceKind { HOME, OFFICE, CLIENT }
+
+/** A place the classifier matches against; HOME/OFFICE normally come from the car's navigation bookmarks. */
+@Serializable
+data class Place(val label: String, val kind: PlaceKind, val point: GeoPoint, val fromNavigation: Boolean = false)
+
+/** Corporate tax brackets for business years starting 2026-01-01, local income tax (10%) included. */
+@Serializable
+enum class TaxRate(val label: String, val ratePct: Double) {
+    CORP_11("법인 과세표준 2억 원 이하 11.0%", 11.0),
+    CORP_22("법인 2억 초과 200억 원 이하 22.0%", 22.0),
+    CORP_24("법인 200억 초과 3,000억 원 이하 24.2%", 24.2),
+    CORP_27("법인 3,000억 원 초과 27.5%", 27.5),
 }
 
 @Serializable
@@ -53,93 +95,29 @@ data class AppSettings(
     val fiscalYearStartMonth: Int = 1,
     val users: List<CarUser> = emptyList(),
     val defaultUserIndex: Int = 0,
-    /** The owner's own HTTPS endpoint; it forwards to cloud storage, e-mail or a messenger. Empty = not set. */
+    /** The company's or owner's endpoint: it receives every ledger entry and the period workbooks. Empty = not set. */
     val archiveWebhookUrl: String = "",
-    val familyWebhookUrl: String = "",
-    val sleepCareEnabled: Boolean = true,
-    val dimAmbientOnSleep: Boolean = true,
-    /** SHA-256 of salt + PIN; empty = no PIN set yet. */
-    val custodyPinHash: String = "",
-    val custodyPinSalt: String = "",
-    /** Shows the labelled demo-signal buttons (the Virtual Console lacks some cards); family notices are off meanwhile. */
-    val demoMode: Boolean = false,
+    /** Places the owner registered in the app (fallback when navigation has no home/office bookmark, and clients). */
+    val places: List<Place> = emptyList(),
+    val autoClassify: Boolean = true,
+    /** Annual car-related cost of the business year (감가상각비·리스료, 유류비, 보험료, 수리비, 자동차세, 통행료). 0 = not entered. */
+    val annualCarCostKrw: Long = 0,
+    /** Depreciation (or the depreciation-equivalent part of a lease/rent) inside [annualCarCostKrw]. */
+    val annualDepreciationKrw: Long = 0,
+    val taxRate: TaxRate = TaxRate.CORP_22,
+    /** SHA-256 of salt + PIN; empty = no admin PIN yet. */
+    val adminPinHash: String = "",
+    val adminPinSalt: String = "",
+    /** YYYY-MM of the last month whose workbook was closed automatically. */
+    val lastMonthlyCloseYm: String = "",
 )
-
-/** Passenger seats the sleep detector watches (the driver seat is never a sleep candidate). */
-@Serializable
-enum class SeatPos(val label: String) {
-    ROW1_RIGHT("조수석"),
-    ROW2_LEFT("2열 왼쪽"),
-    ROW2_RIGHT("2열 오른쪽"),
-}
-
-data class SeatState(
-    val occupied: Boolean? = null,
-    val belted: Boolean? = null,
-    /** Raw Pleos backrest position; AAOS convention: min = fully reclined, max = most upright. */
-    val backrestPosition: Int? = null,
-    val backrestMin: Int? = null,
-    val backrestMax: Int? = null,
-    val readingLightOn: Boolean? = null,
-) {
-    /** 0 = upright, 1 = fully reclined; null when the position or its bounds are unknown. */
-    val reclineRatio: Double?
-        get() {
-            val pos = backrestPosition ?: return null
-            val min = backrestMin ?: return null
-            val max = backrestMax ?: return null
-            if (max <= min) return null
-            return ((max - pos).toDouble() / (max - min)).coerceIn(0.0, 1.0)
-        }
-}
 
 data class VehicleSnapshot(
     val sdkConnected: Boolean = false,
     val gear: Gear = Gear.UNKNOWN,
     val odometerKm: Double? = null,
-    val speedKph: Double? = null,
     val vin: String? = null,
-    val seats: Map<SeatPos, SeatState> = emptyMap(),
-    val doorsLocked: Boolean? = null,
-    val ambientBrightnessBounds: IntRange? = null,
 )
-
-@Serializable
-enum class CustodyEndReason { ARRIVED, OWNER_ENDED_EARLY, INTERRUPTED }
-
-/** A running designated-driver session, saved so a restart can report that recording stopped. */
-@Serializable
-data class ActiveCustody(
-    val sessionId: String,
-    val startEpochMs: Long,
-    val startOdometerKm: Double?,
-    val destinationLabel: String?,
-    val notifyFamily: Boolean,
-)
-
-@Serializable
-data class CustodyReport(
-    val sessionId: String,
-    val startEpochMs: Long,
-    val endEpochMs: Long,
-    val startOdometerKm: Double?,
-    val endOdometerKm: Double?,
-    val destinationLabel: String?,
-    val maxSpeedKph: Double,
-    val overspeedEpisodes: Int,
-    val harshAccelEvents: Int,
-    val harshBrakeEvents: Int,
-    val endReason: CustodyEndReason,
-    val doorsLocked: Boolean?,
-    val driverConsented: Boolean,
-    val intermediateStops: Int = 0,
-    /** 0 = no speed reading arrived (permission refused or no speed source), so the counts mean nothing. */
-    val speedSamples: Int = 0,
-    val speedLimitKnown: Boolean = false,
-) {
-    val distanceKm: Double?
-        get() = if (startOdometerKm != null && endOdometerKm != null) endOdometerKm - startOdometerKm else null
-}
 
 /** A message waiting for the owner's webhook; `deliveredEpochMs` is set only after an HTTP 2xx. */
 @Serializable

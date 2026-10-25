@@ -1,29 +1,29 @@
 {
   "packageName": "app.autobrief.car",
-  "appDescription": "An in-car assistant that keeps the business-car logbook from the dashboard odometer, notices sleeping passengers, and records designated-driver trips for the owner.",
+  "appDescription": "A business-car logbook that writes itself: it records the dashboard odometer at every ignition cycle, classifies commutes and client visits from the places the owner registered, and produces the National Tax Service vehicle logbook.",
   "invokeWord": "오토브리프",
-  "version": "1.6.0",
+  "version": "2.0.0",
   "actionCalls": [
     {
       "type": "function",
       "function": {
         "name": "LOG_TRIP_PURPOSE",
-        "description": "Record the purpose of the most recently finished trip in the business-car logbook.",
+        "description": "Record or correct the purpose of the trip that just ended (within the last 30 minutes) in the business-car logbook. Use when the user says what the last drive was for, e.g. '방금 운행 업무로 기록해', '거래처 미팅이었어', '출근한 거야', '개인 용무였어', '방금 건 김예시가 탄 거야'. COMMUTE = going to or from work, BUSINESS = client visits, meetings, deliveries and other work, PERSONAL = anything private.",
         "parameters": {
           "type": "object",
           "properties": {
             "purpose": {
               "type": "string",
               "enum": ["COMMUTE", "BUSINESS", "PERSONAL"],
-              "description": "Purpose of the trip: commuting, other business use, or personal use."
+              "description": "Purpose of the trip: COMMUTE (출퇴근), BUSINESS (일반 업무) or PERSONAL (비업무)."
             },
             "memo": {
               "type": "string",
-              "description": "A short note on the trip that goes into the remarks column of the logbook."
+              "description": "Short note for the remarks column, such as the client or the errand (e.g. '가상고객사 미팅'). Omit if the user gave none."
             },
             "user_name": {
               "type": "string",
-              "description": "Name of the registered person who used the car on this trip."
+              "description": "Name of the registered person who used the car on this trip, only if the user said it."
             }
           },
           "required": ["purpose"]
@@ -34,17 +34,18 @@
     {
       "type": "function",
       "function": {
-        "name": "SET_SLEEP_CARE",
-        "description": "Turn the passenger sleep care feature on or off.",
+        "name": "GET_LOGBOOK_STATUS",
+        "description": "Tell the user the logbook totals: number of trips, distance, business-use ratio and how many trips still need a purpose. Use for questions such as '이번 달 업무 비율 얼마야', '운행기록부 상태 알려줘', '올해 업무용으로 몇 퍼센트 탔어', '목적 안 정한 운행 있어?'.",
         "parameters": {
           "type": "object",
           "properties": {
-            "enabled": {
-              "type": "boolean",
-              "description": "True to turn passenger sleep care on, false to turn it off."
+            "period": {
+              "type": "string",
+              "enum": ["THIS_MONTH", "THIS_YEAR"],
+              "description": "THIS_MONTH for the current month (default), THIS_YEAR for the current business year."
             }
           },
-          "required": ["enabled"]
+          "required": []
         },
         "component": "service"
       }
@@ -52,19 +53,20 @@
     {
       "type": "function",
       "function": {
-        "name": "START_DESIGNATED_DRIVER_MODE",
-        "description": "Open the designated-driver mode screen, where the driver agrees before the trip record and owner notices start.",
+        "name": "SEND_LOGBOOK",
+        "description": "Create the National Tax Service format logbook workbook for a period, save it in the car and send it to the address the owner registered (company server or e-mail relay). Use for requests such as '지난달 운행기록부 보내줘', '이번 달 운행일지 만들어줘', '올해 운행기록부 회사로 보내'.",
         "parameters": {
           "type": "object",
           "properties": {
-            "notify_family": {
-              "type": "boolean",
-              "description": "Whether to notify the owner's registered contacts at departure and arrival."
+            "period": {
+              "type": "string",
+              "enum": ["THIS_MONTH", "LAST_MONTH", "BUSINESS_YEAR"],
+              "description": "Which period to write: THIS_MONTH (default), LAST_MONTH or the current BUSINESS_YEAR."
             }
           },
           "required": []
         },
-        "component": "activity"
+        "component": "service"
       }
     }
   ]

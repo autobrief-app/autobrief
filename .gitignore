@@ -11,3 +11,11 @@ local.properties
 *.jks
 *.keystore
 keystore.properties
+
+# tool homes created when building in the gradle container (HOME=/work)
+.android/
+.kotlin/
+.m2/
+__pycache__/
+.ruff_cache/
+fleet-data/

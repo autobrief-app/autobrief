@@ -1,8 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">오토브리프</string>
-    <string name="monitor_channel">주행 기록</string>
-    <string name="monitor_text">계기판 주행거리를 운행기록부에 기록하고 있습니다.</string>
-    <string name="sleep_channel">수면 케어 안내</string>
-    <string name="sleep_title">동승자가 잠든 것 같습니다</string>
+    <string name="monitor_channel">운행 기록</string>
+    <string name="monitor_text">계기판 누적거리로 운행기록부를 쓰고 있습니다.</string>
 </resources>

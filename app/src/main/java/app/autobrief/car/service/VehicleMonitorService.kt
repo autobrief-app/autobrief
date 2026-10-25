@@ -12,23 +12,28 @@ import android.os.IBinder
 import app.autobrief.car.R
 import app.autobrief.car.core
 import app.autobrief.car.domain.AutoBriefCore
+import app.autobrief.car.model.Gear
 import app.autobrief.car.navi.PleosNaviSource
 import app.autobrief.car.notify.WebhookSender
 import app.autobrief.car.vehicle.CarServices
 import app.autobrief.car.vehicle.PleosVehicleSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
  * Keeps the logbook running for every ignition cycle, not only while the screen is open: listens to the
- * Pleos Vehicle and NaviHelper SDKs and the AAOS speed property, ticks the time-based rules, and flushes
- * the outbox. Started at boot and when the app opens.
+ * Pleos Vehicle and NaviHelper SDKs, ticks the time-based rules, asks navigation for the position while a
+ * trip is open, and sends queued ledger entries and workbooks. Started at boot and when the app opens.
  */
 class VehicleMonitorService : Service() {
 
@@ -39,45 +44,45 @@ class VehicleMonitorService : Service() {
     private lateinit var car: CarServices
     private lateinit var sender: WebhookSender
 
+    @OptIn(FlowPreview::class)
     override fun onCreate() {
         super.onCreate()
         startAsForeground()
         core = applicationContext.core
         vehicle = PleosVehicleSource(this) { e -> scope.launch { core.onVehicle(e) } }
         navi = PleosNaviSource(this) { e -> scope.launch { core.onNavi(e) } }
-        car = CarServices(this, { e -> scope.launch { core.onVehicle(e) } }, { r -> scope.launch { core.setRestricted(r) } })
+        car = CarServices(this) { r -> scope.launch { core.setRestricted(r) } }
         sender = WebhookSender(core)
-        core.control = vehicle
+        core.naviControl = AutoBriefCore.NaviControl { navi.requestLocation() }
         vehicle.start()
         navi.start()
         car.start()
-        scope.launch {
-            // a quiet heads-up so the hint reaches the driver even when navigation is in front
-            core.sleep.collect { state ->
-                val nm = getSystemService(NotificationManager::class.java)
-                val hint = state.driverHint
-                if (hint == null) nm.cancel(SLEEP_NOTIFICATION_ID)
-                else nm.notify(SLEEP_NOTIFICATION_ID, Notification.Builder(this@VehicleMonitorService, SLEEP_CHANNEL)
-                    .setSmallIcon(android.R.drawable.ic_lock_idle_low_battery)
-                    .setContentTitle(getString(R.string.sleep_title))
-                    .setContentText(hint)
-                    .setOnlyAlertOnce(true)
-                    .build())
-            }
-        }
         scope.launch {
             var n = 0
             while (isActive) {
                 delay(TICK_MS)
                 core.tick()
-                if (core.custody.value != null) navi.refresh() // keeps remaining distance current for arrival
-                if (++n % FLUSH_EVERY_TICKS == 0) withContext(Dispatchers.IO) { sender.flush() }
+                n++
+                // the position is needed at departure and arrival; while driving keep it reasonably fresh
+                if (core.vehicle.value.gear == Gear.DRIVE || core.vehicle.value.gear == Gear.REVERSE) {
+                    if (n % LOCATION_EVERY_TICKS_DRIVING == 0) navi.requestLocation()
+                } else if (n % LOCATION_EVERY_TICKS_PARKED == 0) {
+                    navi.requestLocation()
+                }
+                if (n % BOOKMARKS_EVERY_TICKS == 0) navi.requestBookmarks()
+                if (n % FLUSH_EVERY_TICKS == 0) withContext(Dispatchers.IO) { sender.flush() }
             }
+        }
+        scope.launch {
+            // new ledger entries reach the company endpoint within seconds, not at the next periodic flush
+            core.outbox.map { list -> list.count { it.deliveredEpochMs == null } }
+                .distinctUntilChanged()
+                .debounce(FLUSH_DEBOUNCE_MS)
+                .collect { pending -> if (pending > 0) withContext(Dispatchers.IO) { sender.flush() } }
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_SPEED_PERMISSION_GRANTED) car.startSpeed()
         if (intent?.action == ACTION_FLUSH) scope.launch(Dispatchers.IO) { sender.flush() }
         return START_STICKY
     }
@@ -89,21 +94,15 @@ class VehicleMonitorService : Service() {
         vehicle.stop()
         navi.stop()
         car.stop()
-        core.control = null
+        core.naviControl = null
         super.onDestroy()
     }
 
     private fun startAsForeground() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, getString(R.string.monitor_channel), NotificationManager.IMPORTANCE_MIN))
-        nm.createNotificationChannel(
-            NotificationChannel(SLEEP_CHANNEL, getString(R.string.sleep_channel), NotificationManager.IMPORTANCE_HIGH).apply {
-                setSound(null, null) // never wake the sleeper
-                enableVibration(false)
-            },
-        )
         val notification = Notification.Builder(this, CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setSmallIcon(R.drawable.ic_stat_logbook)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(getString(R.string.monitor_text))
             .setOngoing(true)
@@ -116,14 +115,15 @@ class VehicleMonitorService : Service() {
     }
 
     companion object {
-        const val ACTION_SPEED_PERMISSION_GRANTED = "app.autobrief.car.SPEED_PERMISSION_GRANTED"
         const val ACTION_FLUSH = "app.autobrief.car.FLUSH"
         private const val CHANNEL = "monitor"
-        private const val SLEEP_CHANNEL = "sleep_hint"
         private const val NOTIFICATION_ID = 1
-        private const val SLEEP_NOTIFICATION_ID = 2
-        private const val TICK_MS = 5_000L
-        private const val FLUSH_EVERY_TICKS = 6
+        private const val TICK_MS = 2_000L
+        private const val LOCATION_EVERY_TICKS_DRIVING = 3
+        private const val LOCATION_EVERY_TICKS_PARKED = 30
+        private const val BOOKMARKS_EVERY_TICKS = 150
+        private const val FLUSH_EVERY_TICKS = 15
+        private const val FLUSH_DEBOUNCE_MS = 800L
 
         fun start(context: Context, action: String? = null) {
             val intent = Intent(context, VehicleMonitorService::class.java).setAction(action)

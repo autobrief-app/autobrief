@@ -1,11 +1,13 @@
 package app.autobrief.car.domain
 
 import app.autobrief.car.model.CarUser
+import app.autobrief.car.model.ClassifiedBy
 import app.autobrief.car.model.Gear
 import app.autobrief.car.model.TripPurpose
 import app.autobrief.car.model.TripRecord
 import java.time.Instant
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.ZoneId
 import kotlin.math.abs
 import kotlin.math.round
@@ -13,7 +15,7 @@ import kotlin.math.round
 val KST: ZoneId = ZoneId.of("Asia/Seoul")
 
 /**
- * Mode 1 engine: turns gear and odometer events into logbook rows.
+ * Turns gear and odometer events into logbook rows.
  *
  * A trip opens when the gear leaves PARK and closes when it returns to PARK; both ends latch the
  * dashboard odometer (Pleos Odometer.getCurrentDistanceDriven, km). If the odometer moved while the app
@@ -27,15 +29,15 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
     private var lastGear: Gear = Gear.UNKNOWN
     private var latestOdometerKm: Double? = null
 
-    private data class OpenTrip(
+    data class OpenTrip(
         val startEpochMs: Long,
         val startOdometerKm: Double,
         val tollEstimateKrw: Int?,
         val destinationName: String?,
-        val designatedDriver: Boolean,
     )
 
     val records: List<TripRecord> get() = rows.toList()
+    val openTrip: OpenTrip? get() = open
     val tripInProgress: Boolean get() = open != null
 
     /** Gear left P before the first odometer value arrived (cold start): the trip opens at that first value. */
@@ -55,14 +57,14 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
         val last = rows.lastOrNull() ?: return emptyList()
         if (odo - last.endOdometerKm < GAP_THRESHOLD_KM) return emptyList()
         val gapRow = TripRecord(
-            id = "GAP-${nowEpochMs}",
+            id = "GAP-$nowEpochMs",
             startEpochMs = last.endEpochMs,
             endEpochMs = nowEpochMs,
             startOdometerKm = last.endOdometerKm,
             endOdometerKm = odo,
             purpose = TripPurpose.UNLOGGED_GAP,
             user = null,
-            memo = "앱이 기록하지 못한 주행(비업무로 처리)",
+            memo = GAP_MEMO,
         )
         rows += gapRow
         return listOf(gapRow)
@@ -74,7 +76,6 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
         nowEpochMs: Long,
         routeTollEstimateKrw: Int? = null,
         destinationName: String? = null,
-        designatedDriver: Boolean = false,
     ): List<TripRecord> {
         val previous = lastGear
         lastGear = gear
@@ -82,13 +83,13 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
         val odo = latestOdometerKm
         if (odo == null) {
             // remember the departure; the trip opens when the first odometer value arrives
-            pendingStart = if (gear != Gear.PARK) OpenTrip(nowEpochMs, 0.0, routeTollEstimateKrw, destinationName, designatedDriver) else null
+            pendingStart = if (gear != Gear.PARK) OpenTrip(nowEpochMs, 0.0, routeTollEstimateKrw, destinationName) else null
             return emptyList()
         }
         val added = mutableListOf<TripRecord>()
         if (gear != Gear.PARK && open == null && previous != gear) {
             added += gapRowIfMoved(odo, nowEpochMs)
-            open = OpenTrip(nowEpochMs, odo, routeTollEstimateKrw, destinationName, designatedDriver)
+            open = OpenTrip(nowEpochMs, odo, routeTollEstimateKrw, destinationName)
         } else if (gear == Gear.PARK) {
             val trip = open ?: return added
             open = null
@@ -105,7 +106,6 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
                 memo = "",
                 routeTollEstimateKrw = trip.tollEstimateKrw,
                 destinationName = trip.destinationName,
-                designatedDriver = trip.designatedDriver,
             )
             rows += row
             added += row
@@ -113,19 +113,50 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
         return added
     }
 
-    /** The newest finished trip that still needs a purpose. */
+    /** Destination info that arrives after departure (navigation started late) still belongs to the open trip. */
+    fun updateOpenRoute(tollEstimateKrw: Int?, destinationName: String?) {
+        val o = open ?: return
+        open = o.copy(tollEstimateKrw = tollEstimateKrw ?: o.tollEstimateKrw, destinationName = destinationName ?: o.destinationName)
+    }
+
     fun latestUnclassified(): TripRecord? = rows.lastOrNull { it.purpose == TripPurpose.UNCLASSIFIED }
 
     /** The last trip that actually ended (gap rows excluded): the only one a voice command may label. */
     fun lastTrip(): TripRecord? = rows.lastOrNull { it.purpose != TripPurpose.UNLOGGED_GAP }
 
-    fun classify(id: String, purpose: TripPurpose, user: CarUser?, memo: String, source: String): TripRecord? {
-        require(purpose != TripPurpose.UNCLASSIFIED && purpose != TripPurpose.UNLOGGED_GAP) { "not a user purpose: $purpose" }
+    fun find(id: String): TripRecord? = rows.firstOrNull { it.id == id }
+
+    /** Sets or changes a purpose; returns (previous, updated) or null for an unknown id or a gap row. */
+    fun classify(
+        id: String,
+        purpose: TripPurpose,
+        user: CarUser?,
+        memo: String,
+        source: String,
+        autoReason: String? = null,
+    ): Pair<TripRecord, TripRecord>? {
+        require(purpose.isUserPurpose) { "not a user purpose: $purpose" }
         val index = rows.indexOfFirst { it.id == id }
         if (index < 0 || rows[index].purpose == TripPurpose.UNLOGGED_GAP) return null
-        val updated = rows[index].copy(purpose = purpose, user = user ?: rows[index].user, memo = memo, classifiedBy = source)
+        val before = rows[index]
+        val amended = before.purpose != TripPurpose.UNCLASSIFIED
+        val updated = before.copy(
+            purpose = purpose,
+            user = user ?: before.user,
+            memo = memo,
+            classifiedBy = source,
+            autoReason = if (amended) before.autoReason else autoReason,
+            amended = before.amended || amended,
+        )
         rows[index] = updated
-        return updated
+        return before to updated
+    }
+
+    fun setPlaces(id: String, startPlace: String?, endPlace: String?): TripRecord? {
+        val index = rows.indexOfFirst { it.id == id }
+        if (index < 0) return null
+        rows[index] = rows[index].copy(startPlace = startPlace, endPlace = endPlace)
+        return rows[index]
     }
 
     fun recordsIn(period: ClosedRange<LocalDate>): List<TripRecord> =
@@ -137,23 +168,34 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
         /** The Virtual Console odometer moves in 1 km steps; a real car reports finer values. */
         const val GAP_THRESHOLD_KM = 0.5
         private const val CONTINUITY_TOLERANCE_KM = 0.05
+        const val GAP_MEMO = "앱이 기록하지 못한 주행(비업무로 처리)"
 
         fun localDate(epochMs: Long): LocalDate = Instant.ofEpochMilli(epochMs).atZone(KST).toLocalDate()
+        fun yearMonth(epochMs: Long): YearMonth = YearMonth.from(Instant.ofEpochMilli(epochMs).atZone(KST))
 
         fun summarize(records: List<TripRecord>): LogbookSummary {
             val total = records.sumOf { it.distanceKm }
             val commute = records.filter { it.purpose == TripPurpose.COMMUTE }.sumOf { it.distanceKm }
             val business = records.filter { it.purpose == TripPurpose.BUSINESS }.sumOf { it.distanceKm }
-            val breaks = records.zipWithNext().count { (a, b) -> abs(b.startOdometerKm - a.endOdometerKm) > CONTINUITY_TOLERANCE_KM }
+            val personal = records.filter { it.purpose == TripPurpose.PERSONAL }.sumOf { it.distanceKm }
+            val unclassified = records.filter { it.purpose == TripPurpose.UNCLASSIFIED }
+            val gaps = records.filter { it.purpose == TripPurpose.UNLOGGED_GAP }
+            val breaks = records.sortedBy { it.startEpochMs }.zipWithNext()
+                .count { (a, b) -> abs(b.startOdometerKm - a.endOdometerKm) > CONTINUITY_TOLERANCE_KM }
             return LogbookSummary(
                 rowCount = records.size,
                 totalKm = round1(total),
                 commuteKm = round1(commute),
                 businessKm = round1(business),
+                personalKm = round1(personal),
+                unclassifiedKm = round1(unclassified.sumOf { it.distanceKm }),
+                gapKm = round1(gaps.sumOf { it.distanceKm }),
                 businessUseRatio = if (total > 0) (commute + business) / total else null,
-                unclassifiedCount = records.count { it.purpose == TripPurpose.UNCLASSIFIED },
-                gapRowCount = records.count { it.purpose == TripPurpose.UNLOGGED_GAP },
+                unclassifiedCount = unclassified.size,
+                gapRowCount = gaps.size,
                 continuityBreaks = breaks,
+                autoCount = records.count { it.classifiedBy == ClassifiedBy.AUTO && !it.amended },
+                voiceCount = records.count { it.classifiedBy == ClassifiedBy.VOICE },
             )
         }
 
@@ -167,10 +209,15 @@ data class LogbookSummary(
     val totalKm: Double,
     val commuteKm: Double,
     val businessKm: Double,
+    val personalKm: Double = 0.0,
+    val unclassifiedKm: Double = 0.0,
+    val gapKm: Double = 0.0,
     val businessUseRatio: Double?,
     val unclassifiedCount: Int,
     val gapRowCount: Int,
     val continuityBreaks: Int,
+    val autoCount: Int = 0,
+    val voiceCount: Int = 0,
 ) {
     val businessUseKm: Double get() = TripLogbook.round1(commuteKm + businessKm)
 }
@@ -180,6 +227,12 @@ object TaxPeriods {
     fun businessYear(year: Int, startMonth: Int): ClosedRange<LocalDate> {
         val start = LocalDate.of(year, startMonth, 1)
         return start..start.plusYears(1).minusDays(1)
+    }
+
+    /** The business year containing [date]. */
+    fun businessYearOf(date: LocalDate, startMonth: Int): ClosedRange<LocalDate> {
+        val year = if (date.monthValue >= startMonth) date.year else date.year - 1
+        return businessYear(year, startMonth)
     }
 
     /** half = 1 or 2 within the business year. */
@@ -200,4 +253,6 @@ object TaxPeriods {
         val start = LocalDate.of(year, month, 1)
         return start..start.plusMonths(1).minusDays(1)
     }
+
+    fun month(ym: YearMonth): ClosedRange<LocalDate> = month(ym.year, ym.monthValue)
 }

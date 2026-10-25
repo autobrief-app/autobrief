@@ -12,11 +12,11 @@ android {
         applicationId = "app.autobrief.car"
         minSdk = 28
         targetSdk = 34
-        versionCode = 6
-        versionName = "1.6.0"
+        versionCode = 7
+        versionName = "2.0.0"
     }
 
-    // AAOS car APIs (CarPropertyManager for speed, CarUxRestrictionsManager for driving restrictions)
+    // AAOS car API (CarUxRestrictionsManager for the driving layout)
     useLibrary("android.car")
 
     signingConfigs {
@@ -63,6 +63,11 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.isReturnDefaultValues = true
+        unitTests.all {
+            // Roborazzi writes the screen images (build/outputs/roborazzi) that the UI review reads
+            it.systemProperty("roborazzi.test.record", "true")
+            it.maxHeapSize = "4g"
+        }
     }
 }
 
@@ -74,6 +79,7 @@ dependencies {
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.activity:activity-compose:1.8.2")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
@@ -84,4 +90,9 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.12.2")
     testImplementation("androidx.test:core:1.5.0")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi:1.26.0")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.26.0")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-junit-rule:1.26.0")
 }

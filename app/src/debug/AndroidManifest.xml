@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: lets adb (shell holds android.permission.DUMP, other apps do not) prepare the
+     demo space for the end-to-end test and the presenter's laptop. Not part of the release APK. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <receiver
+            android:name=".debug.DemoReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="app.autobrief.car.debug.DEMO" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

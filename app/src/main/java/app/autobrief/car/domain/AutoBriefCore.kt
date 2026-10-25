@@ -1,14 +1,13 @@
 package app.autobrief.car.domain
 
-import app.autobrief.car.model.ActiveCustody
 import app.autobrief.car.model.AppSettings
 import app.autobrief.car.model.CarUser
-import app.autobrief.car.model.CustodyEndReason
-import app.autobrief.car.model.CustodyReport
+import app.autobrief.car.model.ClassifiedBy
 import app.autobrief.car.model.Gear
+import app.autobrief.car.model.GeoPoint
 import app.autobrief.car.model.OutboxItem
-import app.autobrief.car.model.SeatPos
-import app.autobrief.car.model.SeatState
+import app.autobrief.car.model.Place
+import app.autobrief.car.model.PlaceKind
 import app.autobrief.car.model.TripPurpose
 import app.autobrief.car.model.TripRecord
 import app.autobrief.car.model.VehicleSnapshot
@@ -16,94 +15,142 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import java.security.MessageDigest
+import java.net.URI
 import java.time.Instant
 import java.time.LocalDate
-import java.time.format.DateTimeFormatter
+import java.time.YearMonth
+import java.util.Base64
 
 /**
- * The three modes on one vehicle state, free of Android types so every rule is unit-testable.
- * The Android layer feeds [onVehicle]/[onNavi]/[tick] and persists what [Persistence] is handed.
+ * The logbook on one vehicle state, free of Android types so every rule is unit-testable.
+ * The Android layer feeds [onVehicle]/[onNavi]/[tick], provides storage ([Store]) and file output
+ * ([FileSink]), and asks navigation for a fresh position through [naviControl].
+ *
+ * Data lives in two separate spaces: LIVE (the real logbook) and DEMO (labelled fictional history for
+ * presentations). Switching never copies anything between them, so a demo can never touch real records.
  */
 class AutoBriefCore(
-    initialSettings: AppSettings = AppSettings(),
-    initialTrips: List<TripRecord> = emptyList(),
-    initialOutbox: List<OutboxItem> = emptyList(),
-    initialReports: List<CustodyReport> = emptyList(),
-    initialActiveCustody: ActiveCustody? = null,
-    private val persistence: Persistence = Persistence.NONE,
+    private val store: Store,
+    private val files: FileSink = FileSink { _, name, _ -> name },
     private val clock: () -> Long = System::currentTimeMillis,
+    private val log: (String) -> Unit = {},
 ) {
-    interface Persistence {
-        fun saveTrips(trips: List<TripRecord>) {}
-        fun saveSettings(settings: AppSettings) {}
-        fun saveOutbox(items: List<OutboxItem>) {}
-        fun saveReports(reports: List<CustodyReport>) {}
-        fun saveActiveCustody(active: ActiveCustody?) {}
+    enum class Space(val dir: String) { LIVE("live"), DEMO("demo") }
 
-        companion object {
-            val NONE = object : Persistence {}
-        }
+    data class SpaceData(
+        val settings: AppSettings = AppSettings(),
+        val trips: List<TripRecord> = emptyList(),
+        val ledger: List<LedgerEntry> = emptyList(),
+        val outbox: List<OutboxItem> = emptyList(),
+    )
+
+    interface Store {
+        fun activeSpace(): Space
+        fun setActiveSpace(space: Space)
+        fun load(space: Space): SpaceData
+        fun saveSettings(space: Space, settings: AppSettings)
+        fun saveTrips(space: Space, trips: List<TripRecord>)
+        fun saveLedger(space: Space, entries: List<LedgerEntry>)
+        fun saveOutbox(space: Space, items: List<OutboxItem>)
+        fun wipe(space: Space)
     }
 
-    var control: VehicleControl? = null
+    /** Writes an exported file and returns where it went (shown to the user). */
+    fun interface FileSink {
+        fun write(space: Space, fileName: String, bytes: ByteArray): String
+    }
 
-    private val logbook = TripLogbook(initialTrips)
-    private val sleepDetector = SleepCareDetector()
+    /** Lets the core ask navigation for a fresh position (the answer arrives as [NaviEvent.Location]). */
+    fun interface NaviControl {
+        fun requestLocation()
+    }
 
-    private val _settings = MutableStateFlow(initialSettings)
+    data class NaviStatus(
+        val ready: Boolean = false,
+        val location: GeoPoint? = null,
+        val locationEpochMs: Long = 0,
+        val bookmarks: List<NaviBookmark> = emptyList(),
+    )
+
+    data class OpenTripView(val startEpochMs: Long, val startOdometerKm: Double, val startPlace: String?)
+
+    data class Notice(val text: String, val fileName: String?)
+
+    data class ExportResult(val fileName: String, val savedTo: String, val queued: Boolean, val rows: Int)
+
+    var naviControl: NaviControl? = null
+
+    private var space: Space = store.activeSpace()
+    private var logbook = TripLogbook()
+    private var ledger = Ledger()
+
+    private val _space = MutableStateFlow(space)
+    private val _settings = MutableStateFlow(AppSettings())
     private val _vehicle = MutableStateFlow(VehicleSnapshot())
-    private val _trips = MutableStateFlow(logbook.records)
-    private val _sleep = MutableStateFlow(SleepCareState(emptySet(), emptyMap()))
-    private val _custody = MutableStateFlow<CustodySession?>(null)
-    private val _custodyTick = MutableStateFlow(0L)
-    private val _reports = MutableStateFlow(initialReports)
-    private val _outbox = MutableStateFlow(initialOutbox)
-    private val _destination = MutableStateFlow<NaviEvent.Destination?>(null)
+    private val _trips = MutableStateFlow<List<TripRecord>>(emptyList())
+    private val _check = MutableStateFlow(LedgerCheck(true, 0, "-", emptyList()))
+    private val _outbox = MutableStateFlow<List<OutboxItem>>(emptyList())
     private val _restricted = MutableStateFlow(false)
-    private val _ambientRefused = MutableStateFlow(false)
+    private val _navi = MutableStateFlow(NaviStatus())
+    private val _open = MutableStateFlow<OpenTripView?>(null)
+    private val _notice = MutableStateFlow<Notice?>(null)
+    private val _lastClosedId = MutableStateFlow<String?>(null)
 
+    val activeSpace: StateFlow<Space> = _space.asStateFlow()
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
     val vehicle: StateFlow<VehicleSnapshot> = _vehicle.asStateFlow()
     val trips: StateFlow<List<TripRecord>> = _trips.asStateFlow()
-    val sleep: StateFlow<SleepCareState> = _sleep.asStateFlow()
-    val custody: StateFlow<CustodySession?> = _custody.asStateFlow()
-
-    /** Bumps on every counted custody event so a screen observing it redraws. */
-    val custodyTick: StateFlow<Long> = _custodyTick.asStateFlow()
-    val reports: StateFlow<List<CustodyReport>> = _reports.asStateFlow()
+    val integrity: StateFlow<LedgerCheck> = _check.asStateFlow()
     val outbox: StateFlow<List<OutboxItem>> = _outbox.asStateFlow()
-    val destination: StateFlow<NaviEvent.Destination?> = _destination.asStateFlow()
 
     /** CarUxRestrictions: true while the screen must stay in its glanceable driving layout. */
     val restricted: StateFlow<Boolean> = _restricted.asStateFlow()
+    val navi: StateFlow<NaviStatus> = _navi.asStateFlow()
+    val openTrip: StateFlow<OpenTripView?> = _open.asStateFlow()
+    val notice: StateFlow<Notice?> = _notice.asStateFlow()
 
-    /** The vehicle refused the ambient-light request (outside the approved control scope). */
-    val ambientRefused: StateFlow<Boolean> = _ambientRefused.asStateFlow()
+    /** The trip that just closed (for the "what was this drive?" card); cleared once it is handled. */
+    val lastClosedId: StateFlow<String?> = _lastClosedId.asStateFlow()
+
+    val demoMode: Boolean get() = space == Space.DEMO
 
     private var routeToll: Int? = null
     private var routeName: String? = null
+    private var openStartPoint: GeoPoint? = null
+    private var connectedLogged = false
+
+    /** A closed trip waiting a few seconds for the arrival position before the place rules run. */
+    private data class PendingAuto(val tripId: String, val start: GeoPoint?, val deadline: Long, val askedAt: Long)
+    private var pendingAuto: PendingAuto? = null
 
     init {
-        // a session that was running when the process died: report that recording stopped
-        initialActiveCustody?.let { a ->
-            val now = clock()
-            val report = CustodyReport(
-                sessionId = a.sessionId, startEpochMs = a.startEpochMs, endEpochMs = now,
-                startOdometerKm = a.startOdometerKm, endOdometerKm = null, destinationLabel = a.destinationLabel,
-                maxSpeedKph = 0.0, overspeedEpisodes = 0, harshAccelEvents = 0, harshBrakeEvents = 0,
-                endReason = CustodyEndReason.INTERRUPTED, doorsLocked = null, driverConsented = true,
-            )
-            _reports.value = _reports.value + report
-            persistence.saveReports(_reports.value)
-            if (a.notifyFamily) enqueueFamily("${a.sessionId}-interrupted", "custody_end", CustodyMessages.end(report, timeText(now)))
-            persistence.saveActiveCustody(null)
-        }
+        loadSpace(space)
+    }
+
+    private fun loadSpace(s: Space) {
+        val d = store.load(s)
+        space = s
+        logbook = TripLogbook(d.trips)
+        ledger = Ledger(d.ledger)
+        _space.value = s
+        _settings.value = d.settings
+        _trips.value = logbook.records
+        _outbox.value = d.outbox
+        _open.value = null
+        _lastClosedId.value = null
+        _notice.value = null
+        pendingAuto = null
+        openStartPoint = null
+        refreshCheck()
+        // the new logbook needs the car's current state to detect the next departure correctly
+        _vehicle.value.odometerKm?.let { logbook.onOdometer(it) }
+        logbook.onGear(_vehicle.value.gear, clock())
     }
 
     fun setRestricted(value: Boolean) {
@@ -116,378 +163,544 @@ class AutoBriefCore(
         val now = clock()
         val s = _vehicle.value
         when (e) {
-            is VehicleEvent.Connection -> _vehicle.value = s.copy(sdkConnected = e.connected)
-            is VehicleEvent.Odometer -> {
-                val added = logbook.onOdometer(e.km)
-                _vehicle.value = s.copy(odometerKm = e.km)
-                if (added.isNotEmpty()) saveTrips()
-            }
-            is VehicleEvent.GearChanged -> onGear(e.gear, now)
-            is VehicleEvent.Speed -> {
-                _vehicle.value = s.copy(speedKph = e.kph)
-                _custody.value?.let {
-                    it.onSpeed(e.kph, now)
-                    _custodyTick.value = now
+            is VehicleEvent.Connection -> {
+                _vehicle.value = s.copy(sdkConnected = e.connected)
+                if (e.connected && !connectedLogged) {
+                    connectedLogged = true
+                    log("VEHICLE_CONNECTED")
                 }
             }
-            is VehicleEvent.Vin -> _vehicle.value = s.copy(vin = e.vin)
-            is VehicleEvent.SeatOccupancy -> updateSeat(e.seat) { it.copy(occupied = e.occupied) }
-            is VehicleEvent.SeatBelt -> updateSeat(e.seat) { it.copy(belted = e.buckled) }
-            is VehicleEvent.Backrest -> updateSeat(e.seat) { it.copy(backrestPosition = e.position) }
-            is VehicleEvent.BackrestBounds -> _vehicle.value = s.copy(
-                seats = SeatPos.values().associateWith { pos ->
-                    val b = e.bounds[pos]
-                    (s.seats[pos] ?: SeatState()).copy(backrestMin = b?.first, backrestMax = b?.last)
-                },
-            )
-            is VehicleEvent.ReadingLight -> updateSeat(e.seat) { it.copy(readingLightOn = e.on) }
-            is VehicleEvent.DoorsLocked -> {
-                _vehicle.value = s.copy(doorsLocked = e.locked)
-                if (e.locked == true) releaseHeldArrival(lockObserved = true)
+            is VehicleEvent.Odometer -> {
+                _vehicle.value = s.copy(odometerKm = e.km)
+                val added = logbook.onOdometer(e.km)
+                if (added.isNotEmpty()) recordRows(added)
+                if (logbook.openTrip != null && _open.value == null) openTripStarted()
             }
-            is VehicleEvent.AmbientBounds -> _vehicle.value = s.copy(ambientBrightnessBounds = e.range)
-        }
-        if (e is VehicleEvent.SeatOccupancy || e is VehicleEvent.SeatBelt || e is VehicleEvent.Backrest ||
-            e is VehicleEvent.ReadingLight || e is VehicleEvent.BackrestBounds
-        ) {
-            evaluateSleep(now)
+            is VehicleEvent.GearChanged -> onGear(e.gear, now)
+            is VehicleEvent.Vin -> _vehicle.value = s.copy(vin = e.vin)
         }
     }
 
     fun onNavi(e: NaviEvent) {
         when (e) {
+            is NaviEvent.Ready -> _navi.update { it.copy(ready = e.ready) }
             is NaviEvent.RouteStarted -> {
                 routeName = e.destinationName
                 routeToll = e.tollFareKrw
+                logbook.updateOpenRoute(routeToll, routeName)
             }
             is NaviEvent.Destination -> {
-                _destination.value = e
                 routeName = e.name ?: routeName
                 if (e.tollFareKrw != null) routeToll = e.tollFareKrw
+                logbook.updateOpenRoute(routeToll, routeName)
             }
-            is NaviEvent.Arrived -> _custody.value?.onArrivedSignal()
-            is NaviEvent.SpeedLimit -> _custody.value?.onSpeedLimit(e.kph)
+            is NaviEvent.Arrived -> Unit
             NaviEvent.RouteEnded -> {
                 routeName = null
                 routeToll = null
-                _destination.value = null
             }
+            is NaviEvent.Location -> {
+                val now = clock()
+                _navi.update { it.copy(ready = true, location = e.point, locationEpochMs = now) }
+                pendingAuto?.let { p -> if (now > p.askedAt) resolvePendingAuto(e.point) }
+            }
+            is NaviEvent.Bookmarks -> _navi.update { it.copy(ready = true, bookmarks = e.places) }
         }
     }
 
-    /** Periodic call (every few seconds) so time-based rules advance: the 60 s sleep hold, the lock wait. */
+    /** Periodic call (every few seconds): pending place rules time out, the month closes. */
     fun tick() {
         val now = clock()
-        evaluateSleep(now)
-        heldArrival?.let { if (now >= it.deadline) releaseHeldArrival(lockObserved = false) }
+        pendingAuto?.let { if (now >= it.deadline) resolvePendingAuto(freshLocation(now, LOCATION_FRESH_MS)) }
+        closeMonthIfDue()
     }
 
-    private fun updateSeat(seat: SeatPos, change: (SeatState) -> SeatState) {
-        val s = _vehicle.value
-        _vehicle.value = s.copy(seats = s.seats + (seat to change(s.seats[seat] ?: SeatState())))
-    }
+    private fun freshLocation(now: Long, maxAgeMs: Long): GeoPoint? =
+        _navi.value.takeIf { it.location != null && now - it.locationEpochMs <= maxAgeMs }?.location
 
     private fun onGear(gear: Gear, now: Long) {
         _vehicle.value = _vehicle.value.copy(gear = gear)
-        val session = _custody.value
-        val added = logbook.onGear(gear, now, routeToll, routeName, designatedDriver = session != null)
-        if (added.isNotEmpty()) saveTrips()
-        if (session != null) {
-            val report = session.onGear(gear, now, _vehicle.value.odometerKm, _destination.value?.remainDistanceM, _vehicle.value.doorsLocked)
-            _custodyTick.value = now
-            if (report != null) finishCustody(report)
+        val wasOpen = logbook.openTrip != null
+        val added = logbook.onGear(gear, now, routeToll, routeName)
+        if (added.isNotEmpty()) recordRows(added)
+        if (!wasOpen && logbook.openTrip != null) openTripStarted()
+        if (gear == Gear.PARK || gear == Gear.DRIVE) naviControl?.requestLocation()
+    }
+
+    private fun openTripStarted() {
+        val open = logbook.openTrip ?: return
+        val now = clock()
+        openStartPoint = freshLocation(now, START_LOCATION_MAX_AGE_MS)
+        val label = openStartPoint?.let { AutoClassifier.nearest(it, allPlaces()) }?.label
+        _open.value = OpenTripView(open.startEpochMs, open.startOdometerKm, label)
+        _lastClosedId.value = null
+        log("TRIP_OPENED odo=${open.startOdometerKm}")
+    }
+
+    /** Rows just produced by the logbook: gap rows and closed trips go into the ledger as they are. */
+    private fun recordRows(added: List<TripRecord>) {
+        for (row in added) {
+            if (row.purpose == TripPurpose.UNLOGGED_GAP) {
+                appendLedger(LedgerKind.GAP, row, Ledger.tripBody(row, _vehicle.value.vin))
+                log("GAP_RECORDED start=${row.startOdometerKm} end=${row.endOdometerKm}")
+            } else {
+                tripClosed(row)
+            }
         }
-    }
-
-    private fun saveTrips() {
-        _trips.value = logbook.records
-        persistence.saveTrips(logbook.records)
-    }
-
-    // ---------------------------------------------------------------- Mode 1: logbook
-
-    fun classifyTrip(id: String, purpose: TripPurpose, user: CarUser?, memo: String, source: String): TripRecord? {
-        val updated = logbook.classify(id, purpose, user ?: defaultUser(), sanitizeMemo(memo), source) ?: return null
         saveTrips()
-        return updated
     }
 
-    fun summary(period: ClosedRange<LocalDate>): LogbookSummary = logbook.summarize(period)
-
-    fun exportSheet(period: ClosedRange<LocalDate>, banner: String? = null, businessYear: Boolean = true): LogbookExport.Sheet =
-        LogbookExport.build(logbook.records, _settings.value, period, banner, businessYear)
-
-    /** Queues the period's logbook for the owner's archive webhook; false when no webhook is set. */
-    fun queueArchive(period: ClosedRange<LocalDate>, fileName: String, xlsxBase64: String): Boolean {
-        if (_settings.value.archiveWebhookUrl.isBlank()) return false
-        val payload = buildJsonObject {
-            put("type", "logbook_archive")
-            put("fileName", fileName)
-            put("periodStart", period.start.toString())
-            put("periodEnd", period.endInclusive.toString())
-            put("xlsxBase64", xlsxBase64)
+    private fun tripClosed(row: TripRecord) {
+        val now = clock()
+        _open.value = null
+        _lastClosedId.value = row.id
+        val start = openStartPoint
+        openStartPoint = null
+        val arrival = freshLocation(now, ARRIVAL_LOCATION_MAX_AGE_MS)
+        if (_settings.value.autoClassify && arrival == null && (start != null || _navi.value.ready)) {
+            // the position at the moment of parking is not in yet: write the row now, run the place rules shortly
+            appendLedger(LedgerKind.TRIP, row, Ledger.tripBody(row, _vehicle.value.vin))
+            pendingAuto = PendingAuto(row.id, start, now + AUTO_WAIT_MS, now)
+            naviControl?.requestLocation()
+            logClosed(row)
+            return
         }
-        enqueue("archive-$fileName-${clock()}", "archive", payload.toString())
-        return true
+        applyPlaces(row, start, arrival, writeTrip = true)
+    }
+
+    private fun resolvePendingAuto(arrival: GeoPoint?) {
+        val p = pendingAuto ?: return
+        pendingAuto = null
+        val row = logbook.find(p.tripId) ?: return
+        applyPlaces(row, p.start, arrival, writeTrip = false)
+        saveTrips()
+    }
+
+    /** Place labels for the row; when a place rule decides the purpose, the trip is classified automatically. */
+    private fun applyPlaces(row: TripRecord, start: GeoPoint?, end: GeoPoint?, writeTrip: Boolean) {
+        val result = AutoClassifier.classify(start, end, allPlaces())
+        val placed = logbook.setPlaces(row.id, result.startLabel, result.endLabel) ?: row
+        if (writeTrip) appendLedger(LedgerKind.TRIP, placed, Ledger.tripBody(placed, _vehicle.value.vin))
+        val purpose = result.purpose
+        if (purpose != null && _settings.value.autoClassify && placed.purpose == TripPurpose.UNCLASSIFIED) {
+            val (_, updated) = logbook.classify(placed.id, purpose, defaultUser(), result.memo, ClassifiedBy.AUTO, result.reason) ?: return
+            appendLedger(LedgerKind.CLASSIFY, updated, Ledger.classifyBody(updated))
+            if (writeTrip) logClosed(updated)
+            else log("TRIP_CLASSIFIED id=${updated.id} purpose=${updated.purpose.name} by=${ClassifiedBy.AUTO} reason=${result.reason}")
+        } else if (writeTrip) {
+            logClosed(placed)
+        }
+        saveTrips()
+        closeMonthIfDue()
+    }
+
+    private fun logClosed(r: TripRecord) {
+        log(
+            "TRIP_CLOSED id=${r.id} start=${r.startOdometerKm} end=${r.endOdometerKm} km=${TripLogbook.round1(r.distanceKm)} " +
+                "purpose=${r.purpose.name} by=${r.classifiedBy ?: "-"} reason=${r.autoReason ?: "-"}",
+        )
+    }
+
+    // ---------------------------------------------------------------- places
+
+    /** Navigation bookmarks (HOME/OFFICE) first, then the places registered in the app. */
+    fun allPlaces(): List<Place> =
+        _navi.value.bookmarks.map {
+            Place(if (it.kind == PlaceKind.HOME) "집" else "회사", it.kind, it.point, fromNavigation = true)
+        } + _settings.value.places
+
+    enum class PlaceResult { SAVED, NO_LOCATION, INVALID }
+
+    /** Saves the car's current position as a place (the label is what trips will show). */
+    fun registerPlaceHere(label: String, kind: PlaceKind): PlaceResult {
+        val name = sanitizeMemo(label).take(20)
+        if (name.isBlank()) return PlaceResult.INVALID
+        val here = freshLocation(clock(), PLACE_LOCATION_MAX_AGE_MS) ?: return PlaceResult.NO_LOCATION
+        val others = _settings.value.places.filterNot { it.label == name || (kind != PlaceKind.CLIENT && it.kind == kind) }
+        writeSettings(_settings.value.copy(places = others + Place(name, kind, here)))
+        return PlaceResult.SAVED
+    }
+
+    fun removePlace(label: String) {
+        writeSettings(_settings.value.copy(places = _settings.value.places.filterNot { it.label == label }))
+    }
+
+    // ---------------------------------------------------------------- classification
+
+    enum class ClassifyResult { OK, NOT_FOUND, REASON_REQUIRED }
+
+    /**
+     * Sets a purpose from the screen or voice. Changing a purpose that was already set (also an automatic
+     * one) is a correction: it needs a reason and is written as an AMEND entry with the previous purpose.
+     */
+    fun classifyTrip(
+        id: String,
+        purpose: TripPurpose,
+        user: CarUser?,
+        memo: String,
+        source: String,
+        reason: String? = null,
+    ): ClassifyResult {
+        val before = logbook.find(id) ?: return ClassifyResult.NOT_FOUND
+        if (before.purpose == TripPurpose.UNLOGGED_GAP) return ClassifyResult.NOT_FOUND
+        val correcting = before.purpose != TripPurpose.UNCLASSIFIED
+        val why = sanitizeMemo(reason)
+        if (correcting && why.isBlank()) return ClassifyResult.REASON_REQUIRED
+        val (prev, updated) = logbook.classify(id, purpose, user ?: before.user ?: defaultUser(), sanitizeMemo(memo), source)
+            ?: return ClassifyResult.NOT_FOUND
+        if (correcting) appendLedger(LedgerKind.AMEND, updated, Ledger.amendBody(updated, prev.purpose, why))
+        else appendLedger(LedgerKind.CLASSIFY, updated, Ledger.classifyBody(updated))
+        if (_lastClosedId.value == id) _lastClosedId.value = null
+        log("TRIP_CLASSIFIED id=$id purpose=${purpose.name} by=$source${if (correcting) " amended" else ""}")
+        saveTrips()
+        return ClassifyResult.OK
+    }
+
+    fun dismissLastClosed() {
+        _lastClosedId.value = null
+    }
+
+    /** Every ledger entry behind one row, oldest first (shown in the trip detail). */
+    fun ledgerFor(tripId: String): List<LedgerEntry> = ledger.all.filter { it.tripId == tripId }
+
+    val ledgerEntries: List<LedgerEntry> get() = ledger.all
+
+    fun dismissNotice() {
+        _notice.value = null
     }
 
     private fun defaultUser(): CarUser? = _settings.value.users.getOrNull(_settings.value.defaultUserIndex)
 
-    // ---------------------------------------------------------------- Mode 2: sleep care
+    // ---------------------------------------------------------------- ledger, storage and outbox
 
-    fun setSleepCare(enabled: Boolean) {
-        writeSettings(_settings.value.copy(sleepCareEnabled = enabled))
-        evaluateSleep(clock())
-    }
-
-    fun setDimAmbient(enabled: Boolean) = writeSettings(_settings.value.copy(dimAmbientOnSleep = enabled))
-
-    private var ambientBefore: Int? = null
-    private var ambientDimmed = false
-    private var ambientPending = false
-
-    private fun evaluateSleep(now: Long) {
-        val state = sleepDetector.update(_vehicle.value.seats, now, _settings.value.sleepCareEnabled)
-        _sleep.value = state
-        val bounds = _vehicle.value.ambientBrightnessBounds ?: return
-        val ctl = control ?: return
-        val wantDim = state.sleeping.isNotEmpty() && _settings.value.dimAmbientOnSleep
-        if (wantDim == ambientDimmed || ambientPending) return
-        ambientPending = true
-        if (wantDim) {
-            // remember the level the cabin had, then dim; only a confirmed set counts
-            ctl.readAmbientBrightness { before ->
-                ambientBefore = before
-                ctl.setAmbientBrightness(bounds.first + (bounds.last - bounds.first) / 5) { ok ->
-                    ambientPending = false
-                    ambientDimmed = ok
-                    _ambientRefused.value = !ok
-                }
-            }
-        } else {
-            ctl.setAmbientBrightness(ambientBefore ?: bounds.last) { ok ->
-                ambientPending = false
-                if (ok) ambientDimmed = false
-            }
+    private fun appendLedger(kind: String, trip: TripRecord, body: JsonObject): LedgerEntry {
+        val entry = ledger.append(kind, trip.id, body, clock())
+        store.saveLedger(space, ledger.all)
+        log("LEDGER seq=${entry.seq} kind=$kind hash=${entry.hash.take(8)}")
+        if (_settings.value.archiveWebhookUrl.isNotBlank()) {
+            enqueue("ledger-${space.dir}-${entry.seq}", "ledger", ledgerPayload(entry))
         }
+        return entry
     }
 
-    // ---------------------------------------------------------------- Mode 3: designated driver
-
-    val custodyPinSet: Boolean get() = _settings.value.custodyPinHash.isNotEmpty()
-
-    private fun pinMatches(pin: String?): Boolean {
-        val st = _settings.value
-        return st.custodyPinHash.isNotEmpty() && pin != null && sha256(st.custodyPinSalt + pin) == st.custodyPinHash
+    private fun carJson() = buildJsonObject {
+        put("vin", _vehicle.value.vin)
+        put("plate", _settings.value.plateNumber)
+        put("model", _settings.value.vehicleModel)
+        put("entity", _settings.value.entityName)
     }
 
-    enum class SettingsResult { SAVED, LOCKED_DURING_CUSTODY, PIN_REQUIRED }
+    private fun ledgerPayload(e: LedgerEntry): String = buildJsonObject {
+        put("type", "ledger_entry")
+        put("app", "autobrief")
+        put("appVersion", APP_VERSION)
+        put("car", carJson())
+        put("entry", buildJsonObject {
+            put("seq", e.seq)
+            put("epochMs", e.epochMs)
+            put("kind", e.kind)
+            put("tripId", e.tripId)
+            put("body", e.body)
+            put("prevHash", e.prevHash)
+            put("hash", e.hash)
+        })
+    }.toString()
 
-    /**
-     * Owner settings from the settings screen. Refused while a designated-driver session runs, and a PIN,
-     * notice addresses or demo mode can only change with the current PIN once one exists.
-     */
-    fun saveOwnerSettings(new: AppSettings, newPin: String?, currentPin: String?): SettingsResult {
-        if (_custody.value != null) return SettingsResult.LOCKED_DURING_CUSTODY
-        val old = _settings.value
-        val sensitive = newPin != null || new.familyWebhookUrl != old.familyWebhookUrl ||
-            new.archiveWebhookUrl != old.archiveWebhookUrl || new.demoMode != old.demoMode
-        if (sensitive && custodyPinSet && !pinMatches(currentPin)) return SettingsResult.PIN_REQUIRED
-        var next = new.copy(custodyPinHash = old.custodyPinHash, custodyPinSalt = old.custodyPinSalt)
-        if (newPin != null) {
-            require(newPin.length in 4..8 && newPin.all(Char::isDigit)) { "PIN must be 4-8 digits" }
-            val salt = clock().toString(16)
-            next = next.copy(custodyPinSalt = salt, custodyPinHash = sha256(salt + newPin))
-        }
-        writeSettings(next)
-        return SettingsResult.SAVED
+    private fun saveTrips() {
+        _trips.value = logbook.records
+        store.saveTrips(space, logbook.records)
+        refreshCheck()
     }
 
-    /** Convenience for the first PIN (no PIN yet) or a change with the current one. */
-    fun setCustodyPin(newPin: String, currentPin: String? = null): SettingsResult =
-        saveOwnerSettings(_settings.value, newPin, currentPin)
-
-    private var familyNotify = false
-    private var wrongPinAttempts = 0
-    private var pinLockedUntil = 0L
-
-    /** Starts only with the driver's on-screen consent and an owner PIN already set; returns null otherwise. */
-    fun startCustody(driverConsented: Boolean, notifyFamily: Boolean): CustodySession? {
-        if (!driverConsented || !custodyPinSet) return null
-        _custody.value?.let { return it }
-        val now = clock()
-        val dest = _destination.value
-        val destLabel = (dest?.name ?: routeName)?.let(DisplayMasking::mask)
-        val session = CustodySession("CUSTODY-$now", now, _vehicle.value.odometerKm, destLabel, driverConsented = true)
-        _custody.value = session
-        familyNotify = notifyFamily
-        wrongPinAttempts = 0
-        pinLockedUntil = 0L
-        persistence.saveActiveCustody(ActiveCustody(session.sessionId, now, _vehicle.value.odometerKm, destLabel, notifyFamily))
-        if (notifyFamily) {
-            val eta = dest?.remainTimeS?.let { timeText(now + it * 1000L) }
-            enqueueFamily("${session.sessionId}-departure", "custody_departure", CustodyMessages.departure(destLabel, eta))
-        }
-        return session
+    private fun refreshCheck() {
+        _check.value = Ledger.check(ledger.all, logbook.records)
     }
-
-    enum class EndResult { ENDED, WRONG_PIN, LOCKED, NOT_ACTIVE }
-
-    /** Owner PIN check: fails closed without a PIN, and locks for a growing time after repeated misses. */
-    fun endCustodyEarly(pin: String): EndResult {
-        val session = _custody.value ?: return EndResult.NOT_ACTIVE
-        val now = clock()
-        if (now < pinLockedUntil) return EndResult.LOCKED
-        if (!pinMatches(pin)) {
-            wrongPinAttempts++
-            if (wrongPinAttempts % PIN_ATTEMPTS_BEFORE_LOCK == 0) {
-                val rounds = wrongPinAttempts / PIN_ATTEMPTS_BEFORE_LOCK
-                pinLockedUntil = now + PIN_LOCK_MS * (1L shl (rounds - 1).coerceAtMost(4))
-                // always tell the owner's contacts, whatever the departure-notice choice was
-                enqueueFamily("${session.sessionId}-pin-$wrongPinAttempts", "custody_pin_alert",
-                    "[오토브리프] 대리운전 모드 해제 PIN이 ${wrongPinAttempts}회 틀렸습니다.")
-                return EndResult.LOCKED
-            }
-            return EndResult.WRONG_PIN
-        }
-        wrongPinAttempts = 0
-        finishCustody(session.endEarly(now, _vehicle.value.odometerKm, _vehicle.value.doorsLocked))
-        return EndResult.ENDED
-    }
-
-    private class HeldArrival(val report: CustodyReport, val deadline: Long, val notify: Boolean)
-
-    /** An arrival waits for the doors to lock (or [LOCK_WAIT_MS]) so the message states what was observed. */
-    private var heldArrival: HeldArrival? = null
-
-    private fun finishCustody(report: CustodyReport) {
-        _custody.value = null
-        persistence.saveActiveCustody(null)
-        _reports.value = _reports.value + report
-        persistence.saveReports(_reports.value)
-        // the lock is observed after parking even when no notice goes out, so the screen shows it too
-        if (report.endReason == CustodyEndReason.ARRIVED && report.doorsLocked != true) {
-            heldArrival = HeldArrival(report, clock() + LOCK_WAIT_MS, familyNotify)
-            return
-        }
-        if (familyNotify) enqueueFamily("${report.sessionId}-end", "custody_end", CustodyMessages.end(report, timeText(report.endEpochMs)))
-    }
-
-    private fun releaseHeldArrival(lockObserved: Boolean) {
-        val held = heldArrival ?: return
-        heldArrival = null
-        val report = held.report.copy(doorsLocked = lockObserved)
-        _reports.update { list -> list.map { if (it.sessionId == report.sessionId) report else it } }
-        persistence.saveReports(_reports.value)
-        if (held.notify) {
-            enqueueFamily("${report.sessionId}-end", "custody_end", CustodyMessages.end(report, timeText(report.endEpochMs), lockObserved))
-        }
-    }
-
-    /** No family notice leaves the car in demo mode (demo signals are not real driving). */
-    private fun enqueueFamily(key: String, kind: String, text: String) {
-        if (_settings.value.familyWebhookUrl.isBlank() || _settings.value.demoMode) return
-        val payload = buildJsonObject {
-            put("type", kind)
-            put("text", text)
-        }
-        enqueue(key, kind, payload.toString())
-    }
-
-    // ---------------------------------------------------------------- outbox
 
     private fun enqueue(key: String, kind: String, payload: String) {
-        _outbox.update { list -> if (list.any { it.key == key }) list else list + OutboxItem(key, kind, payload, clock()) }
-        persistence.saveOutbox(_outbox.value)
+        _outbox.update { list ->
+            if (list.any { it.key == key }) list
+            else prune(list + OutboxItem(key, kind, payload, clock()))
+        }
+        store.saveOutbox(space, _outbox.value)
+    }
+
+    /** Bounded queue: delivered items are kept only as a short history, undelivered ones up to a hard cap. */
+    private fun prune(list: List<OutboxItem>): List<OutboxItem> {
+        val delivered = list.filter { it.deliveredEpochMs != null }.takeLast(OUTBOX_DELIVERED_KEEP)
+        val pending = list.filter { it.deliveredEpochMs == null }.takeLast(OUTBOX_PENDING_MAX)
+        return (delivered + pending).sortedBy { it.createdEpochMs }
     }
 
     /** Called from the sender's I/O thread; update{} keeps a concurrent enqueue from being lost. */
     fun markDelivery(key: String, delivered: Boolean, error: String?) {
         _outbox.update { list ->
-            list.map {
+            prune(list.map {
                 if (it.key != key) it
                 else it.copy(attempts = it.attempts + 1, deliveredEpochMs = if (delivered) clock() else null, lastError = error)
-            }
+            })
         }
-        persistence.saveOutbox(_outbox.value)
+        store.saveOutbox(space, _outbox.value)
+    }
+
+    // ---------------------------------------------------------------- settings, PIN, demo space
+
+    val adminPinSet: Boolean get() = _settings.value.adminPinHash.isNotEmpty()
+
+    private fun pinMatches(pin: String?, s: AppSettings = _settings.value): Boolean =
+        s.adminPinHash.isNotEmpty() && pin != null && Ledger.sha256(s.adminPinSalt + pin) == s.adminPinHash
+
+    enum class SettingsResult { SAVED, PIN_REQUIRED, INVALID_URL, TRIP_IN_PROGRESS }
+
+    /**
+     * Owner settings. The sending address and the admin PIN change only with the current PIN once a PIN
+     * exists. Setting an address for the first time queues the whole ledger so the receiver can verify the
+     * chain from its first entry.
+     */
+    fun saveSettings(new: AppSettings, newPin: String?, currentPin: String?): SettingsResult {
+        val old = _settings.value
+        val url = new.archiveWebhookUrl.trim()
+        if (url.isNotEmpty() && !isAllowedEndpoint(url)) return SettingsResult.INVALID_URL
+        val sensitive = newPin != null || url != old.archiveWebhookUrl
+        if (sensitive && adminPinSet && !pinMatches(currentPin)) return SettingsResult.PIN_REQUIRED
+        var next = new.copy(
+            archiveWebhookUrl = url,
+            adminPinHash = old.adminPinHash,
+            adminPinSalt = old.adminPinSalt,
+            lastMonthlyCloseYm = old.lastMonthlyCloseYm,
+            fiscalYearStartMonth = new.fiscalYearStartMonth.coerceIn(1, 12),
+            defaultUserIndex = new.defaultUserIndex.coerceIn(0, (new.users.size - 1).coerceAtLeast(0)),
+        )
+        if (newPin != null) {
+            require(newPin.length in 4..8 && newPin.all(Char::isDigit)) { "PIN must be 4-8 digits" }
+            val salt = clock().toString(16)
+            next = next.copy(adminPinSalt = salt, adminPinHash = Ledger.sha256(salt + newPin))
+        }
+        writeSettings(next)
+        if (old.archiveWebhookUrl.isBlank() && url.isNotBlank()) backfillLedger()
+        return SettingsResult.SAVED
+    }
+
+    private fun backfillLedger() {
+        ledger.all.takeLast(BACKFILL_MAX).forEach { e ->
+            enqueue("ledger-${space.dir}-${e.seq}", "ledger", ledgerPayload(e))
+        }
+    }
+
+    /**
+     * DEMO keeps labelled fictional data apart from the real logbook. Entering it needs the LIVE admin PIN
+     * when one is set (a driver must not be able to hide real drives in the demo space); leaving it is
+     * always allowed. Not while a trip is open: the drive would be split across both logbooks.
+     */
+    fun setDemoMode(on: Boolean, pin: String?): SettingsResult {
+        if (on == demoMode) return SettingsResult.SAVED
+        if (logbook.openTrip != null) return SettingsResult.TRIP_IN_PROGRESS
+        if (on && adminPinSet && !pinMatches(pin)) return SettingsResult.PIN_REQUIRED
+        val target = if (on) Space.DEMO else Space.LIVE
+        store.setActiveSpace(target)
+        loadSpace(target)
+        log("SPACE ${target.name}")
+        return SettingsResult.SAVED
+    }
+
+    /**
+     * Replaces the DEMO space with the fictional sample history up to yesterday and the sample settings
+     * (fictional company, users, places). Refused outside the demo space.
+     */
+    fun loadSampleHistory(webhookUrl: String = ""): Int {
+        check(demoMode) { "sample history only loads in the demo space" }
+        val today = TripLogbook.localDate(clock())
+        val (rows, sampleLedger) = SampleHistory.build(today)
+        store.wipe(Space.DEMO)
+        store.saveSettings(Space.DEMO, SampleHistory.settings(webhookUrl))
+        store.saveTrips(Space.DEMO, rows)
+        store.saveLedger(Space.DEMO, sampleLedger.all)
+        // the closing of past months is part of the sample, not something to resend now
+        store.saveSettings(Space.DEMO, SampleHistory.settings(webhookUrl).copy(lastMonthlyCloseYm = YearMonth.from(today).minusMonths(1).toString()))
+        loadSpace(Space.DEMO)
+        if (webhookUrl.isNotBlank()) backfillLedger()
+        log("DEMO_READY trips=${rows.size}")
+        return rows.size
+    }
+
+    fun resetDemo() {
+        check(demoMode) { "only the demo space can be reset" }
+        store.wipe(Space.DEMO)
+        loadSpace(Space.DEMO)
+        log("DEMO_RESET")
     }
 
     private fun writeSettings(new: AppSettings) {
         _settings.value = new
-        persistence.saveSettings(new)
+        store.saveSettings(space, new)
+    }
+
+    // ---------------------------------------------------------------- summaries, tax, export
+
+    fun summary(period: ClosedRange<LocalDate>): LogbookSummary = logbook.summarize(period)
+
+    fun today(): LocalDate = TripLogbook.localDate(clock())
+
+    fun currentBusinessYear(): ClosedRange<LocalDate> = TaxPeriods.businessYearOf(today(), _settings.value.fiscalYearStartMonth)
+
+    /** The logbook ratio so far this business year applied to the owner's annual car cost. */
+    fun taxBenefit(): TaxBenefit.Result? {
+        val s = _settings.value
+        val ratio = summary(currentBusinessYear()).businessUseRatio
+        return TaxBenefit.compute(s.annualCarCostKrw, s.annualDepreciationKrw, ratio, s.taxRate.ratePct)
+    }
+
+    fun exportSheet(period: ClosedRange<LocalDate>, businessYear: Boolean): LogbookExport.Sheet =
+        LogbookExport.build(logbook.records, _settings.value, period, _check.value.code, businessYear)
+
+    /** Writes the period workbook (form + ledger sheet) and queues it for the sending address when one is set. */
+    fun exportWorkbook(period: ClosedRange<LocalDate>, businessYear: Boolean, send: Boolean = true): ExportResult {
+        val sheet = exportSheet(period, businessYear)
+        val table = LogbookExport.ledgerTable(ledger.all, logbook.records, period, _check.value.code)
+        val xlsx = LogbookExport.toXlsx(sheet, listOf(table))
+        val name = "운행기록부_${period.start}_${period.endInclusive}.xlsx"
+        val savedTo = files.write(space, name, xlsx)
+        files.write(space, name.removeSuffix(".xlsx") + ".csv", LogbookExport.toCsv(sheet))
+        val queued = send && _settings.value.archiveWebhookUrl.isNotBlank()
+        if (queued) {
+            val payload = buildJsonObject {
+                put("type", "logbook_archive")
+                put("car", carJson())
+                put("fileName", name)
+                put("periodStart", period.start.toString())
+                put("periodEnd", period.endInclusive.toString())
+                put("verificationCode", _check.value.code)
+                put("xlsxBase64", Base64.getEncoder().encodeToString(xlsx))
+            }
+            enqueue("archive-${space.dir}-$name-${ledger.size}", "archive", payload.toString())
+        }
+        log("EXPORT file=$name rows=${sheet.rows.size} queued=$queued")
+        return ExportResult(name, savedTo, queued, sheet.rows.size)
+    }
+
+    /** On the first event of a new month, the previous month's workbook is written (and sent) once. */
+    private fun closeMonthIfDue() {
+        val current = YearMonth.from(Instant.ofEpochMilli(clock()).atZone(KST))
+        val previous = current.minusMonths(1)
+        val s = _settings.value
+        val done = s.lastMonthlyCloseYm.takeIf { it.isNotBlank() }?.let { runCatching { YearMonth.parse(it) }.getOrNull() }
+        if (done != null && !done.isBefore(previous)) return
+        if (logbook.records.isEmpty()) return
+        val rows = logbook.recordsIn(TaxPeriods.month(previous))
+        writeSettings(s.copy(lastMonthlyCloseYm = previous.toString()))
+        if (rows.isEmpty()) return
+        val result = exportWorkbook(TaxPeriods.month(previous), businessYear = false)
+        val sum = TripLogbook.summarize(rows)
+        _notice.value = Notice(
+            "${previous.monthValue}월 운행기록부를 만들었습니다: ${rows.size}건, 업무사용비율 ${sum.businessUseRatio?.let { "%.1f%%".format(it * 100) } ?: "-"}" +
+                if (result.queued) ", 보내기 주소로 전송 대기" else "",
+            result.fileName,
+        )
     }
 
     // ---------------------------------------------------------------- Gleo function calls
 
     data class GleoReply(val status: String, val message: String, val data: JsonArray? = null)
 
-    /** Handles the two background functions; the third (START_DESIGNATED_DRIVER_MODE) opens the consent screen. */
     fun handleGleo(functionName: String, params: JsonObject): GleoReply = when (functionName) {
-        GleoContract.LOG_TRIP_PURPOSE -> {
-            val purpose = when (params.str("purpose")?.uppercase()) {
-                "COMMUTE" -> TripPurpose.COMMUTE
-                "BUSINESS" -> TripPurpose.BUSINESS
-                "PERSONAL" -> TripPurpose.PERSONAL
-                else -> null
-            }
-            // voice may only label the last trip, and only right after it ended
-            val trip = logbook.lastTrip()?.takeIf {
-                it.purpose == TripPurpose.UNCLASSIFIED && clock() - it.endEpochMs <= VOICE_CLASSIFY_WINDOW_MS
-            }
-            val name = params.str("user_name")
-            val user = name?.let { n -> _settings.value.users.firstOrNull { it.name == n } }
-            when {
-                purpose == null -> GleoReply("asking", "Please say whether the trip was for commuting, business or personal use.")
-                trip == null -> GleoReply("fail", "There is no just-finished trip waiting for a purpose.")
-                name != null && user == null -> GleoReply("asking", "That person is not registered as a user of this car.")
-                else -> {
-                    val updated = classifyTrip(trip.id, purpose, user, params.str("memo") ?: "", source = "음성")!!
-                    // the reply is a broadcast: only distance and purpose, never destinations or addresses
-                    GleoReply(
-                        "success",
-                        "The last trip of ${"%.0f".format(updated.distanceKm)} km was logged as ${purpose.name.lowercase()} use.",
-                        JsonArray(listOf(buildJsonObject {
-                            put("distanceKm", TripLogbook.round1(updated.distanceKm))
-                            put("purpose", purpose.label)
-                        })),
-                    )
-                }
-            }
-        }
-        GleoContract.SET_SLEEP_CARE -> {
-            val enabled = params.bool("enabled")
-            if (enabled == null) GleoReply("asking", "Please say whether to turn passenger sleep care on or off.")
-            else {
-                setSleepCare(enabled)
-                GleoReply("success", if (enabled) "Passenger sleep care is on." else "Passenger sleep care is off.")
-            }
-        }
+        GleoContract.LOG_TRIP_PURPOSE -> gleoLogPurpose(params)
+        GleoContract.GET_LOGBOOK_STATUS -> gleoStatus(params)
+        GleoContract.SEND_LOGBOOK -> gleoSend(params)
         else -> GleoReply("fail", "This function is not supported.")
     }
 
-    /** AutoBrief's own Gleo replies use a beep instead of speech while a passenger sleeps. */
-    fun gleoMode(): String = if (_sleep.value.quietMode) "beep" else "voice"
-
-    private fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
-    private fun JsonObject.bool(key: String): Boolean? = (this[key] as? JsonPrimitive)?.content?.lowercase()?.let {
-        when (it) { "true" -> true; "false" -> false; else -> null }
+    private fun gleoLogPurpose(params: JsonObject): GleoReply {
+        val purpose = when (params.str("purpose")?.uppercase()) {
+            "COMMUTE" -> TripPurpose.COMMUTE
+            "BUSINESS" -> TripPurpose.BUSINESS
+            "PERSONAL" -> TripPurpose.PERSONAL
+            else -> null
+        } ?: return GleoReply("asking", "Please say whether the trip was for commuting, business or personal use.")
+        // voice may only label the last trip, and only right after it ended
+        val trip = logbook.lastTrip()?.takeIf { clock() - it.endEpochMs <= VOICE_CLASSIFY_WINDOW_MS }
+            ?: return GleoReply("fail", "There is no trip that ended in the last 30 minutes.")
+        val name = params.str("user_name")
+        val user = name?.let { n -> _settings.value.users.firstOrNull { it.name == n } }
+        if (name != null && user == null) return GleoReply("asking", "That person is not registered as a user of this car.")
+        val memo = params.str("memo") ?: trip.memo
+        val km = TripLogbook.round1(trip.distanceKm)
+        val unchanged = trip.purpose == purpose && memo == trip.memo && (user == null || user == trip.user)
+        if (!unchanged) {
+            val result = classifyTrip(trip.id, purpose, user, memo, ClassifiedBy.VOICE, reason = if (trip.purpose.isUserPurpose) "음성 정정" else null)
+            if (result != ClassifyResult.OK) return GleoReply("fail", "The trip could not be updated.")
+        }
+        return GleoReply(
+            "success",
+            "The last trip of ${"%.0f".format(km)} km was logged as ${purpose.name.lowercase()} use.",
+            JsonArray(listOf(buildJsonObject { put("distanceKm", km); put("purpose", purpose.label) })),
+        )
     }
 
-    companion object {
-        private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
-        const val VOICE_CLASSIFY_WINDOW_MS = 30 * 60_000L
-        const val PIN_ATTEMPTS_BEFORE_LOCK = 5
-        const val PIN_LOCK_MS = 5 * 60_000L
-        const val LOCK_WAIT_MS = 5 * 60_000L
-        private const val MEMO_MAX = 80
+    private fun gleoStatus(params: JsonObject): GleoReply {
+        val year = params.str("period")?.uppercase() == "THIS_YEAR"
+        val period = if (year) currentBusinessYear() else TaxPeriods.month(YearMonth.from(today()))
+        val s = summary(period)
+        if (s.rowCount == 0) return GleoReply("success", if (year) "No trips are logged this business year yet." else "No trips are logged this month yet.")
+        val ratio = s.businessUseRatio?.let { "%.1f".format(it * 100) } ?: "0"
+        val pending = if (s.unclassifiedCount > 0) " ${s.unclassifiedCount} trips still need a purpose." else " Every trip has a purpose."
+        return GleoReply(
+            "success",
+            "${if (year) "This business year" else "This month"}: ${s.rowCount} trips, ${"%.0f".format(s.totalKm)} km, business use $ratio percent.$pending",
+            JsonArray(listOf(buildJsonObject {
+                put("trips", s.rowCount)
+                put("totalKm", s.totalKm)
+                put("businessUsePct", ratio)
+                put("unclassified", s.unclassifiedCount)
+            })),
+        )
+    }
 
-        fun timeText(epochMs: Long): String = TIME.format(Instant.ofEpochMilli(epochMs).atZone(KST))
+    private fun gleoSend(params: JsonObject): GleoReply {
+        val today = today()
+        val (period, businessYear) = when (params.str("period")?.uppercase()) {
+            "LAST_MONTH" -> TaxPeriods.month(YearMonth.from(today).minusMonths(1)) to false
+            "BUSINESS_YEAR" -> currentBusinessYear() to true
+            else -> TaxPeriods.month(YearMonth.from(today)) to false
+        }
+        if (logbook.recordsIn(period).isEmpty()) return GleoReply("fail", "There are no trips in that period.")
+        val result = exportWorkbook(period, businessYear)
+        return GleoReply(
+            "success",
+            if (result.queued) "The logbook for ${period.start} to ${period.endInclusive} was saved in the car and is being sent to the registered address."
+            else "The logbook for ${period.start} to ${period.endInclusive} was saved in the car. No sending address is registered.",
+        )
+    }
+
+    private fun JsonObject.str(key: String): String? =
+        (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
+
+    companion object {
+        const val APP_VERSION = "2.0.0"
+        const val VOICE_CLASSIFY_WINDOW_MS = 30 * 60_000L
+        const val START_LOCATION_MAX_AGE_MS = 10 * 60_000L
+        const val ARRIVAL_LOCATION_MAX_AGE_MS = 15_000L
+        const val LOCATION_FRESH_MS = 60_000L
+        const val PLACE_LOCATION_MAX_AGE_MS = 2 * 60_000L
+        const val AUTO_WAIT_MS = 12_000L
+        const val OUTBOX_PENDING_MAX = 10_000
+        const val OUTBOX_DELIVERED_KEEP = 200
+        const val BACKFILL_MAX = 5_000
+        private const val MEMO_MAX = 80
 
         /** Memo text arrives from voice or the screen: one line, no control characters, bounded length. */
         fun sanitizeMemo(raw: String?): String =
             (raw ?: "").replace(Regex("[\\p{Cntrl}]"), " ").trim().take(MEMO_MAX)
 
-        fun sha256(s: String): String =
-            MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
+        /** HTTPS anywhere; plain HTTP only to this machine or the emulator's host (local demo receiver). */
+        fun isAllowedEndpoint(url: String): Boolean {
+            val uri = runCatching { URI(url) }.getOrNull() ?: return false
+            val host = uri.host ?: return false
+            return when (uri.scheme?.lowercase()) {
+                "https" -> true
+                "http" -> host == "10.0.2.2" || host == "127.0.0.1" || host == "localhost"
+                else -> false
+            }
+        }
+
+        val json = Json { ignoreUnknownKeys = true }
     }
 }

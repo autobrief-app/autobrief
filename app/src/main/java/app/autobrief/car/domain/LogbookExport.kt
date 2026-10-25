@@ -1,10 +1,17 @@
 package app.autobrief.car.domain
 
 import app.autobrief.car.model.AppSettings
+import app.autobrief.car.model.ClassifiedBy
 import app.autobrief.car.model.TripPurpose
 import app.autobrief.car.model.TripRecord
+import app.autobrief.car.model.TripSource
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.io.ByteArrayOutputStream
+import java.time.Instant
 import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
 import java.util.zip.ZipEntry
@@ -14,7 +21,8 @@ import java.util.zip.ZipOutputStream
  * Writes the NTS 「업무용승용차 운행기록부」 — the unnumbered annex form of the notice
  * 「업무용승용차 운행기록 방법에 관한 고시」 — column for column: ③ date (weekday), ④ user (department, name),
  * ⑤ odometer before, ⑥ odometer after, ⑦ distance, ⑧ commute, ⑨ general business, ⑩ remarks,
- * then ⑪ total, ⑫ business-use distance and ⑬ business-use ratio.
+ * then ⑪ total, ⑫ business-use distance and ⑬ business-use ratio. A second sheet lists the ledger
+ * entries behind the rows (who set each purpose, every correction, the hashes).
  */
 object LogbookExport {
 
@@ -27,18 +35,24 @@ object LogbookExport {
         val note: String,
     )
 
+    /** A plain table sheet (the ledger listing). */
+    data class Table(val name: String, val columns: List<String>, val rows: List<List<Any?>>, val widths: List<Int>)
+
     val COLUMNS = listOf(
         "③사용일자(요일)", "④사용자 부서", "④사용자 성명",
         "⑤주행 전 계기판의 거리(㎞)", "⑥주행 후 계기판의 거리(㎞)", "⑦주행거리(㎞)",
         "⑧출·퇴근용(㎞)", "⑨일반 업무용(㎞)", "⑩비고",
     )
 
+    private val json = Json { ignoreUnknownKeys = true }
+    private val STAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+
     /** [businessYear] = the period is a whole 사업연도 (the form's own unit); otherwise it is labelled as a period extract. */
     fun build(
         records: List<TripRecord>,
         settings: AppSettings,
         period: ClosedRange<LocalDate>,
-        banner: String? = null,
+        verificationCode: String,
         businessYear: Boolean = true,
     ): Sheet {
         val unit = if (businessYear) "사업연도" else "기간"
@@ -58,8 +72,9 @@ object LogbookExport {
                 remarks(r),
             )
         }
+        val sample = inPeriod.any { it.source == TripSource.SAMPLE }
         val header = buildList {
-            if (banner != null) add(banner)
+            if (sample) add("※ 가상 예시 데이터입니다. 실제 차량, 법인, 인물이 아닙니다.")
             add("$unit: ${period.start} ~ ${period.endInclusive}    법인명(상호): ${settings.entityName}    사업자등록번호: ${settings.businessNumber}")
             add("1. 기본정보    ①차종: ${settings.vehicleModel}    ②자동차등록번호: ${settings.plateNumber}")
             add("2. 업무용 사용비율 계산")
@@ -70,9 +85,11 @@ object LogbookExport {
             listOf("⑬업무사용비율(⑫/⑪)", summary.businessUseRatio?.let { "%.1f%%".format(it * 100) } ?: "-"),
         )
         val note = buildString {
-            append("작성: 오토브리프. ⑤⑥은 차량 계기판 누적거리(Pleos Vehicle SDK) 값입니다. ")
+            append("작성: 오토브리프. ⑤⑥은 차량 계기판 누적거리(Pleos Vehicle SDK) 값이며 기록 뒤에는 바꿀 수 없고, 목적을 고친 내역은 '검증 기록' 시트에 남습니다. ")
+            append("검증 코드 $verificationCode. ")
             append("근거 서식: 국세청 「업무용승용차 운행기록 방법에 관한 고시」 별지 서식.")
             if (summary.unclassifiedCount > 0) append(" 미분류 ${summary.unclassifiedCount}건은 업무용으로 계산하지 않았습니다.")
+            if (summary.gapRowCount > 0) append(" 미기록 구간 ${summary.gapRowCount}건은 비업무로 계산했습니다.")
         }
         return Sheet("업무용승용차 운행기록부", header, COLUMNS, rows, footer, note)
     }
@@ -84,17 +101,67 @@ object LogbookExport {
             TripPurpose.UNLOGGED_GAP -> add("미기록 구간")
             else -> {}
         }
-        if (r.designatedDriver) add("대리운전")
-        if (r.classifiedBy == "음성") add("음성 지정")
+        when {
+            r.classifiedBy == ClassifiedBy.AUTO && r.autoReason != null -> add("자동 분류(${r.autoReason})")
+            r.classifiedBy == ClassifiedBy.VOICE -> add("음성 지정")
+        }
+        if (r.amended) add("수정됨")
         r.routeTollEstimateKrw?.takeIf { it > 0 }?.let { add("내비 예상 통행료 ${"%,d".format(it)}원") }
-        if (r.memo.isNotBlank()) add(r.memo)
+        if (r.memo.isNotBlank() && r.purpose != TripPurpose.UNLOGGED_GAP) add(r.memo)
     }.joinToString(", ")
 
     fun dateWithWeekday(d: LocalDate): String =
         "$d(${d.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.KOREAN)})"
 
+    /** The ledger entries that touch the period's trips, oldest first. */
+    fun ledgerTable(entries: List<LedgerEntry>, records: List<TripRecord>, period: ClosedRange<LocalDate>, headCode: String): Table {
+        val ids = records.filter { TripLogbook.localDate(it.startEpochMs) in period }.map { it.id }.toSet()
+        val rows = entries.filter { it.tripId in ids }.sortedBy { it.seq }.map { e ->
+            listOf(
+                e.seq,
+                STAMP.format(Instant.ofEpochMilli(e.epochMs).atZone(KST)),
+                kindLabel(e.kind),
+                dateWithWeekday(TripLogbook.localDate(records.first { it.id == e.tripId }.startEpochMs)),
+                describe(e),
+                e.hash.take(16),
+                e.prevHash.take(16),
+            )
+        } + listOf(
+            listOf(null, null, null, null, "전체 원장의 검증 코드 $headCode, 해시 = SHA-256(이전 해시|순번|시각|종류|운행 ID|내용)", null, null),
+        )
+        return Table(
+            "검증 기록",
+            listOf("순번", "기록 시각(KST)", "종류", "운행일", "내용", "해시(앞 16자리)", "이전 해시(앞 16자리)"),
+            rows,
+            listOf(8, 17, 12, 15, 60, 20, 20),
+        )
+    }
+
+    private fun kindLabel(kind: String) = when (kind) {
+        LedgerKind.TRIP -> "운행 기록"
+        LedgerKind.GAP -> "미기록 구간"
+        LedgerKind.CLASSIFY -> "목적 지정"
+        LedgerKind.AMEND -> "목적 수정"
+        else -> kind
+    }
+
+    private fun describe(e: LedgerEntry): String {
+        val b = runCatching { json.parseToJsonElement(e.body) as JsonObject }.getOrNull() ?: return e.body
+        fun s(k: String) = (b[k] as? JsonPrimitive)?.takeIf { it.isString }?.content
+        fun d(k: String) = (b[k] as? JsonPrimitive)?.content?.toDoubleOrNull()
+        fun purpose(k: String) = s(k)?.let { runCatching { TripPurpose.valueOf(it).label }.getOrNull() } ?: "-"
+        val user = s("userName")?.let { n -> " · $n" + (s("userDept")?.takeIf { it.isNotBlank() }?.let { "($it)" } ?: "") } ?: ""
+        return when (e.kind) {
+            LedgerKind.TRIP, LedgerKind.GAP -> "계기판 ${"%,.1f".format(d("startOdometerKm") ?: 0.0)} → ${"%,.1f".format(d("endOdometerKm") ?: 0.0)} km" +
+                (s("source")?.takeIf { it != TripSource.SDK }?.let { " · $it" } ?: "")
+            LedgerKind.CLASSIFY -> purpose("purpose") + user + " · ${s("by") ?: "-"}" + (s("autoReason")?.let { "($it)" } ?: "")
+            LedgerKind.AMEND -> "${purpose("previousPurpose")} → ${purpose("purpose")}$user · ${s("by") ?: "-"} · 사유: ${s("reason") ?: "-"}"
+            else -> e.body
+        }
+    }
+
     fun toCsv(sheet: Sheet): ByteArray {
-        val sb = StringBuilder("\uFEFF") // BOM so Excel opens the Korean text as UTF-8
+        val sb = StringBuilder("﻿") // BOM so Excel opens the Korean text as UTF-8
         sheet.headerLines.forEach { sb.append(csv(listOf(it))).append("\r\n") }
         sb.append(csv(sheet.columns)).append("\r\n")
         sheet.rows.forEach { sb.append(csv(it)).append("\r\n") }
@@ -114,43 +181,45 @@ object LogbookExport {
         if (safe.any { it == ',' || it == '"' || it == '\n' }) "\"" + safe.replace("\"", "\"\"") + "\"" else safe
     }
 
-    /** Minimal OOXML workbook: inline strings, one bold style, merged title/header lines. */
-    fun toXlsx(sheet: Sheet): ByteArray {
-        val lastCol = colName(sheet.columns.size - 1)
-        val xmlRows = StringBuilder()
-        val merges = mutableListOf<String>()
-        var r = 1
-        fun row(cells: List<Any?>, bold: Boolean) {
-            xmlRows.append("<row r=\"$r\">")
-            cells.forEachIndexed { i, c -> xmlRows.append(cell("${colName(i)}$r", c, bold)) }
-            xmlRows.append("</row>")
-            r++
+    // ------------------------------------------------------------------------------------ OOXML writer
+
+    private object Style {
+        const val TITLE = 1
+        const val HEADER_LINE = 2
+        const val TH = 3
+        const val TD = 4
+        const val TD_NUM = 5
+        const val FOOT = 6
+        const val FOOT_NUM = 7
+        const val NOTE = 8
+        const val FOOT_VALUE = 9
+    }
+
+    /** Workbook with the logbook form (borders, number format, landscape A4 fit-to-width) and optional tables. */
+    fun toXlsx(sheet: Sheet, tables: List<Table> = emptyList()): ByteArray {
+        val sheets = listOf(sheet.title.take(31) to formXml(sheet)) + tables.map { it.name.take(31) to tableXml(it) }
+        val headerRows = listOf(sheet.headerLines.size + 2) + tables.map { 1 }
+        val printTitles = sheets.indices.joinToString("") { i ->
+            "<definedName name=\"_xlnm.Print_Titles\" localSheetId=\"$i\">'${xml(sheets[i].first)}'!\$${headerRows[i]}:\$${headerRows[i]}</definedName>"
         }
-        row(listOf(sheet.title), bold = true); merges += "A1:${lastCol}1"
-        sheet.headerLines.forEach { line -> merges += "A$r:$lastCol$r"; row(listOf(line), bold = false) }
-        row(sheet.columns, bold = true)
-        sheet.rows.forEach { row(it, bold = false) }
-        sheet.footer.forEach { row(it, bold = true) }
-        merges += "A$r:$lastCol$r"; row(listOf(sheet.note), bold = false)
+        val files = linkedMapOf<String, String>()
+        files["[Content_Types].xml"] = HEAD + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">" +
+            "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>" +
+            "<Default Extension=\"xml\" ContentType=\"application/xml\"/>" +
+            "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>" +
+            sheets.indices.joinToString("") { "<Override PartName=\"/xl/worksheets/sheet${it + 1}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>" } +
+            "<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/></Types>"
+        files["_rels/.rels"] = HEAD + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
+            "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>"
+        files["xl/workbook.xml"] = HEAD + "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets>" +
+            sheets.mapIndexed { i, (name, _) -> "<sheet name=\"${xml(name)}\" sheetId=\"${i + 1}\" r:id=\"rId${i + 1}\"/>" }.joinToString("") +
+            "</sheets><definedNames>$printTitles</definedNames></workbook>"
+        files["xl/_rels/workbook.xml.rels"] = HEAD + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
+            sheets.indices.joinToString("") { "<Relationship Id=\"rId${it + 1}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet${it + 1}.xml\"/>" } +
+            "<Relationship Id=\"rId${sheets.size + 1}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/></Relationships>"
+        files["xl/styles.xml"] = STYLES
+        sheets.forEachIndexed { i, (_, body) -> files["xl/worksheets/sheet${i + 1}.xml"] = body }
 
-        val widths = listOf(16, 12, 10, 16, 16, 12, 12, 12, 40)
-        val cols = widths.mapIndexed { i, w -> "<col min=\"${i + 1}\" max=\"${i + 1}\" width=\"$w\" customWidth=\"1\"/>" }.joinToString("")
-        val sheetXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols>$cols</cols><sheetData>$xmlRows</sheetData><mergeCells count="${merges.size}">${merges.joinToString("") { "<mergeCell ref=\"$it\"/>" }}</mergeCells></worksheet>"""
-
-        val files = linkedMapOf(
-            "[Content_Types].xml" to """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>""",
-            "_rels/.rels" to """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>""",
-            "xl/workbook.xml" to """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="운행기록부" sheetId="1" r:id="rId1"/></sheets></workbook>""",
-            "xl/_rels/workbook.xml.rels" to """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>""",
-            "xl/styles.xml" to """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="10"/><name val="맑은 고딕"/></font><font><b/><sz val="10"/><name val="맑은 고딕"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>""",
-            "xl/worksheets/sheet1.xml" to sheetXml,
-        )
         val out = ByteArrayOutputStream()
         ZipOutputStream(out).use { zip ->
             files.forEach { (name, body) ->
@@ -162,16 +231,64 @@ object LogbookExport {
         return out.toByteArray()
     }
 
-    private fun cell(ref: String, value: Any?, bold: Boolean): String {
-        val style = if (bold) " s=\"1\"" else ""
-        return when (value) {
-            null -> ""
-            is Number -> "<c r=\"$ref\"$style><v>$value</v></c>"
-            else -> "<c r=\"$ref\" t=\"inlineStr\"$style><is><t xml:space=\"preserve\">${xml(value.toString())}</t></is></c>"
+    private class Grid(val lastCol: String) {
+        val rows = StringBuilder()
+        val merges = mutableListOf<String>()
+        var r = 1
+        fun row(cells: List<Pair<Any?, Int>>) {
+            rows.append("<row r=\"$r\">")
+            cells.forEachIndexed { i, (v, s) -> rows.append(cell("${colName(i)}$r", v, s)) }
+            rows.append("</row>")
+            r++
+        }
+        fun mergedLine(text: String, style: Int) {
+            merges += "A$r:$lastCol$r"
+            row(listOf(text to style))
         }
     }
 
+    private fun formXml(sheet: Sheet): String {
+        val g = Grid(colName(sheet.columns.size - 1))
+        g.mergedLine(sheet.title, Style.TITLE)
+        sheet.headerLines.forEach { g.mergedLine(it, Style.HEADER_LINE) }
+        g.row(sheet.columns.map { it to Style.TH })
+        val headerRow = g.r - 1
+        sheet.rows.forEach { cells -> g.row(cells.map { it to if (it is Number) Style.TD_NUM else Style.TD }) }
+        sheet.footer.forEach { (label, value) ->
+            // label spans ③~⑥, value sits under ⑦
+            g.merges += "A${g.r}:E${g.r}"
+            g.row(listOf(label to Style.FOOT, null to Style.FOOT, null to Style.FOOT, null to Style.FOOT, null to Style.FOOT, value to if (value is Number) Style.FOOT_NUM else Style.FOOT_VALUE))
+        }
+        g.mergedLine(sheet.note, Style.NOTE)
+        val widths = listOf(15, 11, 10, 14, 14, 13, 15, 15, 44)
+        return worksheet(widths, g, frozenRows = headerRow, landscape = true)
+    }
+
+    private fun tableXml(t: Table): String {
+        val g = Grid(colName(t.columns.size - 1))
+        g.row(t.columns.map { it to Style.TH })
+        t.rows.forEach { cells -> g.row(cells.map { it to if (it is Number) Style.TD_NUM else Style.TD }) }
+        return worksheet(t.widths, g, frozenRows = 1, landscape = true)
+    }
+
+    private fun worksheet(widths: List<Int>, g: Grid, frozenRows: Int, landscape: Boolean): String {
+        val cols = widths.mapIndexed { i, w -> "<col min=\"${i + 1}\" max=\"${i + 1}\" width=\"$w\" customWidth=\"1\"/>" }.joinToString("")
+        val pane = "<sheetViews><sheetView workbookViewId=\"0\"><pane ySplit=\"$frozenRows\" topLeftCell=\"A${frozenRows + 1}\" activePane=\"bottomLeft\" state=\"frozen\"/></sheetView></sheetViews>"
+        val merges = if (g.merges.isEmpty()) "" else "<mergeCells count=\"${g.merges.size}\">${g.merges.joinToString("") { "<mergeCell ref=\"$it\"/>" }}</mergeCells>"
+        return HEAD + "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">" +
+            "<sheetPr><pageSetUpPr fitToPage=\"1\"/></sheetPr>$pane<cols>$cols</cols><sheetData>${g.rows}</sheetData>$merges" +
+            "<pageMargins left=\"0.4\" right=\"0.4\" top=\"0.5\" bottom=\"0.5\" header=\"0.3\" footer=\"0.3\"/>" +
+            "<pageSetup paperSize=\"9\" orientation=\"${if (landscape) "landscape" else "portrait"}\" fitToWidth=\"1\" fitToHeight=\"0\"/></worksheet>"
+    }
+
+    private fun cell(ref: String, value: Any?, style: Int): String = when (value) {
+        null -> "<c r=\"$ref\" s=\"$style\"/>"
+        is Number -> "<c r=\"$ref\" s=\"$style\"><v>$value</v></c>"
+        else -> "<c r=\"$ref\" s=\"$style\" t=\"inlineStr\"><is><t xml:space=\"preserve\">${xml(value.toString())}</t></is></c>"
+    }
+
     private fun xml(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+        .filter { it == '\t' || it == '\n' || it == '\r' || it >= ' ' }
 
     private fun colName(index: Int): String {
         var i = index
@@ -182,4 +299,28 @@ object LogbookExport {
         } while (i >= 0)
         return sb.toString()
     }
+
+    private const val HEAD = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
+
+    /** cellXfs order matches [Style]: 0 default, 1 title, 2 header line, 3 th, 4 td, 5 td number, 6 footer, 7 footer number, 8 note, 9 footer value. */
+    private val STYLES = HEAD + "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">" +
+        "<numFmts count=\"1\"><numFmt numFmtId=\"164\" formatCode=\"#,##0.0\"/></numFmts>" +
+        "<fonts count=\"3\"><font><sz val=\"10\"/><name val=\"맑은 고딕\"/></font><font><b/><sz val=\"10\"/><name val=\"맑은 고딕\"/></font><font><b/><sz val=\"14\"/><name val=\"맑은 고딕\"/></font></fonts>" +
+        "<fills count=\"3\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill>" +
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFEEF1F6\"/><bgColor indexed=\"64\"/></patternFill></fill></fills>" +
+        "<borders count=\"2\"><border><left/><right/><top/><bottom/><diagonal/></border>" +
+        "<border><left style=\"thin\"><color rgb=\"FF8A94A6\"/></left><right style=\"thin\"><color rgb=\"FF8A94A6\"/></right><top style=\"thin\"><color rgb=\"FF8A94A6\"/></top><bottom style=\"thin\"><color rgb=\"FF8A94A6\"/></bottom><diagonal/></border></borders>" +
+        "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>" +
+        "<cellXfs count=\"10\">" +
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>" +
+        "<xf numFmtId=\"0\" fontId=\"2\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>" +
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\"><alignment vertical=\"center\"/></xf>" +
+        "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\" wrapText=\"1\"/></xf>" +
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyBorder=\"1\" applyAlignment=\"1\"><alignment vertical=\"center\" wrapText=\"1\"/></xf>" +
+        "<xf numFmtId=\"164\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment vertical=\"center\"/></xf>" +
+        "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment vertical=\"center\"/></xf>" +
+        "<xf numFmtId=\"164\" fontId=\"1\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\"/>" +
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\"><alignment vertical=\"top\" wrapText=\"1\"/></xf>" +
+        "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"right\" vertical=\"center\"/></xf>" +
+        "</cellXfs><cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles></styleSheet>"
 }
