@@ -108,6 +108,9 @@ data class AppSettings(
     /** SHA-256 of salt + PIN; empty = no admin PIN yet. */
     val adminPinHash: String = "",
     val adminPinSalt: String = "",
+    /** Wrong admin PINs in a row and the lock that follows every fifth miss (epoch ms). */
+    val adminPinFailures: Int = 0,
+    val adminPinLockedUntilMs: Long = 0,
     /** YYYY-MM of the last month whose workbook was closed automatically. */
     val lastMonthlyCloseYm: String = "",
 )

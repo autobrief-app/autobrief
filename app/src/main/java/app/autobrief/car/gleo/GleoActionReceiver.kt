@@ -29,13 +29,15 @@ fun intentParams(intent: Intent) = GleoContract.parseParams(
 )
 
 /**
- * The app-integration guide sends this reply as an implicit broadcast and names no package or permission
- * for Gleo, so the payload is kept to non-sensitive fields (status, an English sentence, distances and
- * purposes) and never carries places, addresses or names.
+ * The reply goes to the Gleo app only, so other apps cannot read it. The guide's sample sends it as an
+ * implicit broadcast; that form is used only on a build where Gleo is not [AutoBriefCore.GLEO_PACKAGE].
+ * The payload carries no places, addresses or names either way (status, an English sentence, totals).
  */
 fun sendGleoResponse(context: Context, function: String, reply: AutoBriefCore.GleoReply) {
     val response = Intent(GleoContract.RESPONSE_ACTION)
         .putExtra(GleoContract.EXTRA_PACKAGE_NAME, context.packageName)
         .putExtra(GleoContract.EXTRA_RESPONSE, GleoContract.response(function, reply))
+    val gleoInstalled = runCatching { context.packageManager.getPackageInfo(AutoBriefCore.GLEO_PACKAGE, 0) }.isSuccess
+    if (gleoInstalled) response.setPackage(AutoBriefCore.GLEO_PACKAGE)
     context.sendBroadcast(response)
 }

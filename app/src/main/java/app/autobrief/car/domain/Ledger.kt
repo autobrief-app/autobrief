@@ -89,6 +89,7 @@ class Ledger(initial: List<LedgerEntry> = emptyList()) {
             put("endOdometerKm", r.endOdometerKm)
             put("vin", vin)
             put("source", r.source)
+            put("toll", r.routeTollEstimateKrw)
             if (r.purpose == TripPurpose.UNLOGGED_GAP) {
                 put("reason", r.memo)
             } else {
@@ -105,6 +106,8 @@ class Ledger(initial: List<LedgerEntry> = emptyList()) {
             put("memo", r.memo)
             put("by", r.classifiedBy)
             put("autoReason", r.autoReason)
+            put("startPlace", r.startPlace)
+            put("endPlace", r.endPlace)
         }
 
         fun amendBody(r: TripRecord, previous: TripPurpose, reason: String): JsonObject = buildJsonObject {
@@ -136,6 +139,7 @@ class Ledger(initial: List<LedgerEntry> = emptyList()) {
                         startPlace = b.str("startPlace"),
                         endPlace = b.str("endPlace"),
                         source = b.str("source") ?: "",
+                        routeTollEstimateKrw = b.long("toll")?.toInt(),
                     )
                     LedgerKind.CLASSIFY, LedgerKind.AMEND -> {
                         val t = trips[e.tripId] ?: continue
@@ -148,6 +152,8 @@ class Ledger(initial: List<LedgerEntry> = emptyList()) {
                             classifiedBy = b.str("by"),
                             autoReason = if (e.kind == LedgerKind.CLASSIFY) b.str("autoReason") else t.autoReason,
                             amended = t.amended || e.kind == LedgerKind.AMEND,
+                            startPlace = b.str("startPlace") ?: t.startPlace,
+                            endPlace = b.str("endPlace") ?: t.endPlace,
                         )
                     }
                 }
@@ -174,10 +180,15 @@ class Ledger(initial: List<LedgerEntry> = emptyList()) {
                     problems += "${dateLabel(r.startEpochMs)} 운행이 기록 원장에 없습니다."
                     continue
                 }
+                // every field that reaches the form (⑤⑥⑦, ⑧⑨ by purpose, ④, ⑩ remarks) must match the replay;
+                // place labels are compared when the ledger carries them (set after parking without a rule they are display-only)
                 val same = t.startOdometerKm == r.startOdometerKm && t.endOdometerKm == r.endOdometerKm &&
                     t.startEpochMs == r.startEpochMs && t.endEpochMs == r.endEpochMs &&
-                    t.purpose == r.purpose && t.user == r.user && t.memo == r.memo
-                if (!same) problems += "${dateLabel(r.startEpochMs)} 운행이 원장과 다릅니다(계기판, 목적, 사용자 또는 비고)."
+                    t.purpose == r.purpose && t.user == r.user && t.memo == r.memo &&
+                    t.classifiedBy == r.classifiedBy && t.amended == r.amended && t.autoReason == r.autoReason &&
+                    t.source == r.source && t.routeTollEstimateKrw == r.routeTollEstimateKrw &&
+                    (t.startPlace == null || t.startPlace == r.startPlace) && (t.endPlace == null || t.endPlace == r.endPlace)
+                if (!same) problems += "${dateLabel(r.startEpochMs)} 운행이 원장과 다릅니다(계기판, 목적, 사용자, 비고 또는 분류 방식)."
             }
             val shown = rows.map { it.id }.toSet()
             replayed.keys.filter { it !in shown }.forEach { problems += "원장에 있는 운행($it)이 목록에서 사라졌습니다." }

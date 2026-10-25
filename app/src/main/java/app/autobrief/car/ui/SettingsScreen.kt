@@ -142,6 +142,7 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                                 message = when (core.setDemoMode(on, currentPin.ifBlank { null })) {
                                     AutoBriefCore.SettingsResult.SAVED -> if (on) "시연 모드: 실제 운행기록과 따로 저장됩니다." else "실제 운행기록으로 돌아왔습니다."
                                     AutoBriefCore.SettingsResult.PIN_REQUIRED -> "시연 모드를 켜려면 현재 관리자 PIN이 필요합니다."
+                                    AutoBriefCore.SettingsResult.PIN_LOCKED -> "PIN을 여러 번 틀려 잠시 잠겼습니다. 잠시 뒤 다시 시도해 주세요."
                                     AutoBriefCore.SettingsResult.TRIP_IN_PROGRESS -> "운행 중에는 바꿀 수 없습니다. P에서 바꿔 주세요."
                                     AutoBriefCore.SettingsResult.INVALID_URL -> null
                                 }
@@ -178,6 +179,7 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                 message = when (core.saveSettings(next, newPin.takeIf { it.length >= 4 }, currentPin.ifBlank { null })) {
                     AutoBriefCore.SettingsResult.SAVED -> "저장했습니다."
                     AutoBriefCore.SettingsResult.PIN_REQUIRED -> "보내기 주소나 PIN을 바꾸려면 현재 관리자 PIN이 필요합니다."
+                    AutoBriefCore.SettingsResult.PIN_LOCKED -> "PIN을 여러 번 틀려 잠시 잠겼습니다. 잠시 뒤 다시 시도해 주세요."
                     AutoBriefCore.SettingsResult.INVALID_URL -> "보내기 주소는 https:// 로 시작해야 합니다 (시연용 http://10.0.2.2 만 예외)."
                     AutoBriefCore.SettingsResult.TRIP_IN_PROGRESS -> null
                 }

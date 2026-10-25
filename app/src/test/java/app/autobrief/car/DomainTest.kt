@@ -140,6 +140,12 @@ class LedgerTest {
 
         // 4. a whole row deleted from the list
         assertFalse(Ledger.check(ledger.all, rows.drop(1)).ok)
+
+        // 5. the remarks column hidden: an amendment flag dropped, a screen label passed off as automatic
+        val k = rows.indexOfFirst { it.classifiedBy == ClassifiedBy.SCREEN }
+        assertFalse(Ledger.check(ledger.all, rows.toMutableList().also { it[k] = it[k].copy(classifiedBy = ClassifiedBy.AUTO) }).ok)
+        assertFalse(Ledger.check(ledger.all, rows.toMutableList().also { it[k] = it[k].copy(amended = true) }).ok)
+        assertFalse(Ledger.check(ledger.all, rows.toMutableList().also { it[k] = it[k].copy(routeTollEstimateKrw = 99_000) }).ok)
     }
 
     @Test fun replayRebuildsAmendments() {

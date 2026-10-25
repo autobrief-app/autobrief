@@ -16,6 +16,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- package visibility (Android 11+): Gleo replies are addressed to the Gleo app itself -->
+    <queries>
+        <package android:name="ai.umos.ambientai" />
+    </queries>
+
     <application
         android:name=".AutoBriefApp"
         android:allowBackup="false"
@@ -40,13 +45,14 @@
                 android:value="true" />
         </activity>
 
-        <!-- Gleo functions with "component": "service" (sendBroadcast). The Gleo guide names no sender
-             permission, so the receiver stays open; it can only label the trip that ended in the last
-             30 minutes, read this month's totals, or write and send a workbook to the owner's address,
-             and voice-labelled rows are marked in the logbook remarks and the ledger. -->
+        <!-- Gleo functions with "component": "service" (sendBroadcast). Only a sender holding Gleo's own
+             signature permission (defined by the Gleo app ai.umos.ambientai on Pleos Connect) can reach it,
+             so no other app can label trips or trigger a send. Voice may only label the trip that ended in
+             the last 30 minutes while it has no purpose; the row is marked 음성 지정 in remarks and ledger. -->
         <receiver
             android:name=".gleo.GleoActionReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:permission="ai.umos.gleo.permission.APP_ACTION">
             <intent-filter>
                 <action android:name="LOG_TRIP_PURPOSE" />
                 <action android:name="GET_LOGBOOK_STATUS" />

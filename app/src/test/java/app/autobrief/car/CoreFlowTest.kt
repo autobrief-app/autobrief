@@ -108,15 +108,37 @@ class CoreFlowTest {
         assertEquals("asking", h.core.handleGleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("{}")).status)
     }
 
-    @Test fun voiceCorrectionOfAnAutomaticCommuteIsAnAmendment() {
+    @Test fun voiceCannotRewriteARecordedPurpose() {
         val h = Harness(base)
         h.bookmarks()
         h.drive(0.0, 18.0, SampleHistory.HOME.point, SampleHistory.OFFICE.point)
         val reply = h.core.handleGleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("""{"purpose":"PERSONAL"}"""))
-        assertEquals("success", reply.status)
-        val e = h.core.ledgerFor(h.core.trips.value.single().id).last()
-        assertEquals(LedgerKind.AMEND, e.kind)
-        assertTrue("음성 정정" in e.body)
+        assertEquals("fail", reply.status)
+        val row = h.core.trips.value.single()
+        assertEquals(TripPurpose.COMMUTE, row.purpose)
+        assertEquals(listOf(LedgerKind.TRIP, LedgerKind.CLASSIFY), h.core.ledgerFor(row.id).map { it.kind })
+    }
+
+    @Test fun voiceSendIsRateLimited() {
+        val h = Harness(base)
+        h.drive(0.0, 12.0, null, null)
+        assertEquals("success", h.core.handleGleo(GleoContract.SEND_LOGBOOK, GleoContract.parseParams("{}")).status)
+        assertEquals("fail", h.core.handleGleo(GleoContract.SEND_LOGBOOK, GleoContract.parseParams("{}")).status)
+        h.advance(AutoBriefCore.SEND_COOLDOWN_MS + 1)
+        assertEquals("success", h.core.handleGleo(GleoContract.SEND_LOGBOOK, GleoContract.parseParams("{}")).status)
+    }
+
+    @Test fun wrongAdminPinsLockEntryAndThePersistedCounterSurvivesARestart() {
+        val h = Harness(base)
+        h.core.saveSettings(h.core.settings.value, "4321", null)
+        repeat(4) { assertEquals(AutoBriefCore.SettingsResult.PIN_REQUIRED, h.core.setDemoMode(true, "0000")) }
+        assertEquals(AutoBriefCore.SettingsResult.PIN_LOCKED, h.core.setDemoMode(true, "0000"))
+        // even the right PIN is refused while locked, and a fresh core on the same storage stays locked
+        assertEquals(AutoBriefCore.SettingsResult.PIN_LOCKED, h.core.setDemoMode(true, "4321"))
+        val again = AutoBriefCore(h.store, clock = { h.now })
+        assertEquals(AutoBriefCore.SettingsResult.PIN_LOCKED, again.setDemoMode(true, "4321"))
+        h.advance(AutoBriefCore.PIN_LOCK_MS + 1)
+        assertEquals(AutoBriefCore.SettingsResult.SAVED, again.setDemoMode(true, "4321"))
     }
 
     @Test fun statusAndSendRepliesAreEnglishAndCarryNoPlaces() {

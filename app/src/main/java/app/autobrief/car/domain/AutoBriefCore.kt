@@ -449,7 +449,31 @@ class AutoBriefCore(
     private fun pinMatches(pin: String?, s: AppSettings = _settings.value): Boolean =
         s.adminPinHash.isNotEmpty() && pin != null && Ledger.sha256(s.adminPinSalt + pin) == s.adminPinHash
 
-    enum class SettingsResult { SAVED, PIN_REQUIRED, INVALID_URL, TRIP_IN_PROGRESS }
+    enum class SettingsResult { SAVED, PIN_REQUIRED, PIN_LOCKED, INVALID_URL, TRIP_IN_PROGRESS }
+
+    /** Until when PIN entry is locked (epoch ms); 0 = not locked. */
+    val pinLockedUntil: Long get() = _settings.value.adminPinLockedUntilMs.takeIf { it > clock() } ?: 0
+
+    /**
+     * The one place an admin PIN is checked. Every fifth wrong PIN in a row locks entry for 5 minutes, doubling up
+     * to 80 minutes; the counters live in the settings file so a restart does not reset them.
+     */
+    private fun checkAdminPin(pin: String?): SettingsResult {
+        val s = _settings.value
+        if (s.adminPinHash.isEmpty()) return SettingsResult.SAVED
+        val now = clock()
+        if (now < s.adminPinLockedUntilMs) return SettingsResult.PIN_LOCKED
+        if (pinMatches(pin, s)) {
+            if (s.adminPinFailures != 0) writeSettings(s.copy(adminPinFailures = 0, adminPinLockedUntilMs = 0))
+            return SettingsResult.SAVED
+        }
+        val failures = s.adminPinFailures + 1
+        val rounds = failures / PIN_ATTEMPTS_BEFORE_LOCK
+        val lockedUntil = if (failures % PIN_ATTEMPTS_BEFORE_LOCK == 0) now + PIN_LOCK_MS * (1L shl (rounds - 1).coerceAtMost(4)) else s.adminPinLockedUntilMs
+        writeSettings(s.copy(adminPinFailures = failures, adminPinLockedUntilMs = lockedUntil))
+        log("ADMIN_PIN_MISS count=$failures")
+        return if (now < lockedUntil) SettingsResult.PIN_LOCKED else SettingsResult.PIN_REQUIRED
+    }
 
     /**
      * Owner settings. The sending address and the admin PIN change only with the current PIN once a PIN
@@ -461,12 +485,15 @@ class AutoBriefCore(
         val url = new.archiveWebhookUrl.trim()
         if (url.isNotEmpty() && !isAllowedEndpoint(url)) return SettingsResult.INVALID_URL
         val sensitive = newPin != null || url != old.archiveWebhookUrl
-        if (sensitive && adminPinSet && !pinMatches(currentPin)) return SettingsResult.PIN_REQUIRED
+        if (sensitive) checkAdminPin(currentPin).takeIf { it != SettingsResult.SAVED }?.let { return it }
+        val current = _settings.value
         var next = new.copy(
             archiveWebhookUrl = url,
-            adminPinHash = old.adminPinHash,
-            adminPinSalt = old.adminPinSalt,
-            lastMonthlyCloseYm = old.lastMonthlyCloseYm,
+            adminPinHash = current.adminPinHash,
+            adminPinSalt = current.adminPinSalt,
+            adminPinFailures = current.adminPinFailures,
+            adminPinLockedUntilMs = current.adminPinLockedUntilMs,
+            lastMonthlyCloseYm = current.lastMonthlyCloseYm,
             fiscalYearStartMonth = new.fiscalYearStartMonth.coerceIn(1, 12),
             defaultUserIndex = new.defaultUserIndex.coerceIn(0, (new.users.size - 1).coerceAtLeast(0)),
         )
@@ -494,7 +521,7 @@ class AutoBriefCore(
     fun setDemoMode(on: Boolean, pin: String?): SettingsResult {
         if (on == demoMode) return SettingsResult.SAVED
         if (logbook.openTrip != null) return SettingsResult.TRIP_IN_PROGRESS
-        if (on && adminPinSet && !pinMatches(pin)) return SettingsResult.PIN_REQUIRED
+        if (on) checkAdminPin(pin).takeIf { it != SettingsResult.SAVED }?.let { return it }
         val target = if (on) Space.DEMO else Space.LIVE
         store.setActiveSpace(target)
         loadSpace(target)
@@ -615,18 +642,20 @@ class AutoBriefCore(
             "PERSONAL" -> TripPurpose.PERSONAL
             else -> null
         } ?: return GleoReply("asking", "Please say whether the trip was for commuting, business or personal use.")
-        // voice may only label the last trip, and only right after it ended
+        // voice may only label the last trip, only right after it ended, and only while it has no purpose:
+        // corrections need the screen and a reason (a voice command cannot rewrite a recorded purpose)
         val trip = logbook.lastTrip()?.takeIf { clock() - it.endEpochMs <= VOICE_CLASSIFY_WINDOW_MS }
             ?: return GleoReply("fail", "There is no trip that ended in the last 30 minutes.")
+        if (trip.purpose != TripPurpose.UNCLASSIFIED) {
+            return GleoReply("fail", "The last trip already has a purpose. Please change it on the screen.")
+        }
         val name = params.str("user_name")
         val user = name?.let { n -> _settings.value.users.firstOrNull { it.name == n } }
         if (name != null && user == null) return GleoReply("asking", "That person is not registered as a user of this car.")
         val memo = params.str("memo") ?: trip.memo
         val km = TripLogbook.round1(trip.distanceKm)
-        val unchanged = trip.purpose == purpose && memo == trip.memo && (user == null || user == trip.user)
-        if (!unchanged) {
-            val result = classifyTrip(trip.id, purpose, user, memo, ClassifiedBy.VOICE, reason = if (trip.purpose.isUserPurpose) "음성 정정" else null)
-            if (result != ClassifyResult.OK) return GleoReply("fail", "The trip could not be updated.")
+        if (classifyTrip(trip.id, purpose, user, memo, ClassifiedBy.VOICE) != ClassifyResult.OK) {
+            return GleoReply("fail", "The trip could not be updated.")
         }
         return GleoReply(
             "success",
@@ -654,7 +683,12 @@ class AutoBriefCore(
         )
     }
 
+    private var lastVoiceSendMs = Long.MIN_VALUE / 2
+
     private fun gleoSend(params: JsonObject): GleoReply {
+        val now = clock()
+        if (now - lastVoiceSendMs < SEND_COOLDOWN_MS) return GleoReply("fail", "A logbook was just sent. Please try again in a minute.")
+        lastVoiceSendMs = now
         val today = today()
         val (period, businessYear) = when (params.str("period")?.uppercase()) {
             "LAST_MONTH" -> TaxPeriods.month(YearMonth.from(today).minusMonths(1)) to false
@@ -684,6 +718,13 @@ class AutoBriefCore(
         const val OUTBOX_PENDING_MAX = 10_000
         const val OUTBOX_DELIVERED_KEEP = 200
         const val BACKFILL_MAX = 5_000
+        const val SEND_COOLDOWN_MS = 60_000L
+        const val PIN_ATTEMPTS_BEFORE_LOCK = 5
+        const val PIN_LOCK_MS = 5 * 60_000L
+
+        /** The Gleo voice assistant of Pleos Connect v2.1 (AmbientAiApp); it defines the signature permission below. */
+        const val GLEO_PACKAGE = "ai.umos.ambientai"
+        const val GLEO_SENDER_PERMISSION = "ai.umos.gleo.permission.APP_ACTION"
         private const val MEMO_MAX = 80
 
         /** Memo text arrives from voice or the screen: one line, no control characters, bounded length. */
