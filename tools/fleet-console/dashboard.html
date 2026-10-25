@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>오토브리프 관리자 화면</title>
+<style>
+:root{--bg:#0B0F17;--panel:#151B26;--text:#E8EDF5;--muted:#9AA6B8;--commute:#6FB7FF;--business:#4FD1C5;
+  --personal:#A0A8B8;--pending:#FFB547;--gap:#8E7FB0;--ok:#5BD68A;--danger:#FF6B6B;--line:#243044;--inset:#10151F}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 Pretendard,'Apple SD Gothic Neo','Malgun Gothic',sans-serif}
+header{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:10px;padding:28px 40px 8px}
+h1{margin:0;font-size:32px}
+.sub{margin:4px 0 0;color:var(--muted)}
+#conn{color:var(--muted);font-size:14px;font-variant-numeric:tabular-nums}
+#conn.off{color:var(--danger);font-weight:700}
+main{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,860px),1fr));gap:24px;padding:16px 40px 48px}
+.empty{grid-column:1/-1;padding:90px 20px;text-align:center;color:var(--muted);background:var(--panel);
+  border:1px dashed var(--line);border-radius:16px;font-size:20px}
+.car{min-width:0;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:24px}
+.head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
+.plate{font-size:28px;font-weight:700}
+.meta{color:var(--muted)}
+.chain{display:flex;align-items:center;gap:10px}
+.code{color:var(--muted);font-variant-numeric:tabular-nums}
+.badge{display:inline-block;padding:4px 14px;border-radius:999px;font-size:15px;font-weight:700;color:#0B0F17}
+.badge.small{padding:1px 10px;font-size:13px}
+.badge.ok{background:var(--ok)}.badge.warn{background:var(--pending)}.badge.bad{background:var(--danger)}
+.band{display:flex;flex-wrap:wrap;align-items:center;gap:24px;margin:18px 0 6px}
+.ratio .big{font-size:64px;font-weight:800;line-height:1.1;color:var(--business);font-variant-numeric:tabular-nums}
+.lbl{color:var(--muted);font-size:14px}
+.stats{flex:1;min-width:280px;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}
+.stat{background:var(--inset);border-radius:12px;padding:12px 14px}
+.stat b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
+.sect{margin:22px 0 8px;color:var(--muted);font-size:14px;font-weight:700}
+.tablebox{overflow-x:auto;border:1px solid var(--line);border-radius:12px}
+table{width:100%;min-width:800px;border-collapse:collapse;font-size:16px}
+th,td{padding:10px 14px;text-align:left;white-space:nowrap;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:0}
+.multi table{min-width:760px;font-size:14px}.multi th,.multi td{padding:9px 10px}   /* two cars side by side at 1920 */
+th{background:var(--inset);color:var(--muted);font-weight:600}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+.chip{display:inline-block;padding:2px 10px;border-radius:8px;font-size:13px;font-weight:700;color:#0B0F17}
+.chip.commute{background:var(--commute)}.chip.business{background:var(--business)}
+.chip.personal{background:var(--personal)}.chip.pending{background:var(--pending)}.chip.gap{background:var(--gap)}
+.tag{margin-left:6px;padding:0 6px;border:1px solid var(--pending);border-radius:6px;color:var(--pending);font-size:12px}
+small{margin-left:6px;color:var(--muted)}
+.none{padding:18px;color:var(--muted)}
+.files{display:flex;flex-direction:column;gap:6px}
+.files a{color:var(--commute);text-decoration:none}.files a:hover{text-decoration:underline}
+.alerts{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
+.alerts li{padding:6px 12px;background:var(--inset);border-left:4px solid var(--muted);border-radius:6px}
+.alerts li.warn{border-color:var(--pending)}.alerts li.bad{border-color:var(--danger)}
+@keyframes flash{from{background:rgba(255,181,71,.5)}to{background:transparent}}
+tr.flash td{animation:flash 4s ease-out var(--d,0s) both}
+@media (max-width:700px){
+  header{padding:18px 14px 4px}h1{font-size:24px}
+  main{padding:12px 14px 32px;gap:16px}
+  .car{padding:16px}.plate{font-size:22px}
+  .ratio .big{font-size:48px}
+  .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>오토브리프 관리자 화면</h1>
+    <p class="sub">차에서 기록되는 순간 회사 서버에도 사본이 남습니다 (가상 예시 시연용)</p>
+  </div>
+  <div id="conn">연결 중…</div>
+</header>
+<main id="fleet"></main>
+<script>
+(function () {
+  'use strict';
+  var POLL_MS = 2000, FLASH_MS = 4000;
+  var BADGE = {'정상': 'ok', '누락 있음': 'warn', '변조 의심': 'bad'};
+  var CHIP = {COMMUTE: 'commute', BUSINESS: 'business', PERSONAL: 'personal', UNCLASSIFIED: 'pending', UNLOGGED_GAP: 'gap'};
+  var EMPTY = '아직 받은 기록이 없습니다. 차에서 시동을 걸고 P로 돌아오면 여기에 나타납니다.';
+  var HEAD = ['날짜', '시간', '계기판 (전→후)', '거리', '목적', '사용자', '분류 방식', '상태'];
+  var lastJson = '', busy = false, born = {}, seen = {}, firstRender = true, scrolls = {};
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function km(n) { return n === null || n === undefined ? '-' : Number(n).toLocaleString('ko-KR', {maximumFractionDigits: 1}); }
+  function pct(n) { return n === null || n === undefined ? '-' : n + '%'; }
+
+  function tripRow(car, t, now, known) {
+    var sig = [car.key, t.id, t.purpose, t.amended, t.status].join('|');
+    known[sig] = true;
+    if (!firstRender && !seen[sig] && !born[sig]) born[sig] = now;   // absent from the previous render: new or changed
+    var tr = el('tr'), age = now - (born[sig] || 0);
+    if (born[sig] && age < FLASH_MS) {
+      tr.className = 'flash';
+      tr.style.setProperty('--d', '-' + age + 'ms');            // resume the 4 s fade where it was
+    }
+    var cells = [t.date, t.time, km(t.startOdometerKm) + ' → ' + km(t.endOdometerKm), km(t.distanceKm) + ' km'];
+    cells.forEach(function (c, i) { tr.appendChild(el('td', i === 3 ? 'num' : '', c)); });
+    var purpose = el('td');
+    purpose.appendChild(el('span', 'chip ' + (CHIP[t.purpose] || 'pending'), t.purposeLabel));
+    tr.appendChild(purpose);
+    tr.appendChild(el('td', '', t.user || '-'));
+    var how = el('td', '', t.by || '-');
+    if (t.autoReason) how.appendChild(el('small', '', t.autoReason));
+    if (t.amended) {
+      var tag = el('span', 'tag', '수정됨');
+      if (t.amendReason) tag.title = t.amendReason;
+      how.appendChild(tag);
+    }
+    tr.appendChild(how);
+    var status = el('td');
+    status.appendChild(el('span', 'badge small ' + (BADGE[t.status] || 'warn'), t.status));
+    tr.appendChild(status);
+    return tr;
+  }
+
+  function carView(car, now, known) {
+    var sec = el('section', 'car'), head = el('div', 'head'), id = el('div');
+    id.appendChild(el('div', 'plate', car.plate || car.key));
+    id.appendChild(el('div', 'meta', [car.model, car.entity].filter(Boolean).join(' · ')));
+    var chain = el('div', 'chain');
+    chain.appendChild(el('span', 'badge ' + (BADGE[car.chainStatus] || 'warn'), car.chainStatus));
+    chain.appendChild(el('span', 'code', '검증 코드 ' + (car.lastHashShort || '-')));
+    head.appendChild(id);
+    head.appendChild(chain);
+    sec.appendChild(head);
+
+    var m = car.month, y = car.year, band = el('div', 'band'), ratio = el('div', 'ratio');
+    ratio.appendChild(el('div', 'lbl', '이번 달 업무 사용 비율' + (m.ym ? ' (' + m.ym + ')' : '')));
+    ratio.appendChild(el('div', 'big', pct(m.ratioPct)));
+    ratio.appendChild(el('div', 'lbl', '올해 ' + pct(y.ratioPct) + ' · 총 ' + km(y.totalKm) + ' km'));
+    var stats = el('div', 'stats');
+    [['총 주행', km(m.totalKm) + ' km'], ['업무용 합계 (출퇴근 포함)', km(m.businessKm) + ' km'], ['출퇴근', km(m.commuteKm) + ' km'], ['일반 업무', km(m.generalBusinessKm) + ' km'],
+     ['미분류', m.unclassifiedCount + '건']].forEach(function (s) {
+      var box = el('div', 'stat');
+      box.appendChild(el('span', 'lbl', s[0]));
+      box.appendChild(el('b', '', s[1]));
+      stats.appendChild(box);
+    });
+    band.appendChild(ratio);
+    band.appendChild(stats);
+    sec.appendChild(band);
+
+    sec.appendChild(el('div', 'sect', '최근 운행 (최신순, 최대 30건)'));
+    var box = el('div', 'tablebox');
+    box.dataset.key = car.key;
+    if (!car.recentTrips.length) {
+      box.appendChild(el('div', 'none', '아직 운행 기록이 없습니다.'));
+    } else {
+      var table = el('table'), hr = el('tr'), body = el('tbody');
+      HEAD.forEach(function (h) { hr.appendChild(el('th', '', h)); });
+      table.appendChild(el('thead')).appendChild(hr);
+      car.recentTrips.forEach(function (t) { body.appendChild(tripRow(car, t, now, known)); });
+      table.appendChild(body);
+      box.appendChild(table);
+    }
+    sec.appendChild(box);
+
+    if (car.archives.length) {
+      sec.appendChild(el('div', 'sect', '운행기록부 보관함'));
+      var files = el('div', 'files');
+      car.archives.forEach(function (x) {
+        var row = el('div');
+        if (x.url.indexOf('/archives/') === 0) {
+          var a = el('a', '', x.fileName);
+          a.href = x.url;
+          a.setAttribute('download', '');
+          row.appendChild(a);
+        } else {
+          row.appendChild(el('span', '', x.fileName));
+        }
+        row.appendChild(el('small', '', [x.periodStart + ' ~ ' + x.periodEnd, '검증 코드 ' + x.verificationCode].join(' · ')));
+        files.appendChild(row);
+      });
+      sec.appendChild(files);
+    }
+    if (car.alerts.length) {
+      sec.appendChild(el('div', 'sect', '알림'));
+      var list = el('ul', 'alerts');
+      car.alerts.forEach(function (text) {
+        list.appendChild(el('li', text.indexOf('변조') >= 0 ? 'bad' : (text.indexOf('누락') >= 0 ? 'warn' : ''), text));
+      });
+      sec.appendChild(list);
+    }
+    return sec;
+  }
+
+  function render(state) {
+    var main = document.getElementById('fleet'), now = Date.now(), known = {};
+    [].forEach.call(main.querySelectorAll('.tablebox'), function (b) { scrolls[b.dataset.key] = b.scrollLeft; });
+    main.textContent = '';
+    main.className = state.cars.length > 1 ? 'multi' : '';
+    if (!state.cars.length) main.appendChild(el('div', 'empty', EMPTY));
+    state.cars.forEach(function (car) {
+      var sec = carView(car, now, known);
+      main.appendChild(sec);
+      var b = sec.querySelector('.tablebox');
+      if (b && scrolls[car.key]) b.scrollLeft = scrolls[car.key];
+    });
+    Object.keys(born).forEach(function (s) { if (!known[s]) delete born[s]; });   // keep the map bounded
+    seen = known;
+    firstRender = false;
+  }
+
+  function setConn(ok, stamp) {
+    var c = document.getElementById('conn');
+    c.className = ok ? '' : 'off';
+    c.textContent = ok ? '연결됨 · 마지막 갱신 ' + String(stamp).slice(11, 19) : '서버에 연결할 수 없습니다 · 다시 시도 중';
+  }
+
+  function tick() {
+    if (busy) return;
+    busy = true;
+    fetch('/api/state', {cache: 'no-store'})
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (state) {
+        var json = JSON.stringify(state.cars);
+        if (json !== lastJson) { lastJson = json; render(state); }   // identical data: leave the DOM (and scroll) alone
+        setConn(true, state.generatedAt);
+      })
+      .catch(function () { setConn(false); })
+      .then(function () { busy = false; });
+  }
+  setInterval(tick, POLL_MS);
+  tick();
+})();
+</script>
+</body>
+</html>

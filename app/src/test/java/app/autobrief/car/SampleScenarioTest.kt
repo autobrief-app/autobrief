@@ -79,6 +79,28 @@ class SampleScenarioTest {
         }
     }
 
+    /** The exact webhook bodies the app queues for the company endpoint (read by the fleet console check). */
+    @Test fun exportLedgerPayloadsForTheFleetConsole() {
+        val h = Harness(startAt = Harness.at(DocsSample.TODAY, 9, 0))
+        h.core.setDemoMode(true, null)
+        h.core.onVehicle(app.autobrief.car.domain.VehicleEvent.Vin(SampleHistory.SAMPLE_VIN))
+        h.core.loadSampleHistory("http://10.0.2.2:8787/hook")
+        val items = h.core.outbox.value
+        assertEquals(h.core.integrity.value.entryCount, items.count { it.kind == "ledger" })
+        val dir = File("build/sample").apply { mkdirs() }
+        File(dir, "outbox_payloads.jsonl").writeText(items.joinToString("\n") { it.key + "\t" + it.payloadJson } + "\n")
+        val year = h.core.summary(TaxPeriods.businessYear(2026, 1))
+        File(dir, "outbox_expected.json").writeText(
+            buildJsonObject {
+                put("entries", h.core.integrity.value.entryCount)
+                put("code", h.core.integrity.value.code)
+                put("year_total_km", year.totalKm)
+                put("year_business_use_km", year.businessUseKm)
+                put("year_ratio_pct", "%.1f".format(year.businessUseRatio!! * 100))
+            }.toString(),
+        )
+    }
+
     @Test fun buildFictionalSampleAndPinEveryQuotedNumber() {
         val h = DocsSample.build()
         val core = h.core
