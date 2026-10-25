@@ -26,10 +26,11 @@ import java.time.LocalDate
 object DocsSample {
     val TODAY: LocalDate = LocalDate.of(2026, 10, 23)
 
-    fun build(): Harness {
+    /** [webhook] set = the company address is configured, so every ledger entry is also queued for the fleet console. */
+    fun build(webhook: String = ""): Harness {
         val h = Harness(startAt = Harness.at(TODAY, 9, 0))
         check(h.core.setDemoMode(true, null) == AutoBriefCore.SettingsResult.SAVED)
-        h.core.loadSampleHistory()
+        h.core.loadSampleHistory(webhook)
         // 10:20 → 10:58, 45,200 → 45,218 km to a client, labelled by voice right after parking
         h.now = Harness.at(TODAY, 10, 20)
         h.core.onNavi(NaviEvent.RouteStarted("가상고객사 판교 사옥", 1_800))
@@ -79,14 +80,15 @@ class SampleScenarioTest {
         }
     }
 
-    /** The exact webhook bodies the app queues for the company endpoint (read by the fleet console check). */
+    /**
+     * The exact webhook bodies the app queues for the company endpoint (read by the fleet console check), from the same
+     * state the documents quote: the fleet console screenshots must show the docs' verification code and totals.
+     */
     @Test fun exportLedgerPayloadsForTheFleetConsole() {
-        val h = Harness(startAt = Harness.at(DocsSample.TODAY, 9, 0))
-        h.core.setDemoMode(true, null)
-        h.core.onVehicle(app.autobrief.car.domain.VehicleEvent.Vin(SampleHistory.SAMPLE_VIN))
-        h.core.loadSampleHistory("http://10.0.2.2:8787/hook")
+        val h = DocsSample.build(webhook = "http://10.0.2.2:8787/hook")
         val items = h.core.outbox.value
         assertEquals(h.core.integrity.value.entryCount, items.count { it.kind == "ledger" })
+        assertEquals(DocsSample.build().core.integrity.value.code, h.core.integrity.value.code)
         val dir = File("build/sample").apply { mkdirs() }
         File(dir, "outbox_payloads.jsonl").writeText(items.joinToString("\n") { it.key + "\t" + it.payloadJson } + "\n")
         val year = h.core.summary(TaxPeriods.businessYear(2026, 1))

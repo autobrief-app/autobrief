@@ -95,7 +95,13 @@ class ScreenshotTest {
 
     @Test fun tripsList() = shoot(unknownPlace().core, Tab.TRIPS, "08_trips")
 
-    @Test fun report() = shoot(commuted().core, Tab.REPORT, "09_report")
+    /** The report on the documents' sample day (DocsSample, 2026-10-23 23:06), so it shows the totals and code the text quotes. */
+    @Test fun report() {
+        val h = DocsSample.build()
+        h.core.onVehicle(VehicleEvent.Connection(true))
+        h.core.onNavi(NaviEvent.Ready(true))
+        shoot(h.core, Tab.REPORT, "09_report")
+    }
 
     @Test fun settings() = shoot(commuted().core, Tab.SETTINGS, "10_settings")
 
