@@ -502,8 +502,9 @@ class Console:
     """The Vehicle Virtual Console write API: every write is `PUT <endpoint>?<query>`, empty body.
 
     A write answered 503 (emulator_inactive: no live browser session yet, or the vehicle data
-    bridge is still coming up) is retried WRITE_RETRIES times, WRITE_RETRY_SLEEP_S apart; any
-    other failure is raised at once. Reads are never retried.
+    bridge is still coming up), or whose connection the console closed without an answer, is
+    retried WRITE_RETRIES times, WRITE_RETRY_SLEEP_S apart (every write sets a value, so sending
+    it again is safe); any other failure is raised at once. Reads are never retried.
     """
 
     def __init__(self, base_url: str, request=console_request, sleep=None, notify=None):
@@ -519,12 +520,16 @@ class Console:
             try:
                 return self._request("PUT", url)
             except ConsoleError as exc:
-                if exc.status != 503 or attempt == WRITE_RETRIES:
+                if not (exc.status == 503 or exc.dropped) or attempt == WRITE_RETRIES:
                     raise
                 if self._notify:
+                    what = (
+                        "연결이 응답 없이 끊겼습니다"
+                        if exc.dropped
+                        else "(503 %s) 콘솔이 아직 준비되지 않았습니다" % exc.body[:60]
+                    )
                     self._notify(
-                        "  (503 %s) 콘솔이 아직 준비되지 않았습니다. 재시도 %d/%d"
-                        % (exc.body[:60], attempt + 1, WRITE_RETRIES)
+                        "  %s. 재시도 %d/%d" % (what, attempt + 1, WRITE_RETRIES)
                     )
                 self._sleep(WRITE_RETRY_SLEEP_S)
 
@@ -809,6 +814,7 @@ class Director:
         self._nmea_warned = False
         self._shot_warned = False
         self._last_fix = None  # (lat, lon) of the previous GeoFix
+        self._positions_stuck = False  # a position wait timed out: later ones are skipped
         self._course = 0.0
 
     def run_scenario(self, scenario: Scenario) -> None:
@@ -923,6 +929,8 @@ class Director:
         return True
 
     def await_position(self, step: AwaitPosition) -> None:
+        if self._positions_stuck:
+            return  # explained once, when the first wait ran out
         want = step.place.app_label
         deadline = self.clock() + step.timeout
         shown = False
@@ -939,6 +947,13 @@ class Director:
                     "  (경고) %.0f초 안에 앱이 위치(%s)를 확인하지 못했습니다 (앱의 마지막 위치: %s). 그대로 진행합니다."
                     % (step.timeout, step.place.name, seen or "없음")
                 )
+                # On the Pleos Connect emulator the map drops the emulator's GPS sentences (their
+                # checksum is a constant *47), so NaviHelper never moves: waiting again only costs time
+                self.say(
+                    "  (경고) 내비게이션 위치가 GPS를 따라가지 않습니다. 이후 위치 확인은 건너뜁니다 "
+                    "(장소 규칙: 출퇴근, 업무 분류는 맞지 않을 수 있습니다)."
+                )
+                self._positions_stuck = True
                 return
             self.sleep(POSITION_RESEND_S)
             self.geo_fix(GeoFix(step.place.lat, step.place.lon))

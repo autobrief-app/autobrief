@@ -605,12 +605,30 @@ class Adb:
 
 
 class ConsoleError(Exception):
-    """A console request failed. `status` is the HTTP status (None: no HTTP answer at all)."""
+    """A console request failed. `status` is the HTTP status (None: no HTTP answer at all);
+    `dropped`: the console accepted the connection and closed it without an answer."""
 
-    def __init__(self, message: str, status: Optional[int] = None, body: str = ""):
+    def __init__(
+        self,
+        message: str,
+        status: Optional[int] = None,
+        body: str = "",
+        dropped: bool = False,
+    ):
         super().__init__(message)
         self.status = status
         self.body = body
+        self.dropped = dropped
+
+
+def connection_dropped(exc: BaseException) -> bool:
+    """RemoteDisconnected / reset after connecting (seen on CI in 3 of 4 runs, during writes and
+    heartbeats alike) as opposed to a console that is not there (refused, timeout)."""
+    reason = getattr(exc, "reason", None)  # urllib wraps some socket errors in URLError
+    for err in (exc, reason):
+        if isinstance(err, (http.client.RemoteDisconnected, ConnectionResetError)):
+            return True
+    return False
 
 
 def _local_opener():
@@ -637,7 +655,9 @@ def console_request(method: str, url: str, timeout: float = 10.0) -> str:
             body=detail,
         )
     except (OSError, http.client.HTTPException) as exc:
-        raise ConsoleError("%s %s -> %s" % (method, url, exc))
+        raise ConsoleError(
+            "%s %s -> %s" % (method, url, exc), dropped=connection_dropped(exc)
+        )
     if not 200 <= status < 300:
         raise ConsoleError(
             "%s %s -> HTTP %d %s" % (method, url, status, text.strip()[:500]),

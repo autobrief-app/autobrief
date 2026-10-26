@@ -10,6 +10,7 @@ Vehicle Virtual Console. The two end-to-end rehearsals at the bottom need POSIX 
 import contextlib
 import datetime
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -22,6 +23,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.request
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1853,11 +1855,15 @@ class DirectorExecutorTests(unittest.TestCase):
         self.assertIn("  - 앱이 위치를 확인했습니다: 회사", self.said)
         self.assertFalse(any("확인하지 못했습니다" in m for m in self.said))
 
-    def test_a_map_that_never_takes_the_gps_costs_a_warning_not_the_demo(self):
+    def test_a_map_that_never_takes_the_gps_costs_one_wait_not_the_demo(self):
         runner = self.make()
         self.adb.nav_follows_gps = False
         runner.run_scenario(director.SCENARIOS[1])
-        self.assertEqual(sum("확인하지 못했습니다" in m for m in self.said), 2)
+        runner.run_scenario(director.SCENARIOS[2])
+        self.assertEqual(sum("확인하지 못했습니다" in m for m in self.said), 1)
+        self.assertEqual(sum("GPS를 따라가지 않습니다" in m for m in self.said), 1)
+        # one poll per second of the single wait, not four waits' worth
+        self.assertLessEqual(self.adb.dumps, director.POSITION_WAIT_PARKED_S + 2)
         self.assertEqual(self.console.calls[-1], ("gear", "Park"))
 
     def test_a_map_that_does_not_start_is_reported_at_once(self):
@@ -2269,6 +2275,35 @@ class WriteRetryTests(unittest.TestCase):
                     console.set_gear("Park")
                 self.assertEqual(len(self.request.calls), 1)
                 self.assertEqual(self.sleeps, [])
+
+    def test_a_connection_closed_without_an_answer_is_retried(self):
+        # CI run 40280862531: "PUT .../vehicle/controls?speed=70... -> Remote end closed
+        # connection without response" ended the demo with exit 3
+        dropped = se.ConsoleError("Remote end closed connection without response", dropped=True)
+        console = self.console([dropped, "ok"])
+        console.set_controls(70, accelerator=45, brake=0, steering=0)
+        self.assertEqual(len(self.request.calls), 2)
+        self.assertEqual(self.sleeps, [1.0])
+        self.assertIn("응답 없이 끊겼습니다", self.notes[0])
+
+    def test_dropped_connections_are_classified(self):
+        self.assertTrue(se.connection_dropped(http.client.RemoteDisconnected("closed")))
+        self.assertTrue(se.connection_dropped(ConnectionResetError()))
+        self.assertTrue(se.connection_dropped(urllib.error.URLError(ConnectionResetError())))
+        self.assertFalse(se.connection_dropped(ConnectionRefusedError()))
+        self.assertFalse(se.connection_dropped(urllib.error.URLError(ConnectionRefusedError())))
+        self.assertFalse(se.connection_dropped(socket.timeout()))
+
+    def test_console_request_marks_a_dropped_connection(self):
+        class Opener:
+            def open(self, req, timeout=None):
+                raise http.client.RemoteDisconnected("Remote end closed connection without response")
+
+        with mock.patch.object(se, "_local_opener", return_value=Opener()):
+            with self.assertRaises(se.ConsoleError) as caught:
+                se.console_request("PUT", BASE + "/vehicle/gear?gear=Park")
+        self.assertTrue(caught.exception.dropped)
+        self.assertIsNone(caught.exception.status)
 
     def test_reads_are_never_retried(self):
         console = self.console([busy_503(), "{}"])
