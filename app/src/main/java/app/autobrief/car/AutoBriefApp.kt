@@ -1,6 +1,7 @@
 package app.autobrief.car
 
 import android.app.Application
+import android.os.SystemClock
 import android.util.Log
 import app.autobrief.car.data.JsonFiles
 import app.autobrief.car.domain.AutoBriefCore
@@ -22,6 +23,7 @@ class AutoBriefApp : Application() {
             },
             log = { line -> Log.i(LOG_TAG, line) },
             detailLogs = BuildConfig.DEBUG,
+            monotonic = SystemClock::elapsedRealtime,
         )
     }
 
