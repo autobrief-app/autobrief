@@ -10,14 +10,13 @@ import android.os.SystemClock
 import app.autobrief.car.domain.AutoBriefCore
 import app.autobrief.car.domain.SampleHistory
 import app.autobrief.car.model.PlaceKind
-import app.autobrief.car.service.VehicleMonitorService
 import app.autobrief.car.ui.MainActivity
+import app.autobrief.car.vehicle.PlatformLocationSource
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
-import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
@@ -28,39 +27,35 @@ import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowAlertDialog
 import java.io.File
 
-/** The platform GPS fallback on Android: asked for once, used only while the monitor runs and only with the grant. */
+/**
+ * The platform GPS fallback on Android: asked for once, used only with the grant. The source is driven directly
+ * (VehicleMonitorService starts it in onCreate and on every start command, stops it in onDestroy): creating the
+ * service here would leave the Pleos SDK retrying its bind into later Robolectric tests.
+ */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = AutoBriefApp::class)
 class PlatformLocationTest {
     private val app get() = RuntimeEnvironment.getApplication() as AutoBriefApp
     private val lm get() = app.getSystemService(LocationManager::class.java)
 
-    @Before fun noPleosServices() {
-        // like a plain AAOS image: binding to the Pleos vehicle and navigation services fails (see ServiceSmokeTest)
-        val shadow = shadowOf(RuntimeEnvironment.getApplication())
-        shadow.declareActionUnbindable("ai.pleos.playground.vehicle.VEHICLE_START")
-        shadow.declareActionUnbindable("ai.pleos.playground.intent.action.NAVI_START")
-        shadow.setUnbindServiceCallsOnServiceDisconnected(false)
-    }
-
     private fun idle() = shadowOf(Looper.getMainLooper()).idle()
 
     private fun grant() = shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
 
-    @Test fun withoutTheGrantNoLocationIsAskedForAndTheAppWorksAsBefore() {
-        val service = Robolectric.buildService(VehicleMonitorService::class.java).create().startCommand(0, 1)
-        idle()
+    private fun source() = PlatformLocationSource(app) { fix -> app.core.onPlatformFix(fix) }
+
+    @Test fun withoutTheGrantNothingIsRequestedAndTheAppWorksAsBefore() {
+        val gps = source()
+        assertFalse(gps.start())
         assertTrue(shadowOf(lm).getLocationUpdateListeners(LocationManager.GPS_PROVIDER).isEmpty())
-        assertNotNull(shadowOf(service.get()).lastForegroundNotification)
-        service.destroy()
+        assertEquals(AutoBriefCore.PlaceResult.NO_LOCATION, app.core.registerPlaceHere("집", PlaceKind.HOME))
     }
 
-    @Test fun withTheGrantGnssFixesReachTheLogbookEveryFiveSecondsWhileTheServiceRuns() {
+    @Test fun withTheGrantGnssFixesReachTheLogbookEveryFiveSecondsUntilItStops() {
         grant()
-        val service = Robolectric.buildService(VehicleMonitorService::class.java).create().startCommand(0, 1)
-        idle()
-        val request = shadowOf(lm).getLocationRequests(LocationManager.GPS_PROVIDER).single()
-        assertEquals(5_000L, request.intervalMillis)
+        val gps = source()
+        assertTrue(gps.start())
+        assertEquals(5_000L, shadowOf(lm).getLocationRequests(LocationManager.GPS_PROVIDER).single().intervalMillis)
         shadowOf(lm).simulateLocation(
             Location(LocationManager.GPS_PROVIDER).apply {
                 latitude = SampleHistory.HOME.point.lat
@@ -73,19 +68,18 @@ class PlatformLocationTest {
         idle()
         assertEquals(AutoBriefCore.PlaceResult.SAVED, app.core.registerPlaceHere("집", PlaceKind.HOME))
         assertEquals(SampleHistory.HOME.point, app.core.settings.value.places.single().point)
-        service.destroy()
-        assertTrue("stops with the service", shadowOf(lm).getLocationUpdateListeners(LocationManager.GPS_PROVIDER).isEmpty())
+        gps.stop()
+        assertTrue(shadowOf(lm).getLocationUpdateListeners(LocationManager.GPS_PROVIDER).isEmpty())
     }
 
-    @Test fun aGrantGivenAfterTheServiceStartedTakesEffectOnTheNextStart() {
-        val service = Robolectric.buildService(VehicleMonitorService::class.java).create().startCommand(0, 1)
-        idle()
-        assertTrue(shadowOf(lm).getLocationUpdateListeners(LocationManager.GPS_PROVIDER).isEmpty())
+    @Test fun aGrantGivenLaterTakesEffectOnTheNextStart() {
+        val gps = source()
+        assertFalse(gps.start())
         grant()
-        service.startCommand(0, 2) // MainActivity starts the service again once the driver allowed it
-        idle()
+        assertTrue("the service calls start() again on its next start command", gps.start())
+        assertTrue("and only once", gps.start())
         assertEquals(1, shadowOf(lm).getLocationUpdateListeners(LocationManager.GPS_PROVIDER).size)
-        service.destroy()
+        gps.stop()
     }
 
     @Test fun theFirstLaunchExplainsWhyAndAsksOnceOnly() {
