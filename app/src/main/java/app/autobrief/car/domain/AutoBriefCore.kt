@@ -233,16 +233,21 @@ class AutoBriefCore(
         val added = logbook.onGear(gear, now, routeToll, routeName)
         if (added.isNotEmpty()) recordRows(added)
         if (!wasOpen && logbook.openTrip != null) openTripStarted()
+        // P again without moving (a gear shuffle) writes no row: nothing is being recorded any more
+        if (logbook.openTrip == null) {
+            _open.value = null
+            openStartPoint = null
+        }
         if (gear == Gear.PARK || gear == Gear.DRIVE) naviControl?.requestLocation()
     }
 
+    /** The last trip's card stays until it is handled: a gear shuffle that writes no row must not hide it. */
     private fun openTripStarted() {
         val open = logbook.openTrip ?: return
         val now = clock()
         openStartPoint = freshLocation(now, START_LOCATION_MAX_AGE_MS)
         val label = openStartPoint?.let { AutoClassifier.nearest(it, allPlaces()) }?.label
         _open.value = OpenTripView(open.startEpochMs, open.startOdometerKm, label)
-        _lastClosedId.value = null
         log("TRIP_OPENED odo=${open.startOdometerKm}")
     }
 
