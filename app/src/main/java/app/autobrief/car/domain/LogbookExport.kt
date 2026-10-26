@@ -58,15 +58,27 @@ object LogbookExport {
     private val json = Json { ignoreUnknownKeys = true }
     private val STAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
-    /** [businessYear] = the period is a whole 사업연도 (the form's own unit); otherwise it is labelled as a period extract. */
+    /**
+     * [businessYear] = the period is a whole 사업연도 (the form's own unit); otherwise it is labelled as a period extract.
+     * A business year that has not ended by [exportDate] is labelled as the total to that date, never as the year's
+     * total (작성방법 10: ⑪~⑬ are business-year totals). Without [exportDate] the end of the latest record in [records]
+     * (the whole logbook) stands in for it, so a year with records after its end counts as finished.
+     */
     fun build(
         records: List<TripRecord>,
         settings: AppSettings,
         period: ClosedRange<LocalDate>,
         verificationCode: String,
         businessYear: Boolean = true,
+        exportDate: LocalDate? = null,
     ): Sheet {
-        val unit = if (businessYear) "사업연도" else "기간"
+        val asOf = exportDate ?: records.maxOfOrNull { it.endEpochMs }?.let(TripLogbook::localDate)
+        val running = if (businessYear && asOf != null && period.endInclusive.isAfter(asOf)) "$asOf 현재 누계(사업연도 진행 중)" else null
+        val unit = when {
+            !businessYear -> "기간"
+            running != null -> running
+            else -> "사업연도"
+        }
         val inPeriod = records.filter { TripLogbook.localDate(it.startEpochMs) in period }.sortedBy { it.startEpochMs }
         val summary = TripLogbook.summarize(inPeriod)
         val rows = inPeriod.map { r ->
@@ -86,7 +98,8 @@ object LogbookExport {
         val sample = inPeriod.any { it.source == TripSource.SAMPLE }
         val header = buildList {
             if (sample) add("※ 가상 예시 데이터입니다. 실제 차량, 법인, 인물이 아닙니다.")
-            add("$unit: ${period.start} ~ ${period.endInclusive}    법인명(상호): ${settings.entityName}    사업자등록번호: ${settings.businessNumber}")
+            val periodLabel = if (businessYear) "사업연도" else "기간"
+            add("$periodLabel: ${period.start} ~ ${period.endInclusive}${running?.let { ", $it" } ?: ""}    법인명(상호): ${settings.entityName}    사업자등록번호: ${settings.businessNumber}")
             add("1. 기본정보    ①차종: ${settings.vehicleModel}    ②자동차등록번호: ${settings.plateNumber}")
             add("2. 업무용 사용비율 계산")
         }

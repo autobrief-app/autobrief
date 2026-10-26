@@ -8,6 +8,8 @@ import app.autobrief.car.model.CarUser
 import app.autobrief.car.model.TripPurpose
 import app.autobrief.car.model.TripRecord
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.LocalDate
 
@@ -57,5 +59,29 @@ class LogbookFormTest {
         assertEquals(listOf(10.0, 10.0, 10.0), s.rows.map { it[5] })
         assertEquals(30.0, s.totals.totalKm, 0.0)
         assertEquals(30.0, s.totals.businessUseKm, 0.0)
+    }
+
+    @Test fun aBusinessYearStillRunningIsLabelledAsTheTotalToDate() {
+        val running = "2026-10-26 현재 누계(사업연도 진행 중)"
+        val sheet = LogbookExport.build(chainOf1004(), settings, year2026, "CODE", exportDate = LocalDate.of(2026, 10, 26))
+        assertTrue(sheet.headerLines.toString(), sheet.headerLines.any { it.startsWith("사업연도: 2026-01-01 ~ 2026-12-31, $running    법인명") })
+        assertEquals("⑪$running 총주행 거리(㎞)", sheet.totals.totalLabel)
+        assertEquals("⑫$running 업무용 사용거리(㎞)", sheet.totals.businessUseLabel)
+        // with no export date the end of the latest record stands in for it
+        val asOfLastRow = LogbookExport.build(chainOf1004(), settings, year2026, "CODE")
+        assertEquals("⑪2026-03-02 현재 누계(사업연도 진행 중) 총주행 거리(㎞)", asOfLastRow.totals.totalLabel)
+    }
+
+    @Test fun aFinishedBusinessYearKeepsThePlainLabelsOfTheForm() {
+        val exportedLater = LogbookExport.build(chainOf1004(), settings, year2026, "CODE", exportDate = LocalDate.of(2027, 1, 5))
+        assertTrue(exportedLater.headerLines.any { it.startsWith("사업연도: 2026-01-01 ~ 2026-12-31    법인명") })
+        assertEquals("⑪사업연도 총주행 거리(㎞)", exportedLater.totals.totalLabel)
+        assertEquals("⑫사업연도 업무용 사용거리(㎞)", exportedLater.totals.businessUseLabel)
+        // with no export date, a record after the year's end shows the year is over
+        val next = chainOf1004() + trip("N", LocalDate.of(2027, 1, 4), 9, 130.12, 140.0, TripPurpose.BUSINESS)
+        val byRecords = LogbookExport.build(next, settings, year2026, "CODE")
+        assertEquals("⑪사업연도 총주행 거리(㎞)", byRecords.totals.totalLabel)
+        assertFalse(byRecords.headerLines.any { "진행 중" in it })
+        assertEquals(3, byRecords.rows.size)
     }
 }

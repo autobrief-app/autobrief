@@ -74,6 +74,14 @@ class LogbookExportTest {
         assertEquals("2026-10-01(목)", LogbookExport.dateWithWeekday(LocalDate.of(2026, 10, 1)))
     }
 
+    @Test fun theSampleYearBookIsTheTotalTo20261023() {
+        // the sample's clock stops on 2026-10-23, inside the business year 2026
+        val sheet = h.core.exportSheet(TaxPeriods.businessYear(2026, 1), businessYear = true)
+        assertEquals("⑪2026-10-23 현재 누계(사업연도 진행 중) 총주행 거리(㎞)", sheet.totals.totalLabel)
+        assertEquals(9_636.0, sheet.totals.totalKm, 0.0)
+        assertEquals(9_117.0, sheet.totals.businessUseKm, 0.0)
+    }
+
     @Test fun csvNeutralisesFormulaCells() {
         val bad = rows.map { if (it.purpose == TripPurpose.BUSINESS) it.copy(memo = "=HYPERLINK(\"x\")") else it }
         val sheet = LogbookExport.build(bad, SampleHistory.settings(), october, code, businessYear = false)
