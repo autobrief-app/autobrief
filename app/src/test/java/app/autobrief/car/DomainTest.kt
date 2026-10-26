@@ -13,6 +13,7 @@ import app.autobrief.car.model.Gear
 import app.autobrief.car.model.GeoPoint
 import app.autobrief.car.model.Place
 import app.autobrief.car.model.PlaceKind
+import app.autobrief.car.model.TaxRate
 import app.autobrief.car.model.TripPurpose
 import app.autobrief.car.model.TripRecord
 import kotlinx.serialization.json.buildJsonObject
@@ -281,6 +282,15 @@ class TaxBenefitTest {
         assertEquals(15_095_000, r.withLogbook.deductibleKrw)
         assertEquals(1_173_947, r.extraDeductibleKrw)
         assertEquals(258_268, r.taxEffectKrw)
+    }
+
+    @Test fun rateTableFollowsTheBusinessYearStart() {
+        // 법인세법 §55 (법률 제21217호 부칙 §5) + 지방세법 §103의20 (법률 제21308호 부칙 §11), local tax included
+        val y2026 = LocalDate.of(2026, 1, 1)
+        assertEquals(listOf(11.0, 22.0, 24.2, 27.5), TaxRate.values().map { it.ratePctFor(y2026) })
+        assertEquals(listOf(11.0, 22.0, 24.2, 27.5), TaxRate.values().map { it.ratePctFor(LocalDate.of(2026, 7, 1)) })
+        assertEquals(listOf(9.9, 20.9, 23.1, 26.4), TaxRate.values().map { it.ratePctFor(LocalDate.of(2025, 12, 1)) })
+        assertEquals(listOf(9.9, 20.9, 23.1, 26.4), TaxRate.values().map { it.ratePctFor(LocalDate.of(2025, 1, 1)) })
     }
 
     @Test fun noCostOrNoDistanceMeansNoFigure() {

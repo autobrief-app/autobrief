@@ -46,7 +46,10 @@ object TaxBenefit {
     fun noLogbookRatio(costKrw: Long): Double =
         if (costKrw <= NO_LOGBOOK_CAP_KRW) 1.0 else NO_LOGBOOK_CAP_KRW.toDouble() / costKrw
 
-    /** Null when the owner has not entered the year's car cost or the logbook has no distance yet. */
+    /**
+     * Null when the owner has not entered the year's car cost or the logbook has no distance yet. [ratePct] is the
+     * bracket's rate for this business year, local income tax included ([app.autobrief.car.model.TaxRate.ratePctFor]).
+     */
     fun compute(costKrw: Long, depreciationKrw: Long, logbookRatio: Double?, ratePct: Double): Result? {
         if (costKrw <= 0 || logbookRatio == null) return null
         val with = case(costKrw, depreciationKrw, logbookRatio)

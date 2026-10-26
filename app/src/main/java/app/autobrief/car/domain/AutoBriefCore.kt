@@ -584,7 +584,7 @@ class AutoBriefCore(
     fun taxBenefit(): TaxBenefit.Result? {
         val s = _settings.value
         val ratio = summary(currentBusinessYear()).businessUseRatio
-        return TaxBenefit.compute(s.annualCarCostKrw, s.annualDepreciationKrw, ratio, s.taxRate.ratePct)
+        return TaxBenefit.compute(s.annualCarCostKrw, s.annualDepreciationKrw, ratio, s.taxRate.ratePctFor(currentBusinessYear().start))
     }
 
     fun exportSheet(period: ClosedRange<LocalDate>, businessYear: Boolean): LogbookExport.Sheet =
