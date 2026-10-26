@@ -144,7 +144,9 @@ jobs:
             adb pull "/sdcard/e2e-$i.mp4" "e2e-out/e2e-$i.mp4" 2>/dev/null || break
           done
           ls e2e-out/e2e-*.mp4 > /dev/null 2>&1 || echo "no screen recording to pull"
-          if command -v ffmpeg > /dev/null && ls e2e-out/e2e-*.mp4 > /dev/null 2>&1; then
+          if ! command -v ffmpeg > /dev/null; then
+            echo "no ffmpeg on this runner: the segments e2e-1.mp4, e2e-2.mp4, ... are kept as they are"
+          elif ls e2e-out/e2e-*.mp4 > /dev/null 2>&1; then
             for f in e2e-out/e2e-*.mp4; do echo "file '$PWD/$f'"; done > /tmp/segments.txt
             ffmpeg -loglevel error -f concat -safe 0 -i /tmp/segments.txt -c copy e2e-out/e2e.mp4 || echo "segments kept as they are"
           fi
