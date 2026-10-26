@@ -17,6 +17,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
@@ -35,6 +36,8 @@ import java.io.File
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = AutoBriefApp::class)
 class PlatformLocationTest {
+    @get:Rule val drain = DrainMainLooper()
+
     private val app get() = RuntimeEnvironment.getApplication() as AutoBriefApp
     private val lm get() = app.getSystemService(LocationManager::class.java)
 

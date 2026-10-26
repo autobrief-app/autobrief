@@ -114,3 +114,17 @@ class RefuseStalePleosBinds : ExternalResource() {
         val PLEOS_BIND_ACTIONS = listOf("ai.pleos.playground.vehicle.VEHICLE_START", "ai.pleos.playground.intent.action.NAVI_START")
     }
 }
+
+/**
+ * Compose runs a hosted activity's UI work, and its global snapshot notifications, on one process-wide dispatcher
+ * (AndroidUiDispatcher.Main) that posts itself to the main looper once and waits for that message. Robolectric clears
+ * the main looper after every test, so a test that ends with that message queued (an activity with Compose content
+ * destroyed without idling afterwards) leaves the dispatcher waiting for good: in every later test of the same SDK,
+ * no state change made outside a composition is applied and the compose rule never gets idle. Tests that host a real
+ * activity use this rule, which runs what their teardown queued before the test ends.
+ */
+class DrainMainLooper : ExternalResource() {
+    override fun after() {
+        shadowOf(Looper.getMainLooper()).idle()
+    }
+}
