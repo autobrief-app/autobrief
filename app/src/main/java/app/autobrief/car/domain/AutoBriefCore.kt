@@ -1058,7 +1058,8 @@ class AutoBriefCore(
         /** [payloadJson] with [vin] in its car block when the block has none; every other field stays as queued. */
         fun fillMissingVin(payloadJson: String, vin: String?): String {
             if (vin == null) return payloadJson
-            val payload = json.parseToJsonElement(payloadJson).jsonObject
+            // a payload that is not an object goes out as it is: the receiver refuses it, and the round must not stop here
+            val payload = runCatching { json.parseToJsonElement(payloadJson).jsonObject }.getOrNull() ?: return payloadJson
             val car = payload["car"] as? JsonObject ?: return payloadJson
             if ((car["vin"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.isNotBlank() == true) return payloadJson
             return JsonObject(payload + ("car" to JsonObject(car + ("vin" to JsonPrimitive(vin))))).toString()

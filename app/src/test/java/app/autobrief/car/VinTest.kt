@@ -52,6 +52,11 @@ class VinTest {
         assertEquals("00가 0000", sent.getValue("plate").jsonPrimitive.content)
     }
 
+    @Test fun aPayloadThatIsNotAnObjectGoesOutAsItIs() {
+        assertEquals("[1,2]", AutoBriefCore.fillMissingVin("[1,2]", vin))
+        assertEquals("{not json", AutoBriefCore.fillMissingVin("{not json", vin))
+    }
+
     @Test fun anEntryKeepsTheIdentityItWasQueuedUnder() {
         val h = Harness(AppSettings(plateNumber = "11가 1111", entityName = "가상예시 주식회사", archiveWebhookUrl = hook))
         h.core.onVehicle(VehicleEvent.Vin("\"$vin\""))
