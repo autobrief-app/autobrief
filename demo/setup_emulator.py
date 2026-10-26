@@ -1774,6 +1774,29 @@ def wait_for_vehicle_connected(
         sleep(2.0)
 
 
+def closed_for_not_responding(adb: Adb) -> bool:
+    """True when Android closed the app for not responding. Android Automotive shows no ANR dialog (car UI
+    mode): an app that does not take an input or focus event within 5 s is closed at once, which a busy
+    emulator (software rendering, still settling after boot) can cause in the app's first seconds."""
+    return bool(re.search(r"\bANR in %s\b" % re.escape(APP_PACKAGE), adb.logcat_dump("ActivityManager", "E")))
+
+
+def start_app_and_load(adb: Adb, user: int, args: argparse.Namespace, say: Callable[[str], None]) -> None:
+    """Start the app fresh, wait for its vehicle link and, with --demo-sample, load the sample."""
+    adb.logcat_clear()  # VEHICLE_CONNECTED must come from the process started now
+    start_app(adb, user, restart=True)
+    front = wait_for_app_in_front(adb, user)
+    say("  앱이 화면 앞에 있습니다: %s" % front)
+    say("  차량 SDK 연결 확인 중 (최대 %d초)..." % VEHICLE_CONNECTED_WAIT_S)
+    say("  VEHICLE_CONNECTED (%.0f초)" % wait_for_vehicle_connected(adb))
+    if args.demo_sample:
+        say(
+            "  데모 샘플 전송%s"
+            % (" (webhook %s)" % redact_url(args.webhook) if args.webhook else "")
+        )
+        say("  DEMO_READY trips=%d" % load_demo_sample(adb, args.webhook, user))
+
+
 def load_demo_sample(
     adb: Adb,
     webhook: Optional[str],
@@ -2005,18 +2028,14 @@ def run(args: argparse.Namespace) -> int:
     say("  가상 콘솔 응답 확인: %s/vehicle/state" % console_url())
 
     stage(9, total, "앱 실행%s" % (", 데모 샘플 불러오기" if args.demo_sample else ""))
-    adb.logcat_clear()  # VEHICLE_CONNECTED must come from the process started now
-    start_app(adb, user, restart=True)
-    front = wait_for_app_in_front(adb, user)
-    say("  앱이 화면 앞에 있습니다: %s" % front)
-    say("  차량 SDK 연결 확인 중 (최대 %d초)..." % VEHICLE_CONNECTED_WAIT_S)
-    say("  VEHICLE_CONNECTED (%.0f초)" % wait_for_vehicle_connected(adb))
-    if args.demo_sample:
-        say(
-            "  데모 샘플 전송%s"
-            % (" (webhook %s)" % redact_url(args.webhook) if args.webhook else "")
-        )
-        say("  DEMO_READY trips=%d" % load_demo_sample(adb, args.webhook, user))
+    try:
+        start_app_and_load(adb, user, args, say)
+    except SetupError:
+        # only an app Android closed for not responding is started once more; any other failure stands
+        if not closed_for_not_responding(adb):
+            raise
+        say("  (경고) 에뮬레이터가 바빠 앱이 응답 없음(ANR)으로 닫혔습니다. 앱을 새로 띄워 한 번 더 합니다.")
+        start_app_and_load(adb, user, args, say)
     if not (args.no_browser or args.headless):
         webbrowser.open(console_url() + "/")
         say("  브라우저로 가상 콘솔을 열었습니다: %s/" % console_url())

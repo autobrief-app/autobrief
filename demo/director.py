@@ -98,6 +98,11 @@ POSITION_WAIT_DRIVING_S = 30.0
 # and logs `POSITION place=<label> source=gps`.
 NAV_PACKAGE = "ai.umos.maps.android.navigation.app"
 NAV_SHOW_WAIT_S = 30.0
+# The app's own GPS fix comes every 5 s: a place it has not seen after this long is waited for with the
+# map in front. Each switch between the map and the app is a focus change for the app, and Android
+# Automotive closes an app at once when it does not take one within 5 s (no ANR dialog in the car UI
+# mode): on a slow emulator a needless switch can end the run.
+MAP_GRACE_S = 15.0
 POSITION_RESEND_S = 1.0  # a GPS receiver reports once a second
 
 FRONT_STABLE_S = 2.0  # before a scenario the app must hold the front this long
@@ -396,6 +401,16 @@ def last_position_label(logcat: str) -> Optional[str]:
     """The place label of the app's latest `POSITION place=<label>` line, or None."""
     found = _POSITION.findall(logcat)
     return found[-1] if found else None
+
+
+_POSITION_LINE = re.compile(r"\bPOSITION place=\S+[^\n]*")
+
+
+def app_on_own_gps(logcat: str) -> bool:
+    """True when the app's latest position came from the car's own GPS (`... source=gps`): it then
+    follows the car without the map in front."""
+    found = _POSITION_LINE.findall(logcat)
+    return bool(found) and "source=gps" in found[-1]
 
 
 _TRIP_CLOSED = re.compile(r"\bTRIP_CLOSED\b")
@@ -818,6 +833,7 @@ class Director:
         self._shot_warned = False
         self._last_fix = None  # (lat, lon) of the previous GeoFix
         self._positions_stuck = False  # a position wait timed out: later ones are skipped
+        self._own_gps_said = False  # said once: the app follows the car on its own GPS, no map
         self._course = 0.0
 
     def run_scenario(self, scenario: Scenario) -> None:
@@ -858,7 +874,12 @@ class Director:
         elif isinstance(step, ShowApp):
             ensure_app_in_front(self.adb, now=self.clock, sleep=self.sleep, say_fn=self.say)
         elif isinstance(step, ShowNavigation):
-            self.show_navigation()
+            if app_on_own_gps(self.adb.logcat_dump()):
+                if not self._own_gps_said:
+                    self._own_gps_said = True
+                    self.say("  (앱이 차량 GPS로 위치를 받고 있어 지도 화면 없이 진행합니다)")
+            else:
+                self.show_navigation()
         elif isinstance(step, ParkVehicle):
             self.park()
         else:
@@ -936,12 +957,13 @@ class Director:
         if self._positions_stuck:
             return  # explained once, when the first wait ran out
         want = step.place.app_label
-        deadline = self.clock() + step.timeout
+        started = self.clock()
+        deadline = started + step.timeout
         shown = False
         while True:
             seen = last_position_label(self.adb.logcat_dump())
-            if seen != want and not shown:
-                shown = True  # the map has to be on screen to follow the GPS
+            if seen != want and not shown and self.clock() - started >= MAP_GRACE_S:
+                shown = True  # the app's own GPS did not see it: the map has to be on screen to follow the GPS
                 self.show_navigation()
             if seen == want:
                 self.say("  - 앱이 위치를 확인했습니다: %s" % step.place.name)

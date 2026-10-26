@@ -1736,6 +1736,7 @@ class FakeAdb:
         self.position = None  # (lat, lon) the navigation engine holds
         self.front = self.APP
         self.nav_follows_gps = True  # False: the map never takes the GPS (an image without it)
+        self.platform_gps = False  # True: the app takes the emulator's GPS itself (granted location)
         self.shells = []
         self.dumps = 0
 
@@ -1755,7 +1756,12 @@ class FakeAdb:
 
     def logcat_dump(self, *args, **kwargs):
         self.dumps += 1
-        if self.app_silent or self.position is None:
+        if self.app_silent:
+            return ""
+        if self.platform_gps and self.geo:
+            lon, lat = self.geo[-1]  # the platform GNSS follows every injected fix, map or not
+            return "I AutoBriefLog: POSITION place=%s source=gps\n" % place_label_at(lat, lon)
+        if self.position is None:
             return ""
         return "I AutoBriefLog: POSITION place=%s\n" % place_label_at(*self.position)
 
@@ -1862,9 +1868,45 @@ class DirectorExecutorTests(unittest.TestCase):
         runner.run_scenario(director.SCENARIOS[2])
         self.assertEqual(sum("확인하지 못했습니다" in m for m in self.said), 1)
         self.assertEqual(sum("GPS를 따라가지 않습니다" in m for m in self.said), 1)
-        # one poll per second of the single wait, not four waits' worth
-        self.assertLessEqual(self.adb.dumps, director.POSITION_WAIT_PARKED_S + 2)
+        # one poll per second of the single wait, not four waits' worth (plus one look per drive beat
+        # at whether the app has its own GPS)
+        self.assertLessEqual(self.adb.dumps, director.POSITION_WAIT_PARKED_S + 2 + 2)
         self.assertEqual(self.console.calls[-1], ("gear", "Park"))
+
+    def test_on_its_own_gps_the_app_stays_in_front_and_the_map_never_starts(self):
+        # the Pleos Connect emulator: the map drops the injected GPS, the app's platform fix follows it
+        runner = self.make()
+        self.adb.nav_follows_gps, self.adb.platform_gps = False, True
+        runner.run_scenario(director.SCENARIOS[0])
+        runner.run_scenario(director.SCENARIOS[1])
+        self.assertFalse([s for s in self.adb.shells if s.startswith("am start") and director.NAV_PACKAGE in s])
+        self.assertEqual(self.adb.front, FakeAdb.APP)
+        for place in ("집", "회사", "가상상사"):
+            self.assertIn("  - 앱이 위치를 확인했습니다: %s" % place, self.said)
+        self.assertEqual(sum("지도 화면 없이 진행합니다" in m for m in self.said), 1)
+        self.assertFalse(any("확인하지 못했습니다" in m for m in self.said))
+        self.assertEqual(self.console.calls[-1], ("gear", "Park"))
+
+    def test_the_map_comes_only_once_the_grace_period_is_over(self):
+        runner = self.make()
+        self.adb.app_silent = True
+        started = []
+        shell = self.adb.shell
+
+        def recording_shell(*args, **kwargs):
+            if args[:2] == ("am", "start"):
+                started.append(sum(self.sleeps))
+            return shell(*args, **kwargs)
+
+        self.adb.shell = recording_shell
+        runner.await_position(director.AwaitPosition(director.HOME, 30.0))
+        self.assertEqual(len(started), 1)
+        self.assertGreaterEqual(started[0], director.MAP_GRACE_S)
+
+    def test_app_on_own_gps_reads_the_latest_position_line(self):
+        self.assertTrue(director.app_on_own_gps("I AutoBriefLog: POSITION place=집 source=gps\n"))
+        self.assertFalse(director.app_on_own_gps("I AutoBriefLog: POSITION place=집 source=gps\nI AutoBriefLog: POSITION place=-\n"))
+        self.assertFalse(director.app_on_own_gps("I AutoBriefLog: SPACE DEMO\n"))
 
     def test_a_map_that_does_not_start_is_reported_at_once(self):
         runner = self.make()
@@ -2931,7 +2973,14 @@ elif cmd == "shell":
         pass
     elif line.startswith("am broadcast"):
         out("Broadcast completed: result=0\n")
-        if "load_sample" in line and not flag("no_demo_hook"):
+        anr = "load_sample" in line and (flag("anr_always") or flag("anr_once"))
+        if anr:
+            # Android Automotive closes an app that misses a focus event for 5 s (no ANR dialog in the car UI)
+            if flag("anr_once"):
+                os.remove(os.path.join(state, "anr_once"))
+            with open(logcat, "a", encoding="utf-8") as handle:
+                handle.write("10-25 12:00:00.000   853   900 E ActivityManager: ANR in app.autobrief.car (app.autobrief.car/.ui.MainActivity)\n")
+        elif "load_sample" in line and not flag("no_demo_hook"):
             with open(logcat, "a", encoding="utf-8") as handle:
                 handle.write("10-25 12:00:00.000     1     1 I AutoBriefLog: DEMO_READY trips=487\n")
 elif cmd == "install":
@@ -3489,6 +3538,33 @@ class SetupRehearsalTests(unittest.TestCase):
             code, text = self.run_main("--skip-image", "--no-browser", "--demo-sample")
         self.assertEqual(code, 1)
         self.assertIn("디버그 APK", text)
+
+    def test_an_app_closed_for_not_responding_is_started_once_more(self):
+        self.device.preinstall_image(self.abi)
+        self.device.flag("anr_once")
+        with mock.patch.object(se, "DEMO_READY_WAIT_S", 0.3):
+            code, text = self.run_main("--skip-image", "--no-browser", "--demo-sample")
+        self.assertEqual(code, 0, text)
+        self.assertIn("응답 없음(ANR)", text)
+        self.assertIn("DEMO_READY trips=487", text)
+        self.assertEqual(text.count("VEHICLE_CONNECTED ("), 2, "the app was started fresh for the second try")
+
+    def test_a_second_close_for_not_responding_fails_the_setup(self):
+        self.device.preinstall_image(self.abi)
+        self.device.flag("anr_always")
+        with mock.patch.object(se, "DEMO_READY_WAIT_S", 0.3):
+            code, text = self.run_main("--skip-image", "--no-browser", "--demo-sample")
+        self.assertEqual(code, 1)
+        self.assertEqual(text.count("응답 없음(ANR)"), 1, "one more try, not a loop")
+
+    def test_other_setup_failures_are_not_retried(self):
+        self.device.preinstall_image(self.abi)
+        self.device.flag("no_demo_hook")
+        with mock.patch.object(se, "DEMO_READY_WAIT_S", 0.3):
+            code, text = self.run_main("--skip-image", "--no-browser", "--demo-sample")
+        self.assertEqual(code, 1)
+        self.assertNotIn("응답 없음(ANR)", text)
+        self.assertEqual(text.count("VEHICLE_CONNECTED ("), 1)
 
     def test_full_flow_downloads_verifies_installs_then_reuses_cache_and_install(self):
         zip_path = os.path.join(self.tmp.name, "served.zip")
