@@ -19,6 +19,7 @@ class GleoActionReceiver : BroadcastReceiver() {
         if (function !in GleoContract.FUNCTIONS) return
         val reply = context.core.handleGleo(function, intentParams(intent))
         sendGleoResponse(context, function, reply)
+        // a start Android refuses from the background is logged there, never thrown into Gleo's broadcast
         if (function == GleoContract.SEND_LOGBOOK) VehicleMonitorService.start(context, VehicleMonitorService.ACTION_FLUSH)
     }
 }

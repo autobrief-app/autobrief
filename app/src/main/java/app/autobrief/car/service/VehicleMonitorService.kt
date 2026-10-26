@@ -162,9 +162,20 @@ class VehicleMonitorService : Service() {
         private const val FLUSH_EVERY_MS = 30_000L
         private const val FLUSH_DEBOUNCE_MS = 800L
 
-        fun start(context: Context, action: String? = null) {
-            val intent = Intent(context, VehicleMonitorService::class.java).setAction(action)
-            context.startForegroundService(intent)
+        /**
+         * Starts the monitor (or hands a running one [action]); false when Android refused. From the background Android
+         * 12+ may refuse with ForegroundServiceStartNotAllowedException (an IllegalStateException): that is logged, and
+         * a monitor that already runs sends new entries by itself anyway.
+         */
+        fun start(context: Context, action: String? = null): Boolean = try {
+            context.startForegroundService(Intent(context, VehicleMonitorService::class.java).setAction(action))
+            true
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "monitor not started (${action ?: "start"}): ${e::class.java.simpleName}: ${e.message}")
+            false
+        } catch (e: SecurityException) {
+            Log.w(TAG, "monitor not started (${action ?: "start"}): ${e.message}")
+            false
         }
     }
 }
