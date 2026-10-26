@@ -108,6 +108,9 @@ class GleoSchemaTest {
                 "pleos.car.permission.CAR_DRIVE", "pleos.car.permission.CAR_INFO", "pleos.car.permission.NAVI_ROUTE",
                 "android.permission.INTERNET", "android.permission.FOREGROUND_SERVICE",
                 "android.permission.FOREGROUND_SERVICE_SPECIAL_USE", "android.permission.RECEIVE_BOOT_COMPLETED",
+                // the car's GPS when navigation has no fresh position (optional, asked once)
+                "android.permission.ACCESS_FINE_LOCATION", "android.permission.ACCESS_COARSE_LOCATION",
+                "android.permission.FOREGROUND_SERVICE_LOCATION",
             ),
             perms,
         )

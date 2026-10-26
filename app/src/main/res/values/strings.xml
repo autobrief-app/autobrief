@@ -3,4 +3,8 @@
     <string name="app_name">오토브리프</string>
     <string name="monitor_channel">운행 기록</string>
     <string name="monitor_text">계기판 누적거리로 운행기록부를 쓰고 있습니다.</string>
+    <string name="location_title">위치 권한</string>
+    <string name="location_rationale">내비가 위치를 주지 못할 때 차량 GPS로 집, 회사, 거래처를 알아보기 위해서입니다. 위치는 저장하지 않습니다</string>
+    <string name="location_continue">계속</string>
+    <string name="location_later">나중에</string>
 </resources>

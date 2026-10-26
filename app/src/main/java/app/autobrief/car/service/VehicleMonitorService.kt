@@ -17,6 +17,7 @@ import app.autobrief.car.model.Gear
 import app.autobrief.car.navi.PleosNaviSource
 import app.autobrief.car.notify.WebhookSender
 import app.autobrief.car.vehicle.CarServices
+import app.autobrief.car.vehicle.PlatformLocationSource
 import app.autobrief.car.vehicle.PleosVehicleSource
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -44,8 +45,12 @@ class VehicleMonitorService : Service() {
     private lateinit var vehicle: PleosVehicleSource
     private lateinit var navi: PleosNaviSource
     private lateinit var car: CarServices
+    private lateinit var gps: PlatformLocationSource
     private lateinit var sender: WebhookSender
     private lateinit var loops: MonitorLoops
+
+    /** Running as a foreground service of the location type, which keeps GNSS fixes coming while navigation is in front. */
+    private var locationForeground = false
 
     @OptIn(FlowPreview::class)
     override fun onCreate() {
@@ -55,11 +60,13 @@ class VehicleMonitorService : Service() {
         vehicle = PleosVehicleSource(this) { e -> dispatch("vehicle event") { core.onVehicle(e) } }
         navi = PleosNaviSource(this) { e -> dispatch("navigation event") { core.onNavi(e) } }
         car = CarServices(this) { r -> dispatch("driving restrictions") { core.setRestricted(r) } }
+        gps = PlatformLocationSource(this) { fix -> dispatch("gnss fix") { core.onPlatformFix(fix) } }
         sender = WebhookSender(core)
         core.naviControl = AutoBriefCore.NaviControl { navi.requestLocation() }
         vehicle.start()
         navi.start()
         car.start()
+        gps.start()
         loops = MonitorLoops(scope, Dispatchers.IO, TICK_MS, FLUSH_EVERY_MS, ::logError, ::onTick) { sender.flush() }
         loops.start()
         scope.launch {
@@ -92,6 +99,12 @@ class VehicleMonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // the location permission may have been granted since the service started, or the service was started in the
+        // background (boot, app update) and could not take the location type then: MainActivity starts it again
+        if (PlatformLocationSource.permitted(this)) {
+            if (!locationForeground) startAsForeground()
+            gps.start()
+        }
         if (intent?.action == ACTION_FLUSH) loops.requestFlush()
         return START_STICKY
     }
@@ -103,6 +116,7 @@ class VehicleMonitorService : Service() {
         vehicle.stop()
         navi.stop()
         car.stop()
+        gps.stop()
         core.naviControl = null
         super.onDestroy()
     }
@@ -117,9 +131,22 @@ class VehicleMonitorService : Service() {
             .setOngoing(true)
             .build()
         if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            // the location type keeps the GNSS fixes coming while navigation is in front
+            val types = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
+                if (PlatformLocationSource.permitted(this)) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
+            locationForeground = try {
+                startForeground(NOTIFICATION_ID, notification, types)
+                types and ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION != 0
+            } catch (e: SecurityException) {
+                // Android 14 refuses the location type to a service started in the background (boot, app update):
+                // it gets no GNSS fixes while the app is not in front, until the app is opened and starts it again
+                Log.w(TAG, "foreground without location: ${e.message}")
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                false
+            }
         } else {
-            startForeground(NOTIFICATION_ID, notification)
+            startForeground(NOTIFICATION_ID, notification) // the manifest's types
+            locationForeground = true
         }
     }
 
