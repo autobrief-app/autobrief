@@ -14,6 +14,7 @@ import app.autobrief.car.model.GeoPoint
 import app.autobrief.car.model.Place
 import app.autobrief.car.model.PlaceKind
 import app.autobrief.car.model.TripPurpose
+import app.autobrief.car.model.TripRecord
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
@@ -100,6 +101,35 @@ class TripLogbookTest {
         assertEquals(user, second.user)
         lb.onOdometer(30.0); val gap = lb.onGear(Gear.DRIVE, 3).single()
         assertNull(lb.classify(gap.id, TripPurpose.BUSINESS, user, "", ClassifiedBy.SCREEN))
+    }
+
+    @Test fun summaryAddsTheDistancesAsPrinted() {
+        fun trip(id: String, start: Double, km: Double, p: TripPurpose) = TripRecord(id, 0, 1, start, start + km, p, user, "")
+        // ⑤⑥ print to 0.1 km, so three separate 10.04 km trips print ⑦ = 10.0 each: ⑪ is 30.0, not 30.12 rounded
+        val separate = listOf(
+            trip("A", 100.0, 10.04, TripPurpose.COMMUTE),
+            trip("B", 200.0, 10.04, TripPurpose.BUSINESS),
+            trip("C", 300.0, 10.04, TripPurpose.PERSONAL),
+        )
+        val s = TripLogbook.summarize(separate)
+        assertEquals(30.0, s.totalKm, 0.0)
+        assertEquals(20.0, s.businessUseKm, 0.0)
+        assertEquals(20.0 / 30.0, s.businessUseRatio!!, 1e-12)
+        // one chain 100.00 → 110.04 → 120.08 → 130.12 prints 100.0, 110.0, 120.1, 130.1, so ⑦ = 10.0, 10.1, 10.0
+        val chain = (0..2).map { i -> trip("T$i", 100.0 + i * 10.04, 10.04, TripPurpose.BUSINESS) }
+        assertEquals(listOf(10.0, 10.1, 10.0), chain.map { TripLogbook.printedKm(it) })
+        assertEquals(30.1, TripLogbook.summarize(chain).totalKm, 0.0)
+        // 100.04 → 110.06 prints 100.0 → 110.1, so ⑦ = 10.1 and not the raw 10.02 rounded
+        assertEquals(10.1, TripLogbook.summarize(listOf(trip("D", 100.04, 10.02, TripPurpose.BUSINESS))).totalKm, 0.0)
+    }
+
+    @Test fun roundingIsHalfUpOnTheDecimalValueLikePercentOneF() {
+        // the ledger sheet prints readings with %.1f, so ⑤⑥ round the same way (반올림), ties included
+        listOf(45_218.25, 100.05, 1.45, 45_218.1015625, 110.06, 100.04).forEach { v ->
+            assertEquals("$v", "%.1f".format(v), "%.1f".format(TripLogbook.round1(v)))
+        }
+        assertEquals(45_218.3, TripLogbook.round1(45_218.25), 0.0)
+        assertEquals(100.1, TripLogbook.round1(100.05), 0.0)
     }
 
     @Test fun ratioCountsOnlyCommuteAndBusiness() {
