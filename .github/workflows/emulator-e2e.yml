@@ -121,11 +121,13 @@ jobs:
 
       - name: Start screen recording
         # 1280x720: the emulator display is 2560x1440, above what the software encoder accepts.
-        # The recording stops by itself after 180 s (screenrecord's limit); the collect step also
-        # stops it cleanly.
+        # screenrecord stops after 180 s at most, and the director can run longer (it waits for the
+        # app to see each place), so segments follow one another until the collect step stops them.
         run: |
           mkdir -p e2e-out
-          nohup adb shell screenrecord --size 1280x720 --time-limit 180 /sdcard/e2e.mp4 > e2e-out/screenrecord.log 2>&1 &
+          rm -f /tmp/stop-recording
+          nohup bash -c 'for i in 1 2 3 4; do adb shell screenrecord --size 1280x720 --time-limit 180 /sdcard/e2e-$i.mp4; [ -f /tmp/stop-recording ] && break; done' \
+            > e2e-out/screenrecord.log 2>&1 < /dev/null &
 
       - name: Play the scenarios and verify
         run: python3 demo/director.py --scenario all --mode auto --fast --verify --out e2e-out
@@ -135,9 +137,17 @@ jobs:
         # Best effort: when an earlier step failed the emulator or the console may not exist.
         run: |
           mkdir -p e2e-out
+          touch /tmp/stop-recording
           adb shell pkill -SIGINT screenrecord || echo "screenrecord was not running"
           sleep 3
-          adb pull /sdcard/e2e.mp4 e2e-out/e2e.mp4 || echo "no screen recording to pull"
+          for i in 1 2 3 4; do
+            adb pull "/sdcard/e2e-$i.mp4" "e2e-out/e2e-$i.mp4" 2>/dev/null || break
+          done
+          ls e2e-out/e2e-*.mp4 > /dev/null 2>&1 || echo "no screen recording to pull"
+          if command -v ffmpeg > /dev/null && ls e2e-out/e2e-*.mp4 > /dev/null 2>&1; then
+            for f in e2e-out/e2e-*.mp4; do echo "file '$PWD/$f'"; done > /tmp/segments.txt
+            ffmpeg -loglevel error -f concat -safe 0 -i /tmp/segments.txt -c copy e2e-out/e2e.mp4 || echo "segments kept as they are"
+          fi
           adb logcat -d > e2e-out/logcat.txt || echo "no logcat to dump"
           {
             echo "## am get-current-user"; adb shell am get-current-user
