@@ -103,6 +103,12 @@ class TripLogbookTest {
 }
 
 class LedgerTest {
+    @Test fun sha256IsLowerCaseHexOfTheDigest() {
+        assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", Ledger.sha256("abc"))
+        assertEquals("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", Ledger.sha256(""))
+        assertEquals("000ff0ff7f80", Ledger.hex(byteArrayOf(0x00, 0x0f, 0xf0.toByte(), 0xff.toByte(), 0x7f, 0x80.toByte())))
+    }
+
     @Test fun hashFormulaIsPinned() {
         val l = Ledger()
         val e = l.append(LedgerKind.TRIP, "TRIP-1", buildJsonObject { put("id", "TRIP-1") }, 42)

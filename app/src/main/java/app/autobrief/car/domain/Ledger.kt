@@ -75,8 +75,21 @@ class Ledger(initial: List<LedgerEntry> = emptyList()) {
         fun hashOf(prevHash: String, seq: Long, epochMs: Long, kind: String, tripId: String, body: String): String =
             sha256("$prevHash|$seq|$epochMs|$kind|$tripId|$body")
 
-        fun sha256(s: String): String =
-            MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        fun sha256(s: String): String = hex(MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8)))
+
+        private val HEX = "0123456789abcdef".toCharArray()
+
+        /** Lower-case hex. Not String.format per byte: loading the demo sample hashes ~2,000 entries and
+         *  64,000 format calls kept the main thread busy for most of a minute on a 2-core emulator. */
+        fun hex(bytes: ByteArray): String {
+            val out = CharArray(bytes.size * 2)
+            bytes.forEachIndexed { i, b ->
+                val v = b.toInt() and 0xff
+                out[2 * i] = HEX[v ushr 4]
+                out[2 * i + 1] = HEX[v and 0x0f]
+            }
+            return String(out)
+        }
 
         fun code(hash: String?): String =
             if (hash == null || hash == GENESIS) "-" else hash.take(8).uppercase().let { "${it.take(4)}-${it.drop(4)}" }
