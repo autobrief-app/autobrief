@@ -9,9 +9,13 @@ The console refuses every write (503 emulator_inactive) unless a browser session
 SessionKeeper beats `POST /browser/session` for the whole run; writes also wait for the
 vehicle data bridge (gear.bridge_ready) and retry a 503.
 
+Before the first scenario it records the device state (current user, what is in front, the
+console state) in <out>/preflight.txt, and before every scenario it brings the app back to the
+front if something else took it (the scenarios drive the app's own screen).
+
 Python 3.9+ standard library only. Narration is Korean (presenter-facing).
 Exit codes: 0 ok, 1 a --verify check failed, 2 adb/SDK missing or usage, 3 console
-unreachable or rejected a request.
+unreachable or rejected a request, 4 the app could not be brought to the front.
 """
 
 import argparse
@@ -37,11 +41,17 @@ from setup_emulator import (  # noqa: E402  (shared helpers live next to this sc
     AdbError,
     ConsoleError,
     SetupError,
+    app_resumed,
     configure_stdio,
     console_request,
     console_url,
     find_sdk_tools,
+    parse_current_user,
+    parse_front_activity,
+    resumed_lines,
     say,
+    start_app,
+    wait_for_app_in_front,
 )
 
 # --------------------------------------------------------------------------- constants
@@ -70,6 +80,10 @@ EXIT_OK = 0
 EXIT_VERIFY_FAILED = 1
 EXIT_TOOLS = 2
 EXIT_CONSOLE = 3
+EXIT_APP = 4
+
+FRONT_STABLE_S = 2.0  # before a scenario the app must hold the front this long
+PREFLIGHT_FILE = "preflight.txt"
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -627,6 +641,69 @@ def wait_for_bridge(
         sleep(interval)
 
 
+# --------------------------------------------------------------------------- device checks
+
+
+def preflight_lines(adb, state: dict) -> List[str]:
+    """What the device looks like right before the scenarios: user, its state, the resumed
+    activities, the users and the console state (one line each, for preflight.txt)."""
+    lines = []
+    user_text = adb.shell("am", "get-current-user").strip()
+    lines.append("current user: %s" % user_text)
+    user = parse_current_user(user_text)
+    if user is not None:
+        lines.append(
+            "user state: %s"
+            % adb.shell("am", "get-started-user-state", str(user)).strip()
+        )
+    activities = adb.activities()
+    lines.append("front: %s" % (parse_front_activity(activities) or "none"))
+    lines += ["activities: %s" % line for line in resumed_lines(activities)]
+    users = adb.shell("dumpsys", "user")
+    lines += [
+        "users: %s" % line.strip()
+        for line in users.splitlines()
+        if "UserInfo{" in line or "State:" in line or "urrent user" in line
+    ][:20]
+    lines.append("console: %s" % json.dumps(state, ensure_ascii=False, sort_keys=True))
+    return lines
+
+
+def write_preflight(out_dir: Optional[str], lines: Sequence[str]) -> Optional[str]:
+    if not out_dir:
+        return None
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, PREFLIGHT_FILE)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+    return path
+
+
+def ensure_app_in_front(
+    adb,
+    stable: Optional[float] = None,
+    now: Optional[Callable[[], float]] = None,
+    sleep: Optional[Callable[[float], None]] = None,
+    say_fn: Callable[[str], None] = say,
+):
+    """The scenarios play on the app's own screen: if another activity (the home, navigation) is
+    in front, start the app again in the current user and wait until it holds the front."""
+    stable = FRONT_STABLE_S if stable is None else stable
+    user = parse_current_user(adb.shell("am", "get-current-user"))
+    if user is None:
+        raise SetupError(EXIT_APP, "현재 사용자를 알 수 없습니다 (am get-current-user)")
+    dumpsys = adb.activities()
+    ours = app_resumed(dumpsys, user)
+    if ours is not None:
+        return ours
+    front = parse_front_activity(dumpsys)
+    say_fn("  (앱이 화면 앞에 없습니다: %s. 다시 띄웁니다)" % (front or "없음"))
+    start_app(adb, user)
+    return wait_for_app_in_front(
+        adb, user, stable=stable, now=now, sleep=sleep, log=say_fn
+    )
+
+
 # --------------------------------------------------------------------------- executor
 
 
@@ -778,7 +855,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "시나리오: commute 집->회사 18km(출퇴근), client 회사->가상상사 11km(업무), "
             "personal 가상상사->미등록 장소 7km(미분류). "
-            "종료 코드: 0 성공, 1 --verify 실패, 2 adb/SDK 없음 또는 사용법 오류, 3 콘솔 연결/요청 실패"
+            "종료 코드: 0 성공, 1 --verify 실패, 2 adb/SDK 없음 또는 사용법 오류, 3 콘솔 연결/요청 실패, "
+            "4 앱을 화면 앞에 띄우지 못함"
         ),
     )
     parser.add_argument(
@@ -884,9 +962,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             % (session.client, session.interval)
         )
         wait_for_bridge(console)
+        lines = preflight_lines(adb, console.state())
+        for line in lines:
+            say("  [점검] " + line[:300])
+        saved = write_preflight(args.out, lines)
+        if saved:
+            say("  (점검 기록: %s)" % saved)
         if args.verify:
             adb.logcat_clear()
         for scenario in select_scenarios(args.scenario):
+            ensure_app_in_front(adb)
             director.run_scenario(scenario)
             if args.verify:
                 say("  logcat 확인 중 (최대 %.0f초)..." % VERIFY_TIMEOUT_S)
@@ -896,6 +981,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         say("")
         say("시연 중 오류 / Error during the demo: %s" % exc, err=True)
         return EXIT_CONSOLE
+    except SetupError as exc:
+        say("")
+        say("앱을 화면 앞에 띄우지 못했습니다 / The app is not in front: %s" % exc, err=True)
+        return EXIT_APP
     except KeyboardInterrupt:
         say(
             "\n중단했습니다. 차량이 주행 중일 수 있습니다 (다시 실행하면 먼저 주차 P 로 맞춥니다)."

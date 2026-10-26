@@ -2200,6 +2200,365 @@ class BridgeWaitTests(unittest.TestCase):
         self.assertIn("emulator_active=False", text)
 
 
+# --------------------------------------------------------------------------- device readiness
+
+HOME_SCREEN = "ai.umos.homescreen/.HomeActivity"
+APP_SCREEN = "app.autobrief.car/.ui.MainActivity"
+NAV_SCREEN = "ai.umos.maps.android.navigation.app/.MainActivity"
+WIZARD_SCREEN = "ai.umos.setupwizard/.SetupWizardActivity"
+UNLOCKED = "[UserState: id=10, state=RUNNING_UNLOCKED, lastState=RUNNING_UNLOCKING, switching=false]"
+LOCKED = "[UserState: id=10, state=RUNNING_LOCKED, lastState=BOOTING, switching=true]"
+
+
+def dumpsys_front(component, user=10):
+    return (
+        "ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)\n"
+        "Display #0 (activities from top to bottom):\n"
+        "  * Task{5d1c9e1 #1000012 type=standard U=%d visible=true}\n"
+        "  topResumedActivity=ActivityRecord{1f2e3d4 u%d %s t1000012}\n"
+        "\n"
+        "  ResumedActivity: ActivityRecord{1f2e3d4 u%d %s t1000012}\n"
+        % (user, user, component, user, component)
+    )
+
+
+DUMPSYS_NOTHING_RESUMED = (
+    "Display #0 (activities from top to bottom):\n  topResumedActivity=null\n"
+)
+
+
+class SequenceAdb:
+    """The device side of the readiness waits: every poll returns the next scripted answer and
+    the last answer repeats. `am start` of the app makes `after_start` the next front answers."""
+
+    def __init__(
+        self,
+        users=("10",),
+        states=(UNLOCKED,),
+        fronts=(dumpsys_front(HOME_SCREEN),),
+        logcats=("",),
+        hsum="true",
+        after_start=None,
+    ):
+        self.seq = {
+            "user": list(users),
+            "state": list(states),
+            "front": list(fronts),
+            "logcat": list(logcats),
+        }
+        self.pos = dict.fromkeys(self.seq, 0)
+        self.hsum = hsum
+        self.after_start = after_start
+        self.shells = []
+
+    def next(self, key):
+        items, index = self.seq[key], self.pos[key]
+        self.pos[key] += 1
+        return items[min(index, len(items) - 1)]
+
+    def getprop(self, name):
+        return self.hsum if name == se.HSUM_PROP else ""
+
+    def current_user(self):
+        return se.parse_current_user(self.shell("am", "get-current-user"))
+
+    def user_state(self, user):
+        return se.parse_user_state(self.shell("am", "get-started-user-state", str(user)))
+
+    def activities(self):
+        return self.shell("dumpsys", "activity", "activities")
+
+    def logcat_dump(self, *args, **kwargs):
+        return self.next("logcat")
+
+    def out(self, *args, **kwargs):
+        return "10-26 14:20:01.000 W AutoBriefVehicle: probe: vehicle service not bound\n"
+
+    def shell(self, *args, timeout=None):
+        line = " ".join(args)
+        self.shells.append(line)
+        if line == "am get-current-user":
+            return self.next("user") + "\n"
+        if line.startswith("am get-started-user-state"):
+            return self.next("state") + "\n"
+        if line == "dumpsys activity activities":
+            return self.next("front")
+        if line == "dumpsys user":
+            return "Users:\n  UserInfo{10:Driver:412} running\n    State: RUNNING_UNLOCKED\n"
+        if line.startswith("am start") and "-n" in args:
+            if self.after_start is not None:
+                self.seq["front"], self.pos["front"] = list(self.after_start), 0
+            return "Starting: Intent { cmp=%s }\nStatus: ok\n" % APP_SCREEN
+        return ""
+
+
+class FakeClock:
+    def __init__(self):
+        self.t = 0.0
+        self.sleeps = []
+
+    def now(self):
+        return self.t
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.t += seconds
+
+
+class ReadinessParseTests(unittest.TestCase):
+    def test_current_user(self):
+        self.assertEqual(se.parse_current_user("10\n"), 10)
+        self.assertEqual(se.parse_current_user(" 0 "), 0)
+        self.assertIsNone(se.parse_current_user(""))
+        self.assertIsNone(se.parse_current_user("Error: unknown command"))
+
+    def test_user_state_reads_state_not_last_state(self):
+        self.assertEqual(se.parse_user_state(UNLOCKED), "RUNNING_UNLOCKED")
+        self.assertEqual(
+            se.parse_user_state(
+                "[UserState: id=10, state=RUNNING_LOCKED, lastState=RUNNING_UNLOCKED]"
+            ),
+            "RUNNING_LOCKED",
+        )
+        self.assertEqual(se.parse_user_state("RUNNING_UNLOCKING\n"), "RUNNING_UNLOCKING")
+        self.assertIsNone(se.parse_user_state("User is not started: 10"))
+
+    def test_front_activity_prefers_top_resumed(self):
+        text = (
+            "  ResumedActivity: ActivityRecord{aa u10 %s t1}\n"
+            "  topResumedActivity=ActivityRecord{bb u10 %s t2}\n" % (NAV_SCREEN, APP_SCREEN)
+        )
+        front = se.parse_front_activity(text)
+        self.assertEqual((front.user, front.component), (10, APP_SCREEN))
+        self.assertEqual(front.package, "app.autobrief.car")
+        self.assertEqual(str(front), "u10 " + APP_SCREEN)
+
+    def test_front_activity_falls_back_to_the_resumed_record(self):
+        front = se.parse_front_activity(
+            "    mResumedActivity: ActivityRecord{c0ffee u0 com.x/.Main$Inner t9}\n"
+        )
+        self.assertEqual((front.user, front.component), (0, "com.x/.Main$Inner"))
+
+    def test_field_names_of_other_android_versions(self):
+        text = (
+            "  mLastResumedActivity: ActivityRecord{01 u10 %s t3}\n"
+            "    mResumedActivity: ActivityRecord{02 u10 %s t4}\n"
+            "  mTopResumedActivity=ActivityRecord{03 u10 %s t5}\n"
+            % (NAV_SCREEN, HOME_SCREEN, APP_SCREEN)
+        )
+        self.assertEqual(se.parse_front_activity(text).component, APP_SCREEN)
+        self.assertEqual(
+            [(top, a.component) for top, a in se.resumed_records(text)],
+            [(False, HOME_SCREEN), (True, APP_SCREEN)],
+            "the last-resumed record is history and is skipped",
+        )
+
+    def test_app_resumed_in_a_panel_counts_in_its_user_only(self):
+        text = (
+            "  topResumedActivity=ActivityRecord{aa u10 %s t1}\n"
+            "  ResumedActivity: ActivityRecord{bb u10 %s t2}\n" % (HOME_SCREEN, APP_SCREEN)
+        )
+        self.assertEqual(se.app_resumed(text, 10).component, APP_SCREEN)
+        self.assertIsNone(se.app_resumed(text, 0))
+        self.assertIsNone(se.app_resumed(dumpsys_front(HOME_SCREEN), 10))
+
+    def test_nothing_resumed(self):
+        self.assertIsNone(se.parse_front_activity(DUMPSYS_NOTHING_RESUMED))
+        self.assertIsNone(se.parse_front_activity(""))
+
+    def test_resumed_lines_for_the_preflight(self):
+        self.assertEqual(
+            se.resumed_lines(dumpsys_front(HOME_SCREEN)),
+            [
+                "topResumedActivity=ActivityRecord{1f2e3d4 u10 %s t1000012}" % HOME_SCREEN,
+                "ResumedActivity: ActivityRecord{1f2e3d4 u10 %s t1000012}" % HOME_SCREEN,
+            ],
+        )
+
+    def test_user_not_ready_reasons(self):
+        home = se.FrontActivity(10, HOME_SCREEN)
+        cases = [
+            (se.UserSnapshot(True, None, None, home), "현재 사용자"),
+            (se.UserSnapshot(True, 0, None, home), "전환 중"),
+            (se.UserSnapshot(True, 10, "RUNNING_LOCKED", home), "RUNNING_LOCKED"),
+            (se.UserSnapshot(True, 10, se.USER_UNLOCKED, None), "앞 화면 없음"),
+            (
+                se.UserSnapshot(True, 10, se.USER_UNLOCKED, se.FrontActivity(0, HOME_SCREEN)),
+                "다른 사용자",
+            ),
+            (
+                se.UserSnapshot(True, 10, se.USER_UNLOCKED, se.FrontActivity(10, WIZARD_SCREEN)),
+                "설정 마법사",
+            ),
+        ]
+        for snap, words in cases:
+            self.assertIn(words, se.user_not_ready(snap), snap)
+        self.assertIsNone(se.user_not_ready(se.UserSnapshot(True, 10, se.USER_UNLOCKED, home)))
+        # without a headless system user, user 0 is the driver
+        self.assertIsNone(
+            se.user_not_ready(
+                se.UserSnapshot(False, 0, se.USER_UNLOCKED, se.FrontActivity(0, HOME_SCREEN))
+            )
+        )
+
+    def test_start_and_broadcast_name_the_user(self):
+        self.assertEqual(
+            se.start_app_args(10, restart=True),
+            ["am", "start", "-W", "-S", "--user", "10", "-n", APP_SCREEN],
+        )
+        self.assertEqual(
+            se.start_app_args(10), ["am", "start", "-W", "--user", "10", "-n", APP_SCREEN]
+        )
+        self.assertEqual(
+            se.demo_broadcast_args("reset", user=10)[:4], ["am", "broadcast", "--user", "10"]
+        )
+
+
+class UserReadyWaitTests(unittest.TestCase):
+    def test_waits_through_the_user_switch_and_the_lock_screen(self):
+        adb = SequenceAdb(
+            users=("0", "0", "10"),
+            states=(LOCKED, UNLOCKED),
+            fronts=(DUMPSYS_NOTHING_RESUMED,) * 4 + (dumpsys_front(HOME_SCREEN),),
+        )
+        clock, notes = FakeClock(), []
+        user = se.wait_for_user_ready(adb, now=clock.now, sleep=clock.sleep, log=notes.append)
+        self.assertEqual(user, 10)
+        self.assertEqual(adb.shells.count("am get-current-user"), 5)
+        self.assertNotIn(
+            "am get-started-user-state 0", adb.shells, "user 0 is never the driver here"
+        )
+        self.assertIn("운전자 화면 준비됨: 사용자 10, 앞 화면 %s" % HOME_SCREEN, notes[-1])
+        self.assertEqual(clock.sleeps, [2.0] * 4)
+
+    def test_setup_wizard_is_finished_once_then_the_home_counts(self):
+        adb = SequenceAdb(
+            fronts=(dumpsys_front(WIZARD_SCREEN),) * 2 + (dumpsys_front(HOME_SCREEN),)
+        )
+        clock, notes = FakeClock(), []
+        self.assertEqual(
+            se.wait_for_user_ready(adb, now=clock.now, sleep=clock.sleep, log=notes.append), 10
+        )
+        self.assertEqual(
+            adb.shells.count("settings put --user 10 secure user_setup_complete 1"), 1
+        )
+        self.assertIn("settings put global device_provisioned 1", adb.shells)
+        self.assertIn(
+            "am start --user 10 -a android.intent.action.MAIN -c android.intent.category.HOME",
+            adb.shells,
+        )
+
+    def test_timeout_names_the_last_reason(self):
+        adb = SequenceAdb(states=(LOCKED,))
+        clock = FakeClock()
+        with self.assertRaises(se.SetupError) as caught:
+            se.wait_for_user_ready(
+                adb, timeout=30, now=clock.now, sleep=clock.sleep, log=lambda m: None
+            )
+        self.assertEqual(caught.exception.code, se.EXIT_BOOT)
+        self.assertIn("RUNNING_LOCKED", str(caught.exception))
+        self.assertEqual(se.USER_READY_WAIT_S, 300)
+
+
+class AppFrontWaitTests(unittest.TestCase):
+    def test_app_that_holds_the_front_is_accepted(self):
+        adb = SequenceAdb(fronts=(dumpsys_front(APP_SCREEN),))
+        clock = FakeClock()
+        front = se.wait_for_app_in_front(
+            adb, 10, stable=3.0, now=clock.now, sleep=clock.sleep, log=lambda m: None
+        )
+        self.assertEqual(front.component, APP_SCREEN)
+        self.assertEqual(clock.sleeps, [1.0] * 3)
+        self.assertFalse(any(s.startswith("am start") for s in adb.shells))
+
+    def test_navigation_taking_the_front_starts_the_app_again(self):
+        adb = SequenceAdb(
+            fronts=(dumpsys_front(APP_SCREEN), dumpsys_front(NAV_SCREEN)),
+            after_start=(dumpsys_front(APP_SCREEN),),
+        )
+        clock, notes = FakeClock(), []
+        se.wait_for_app_in_front(
+            adb, 10, stable=3.0, now=clock.now, sleep=clock.sleep, log=notes.append
+        )
+        starts = [s for s in adb.shells if s.startswith("am start")]
+        self.assertEqual(starts, ["am start -W --user 10 -n " + APP_SCREEN])
+        self.assertIn("u10 " + NAV_SCREEN, notes[0])
+
+    def test_the_app_in_another_user_does_not_count(self):
+        adb = SequenceAdb(fronts=(dumpsys_front(APP_SCREEN, user=0),))
+        clock = FakeClock()
+        with self.assertRaises(se.SetupError) as caught:
+            se.wait_for_app_in_front(
+                adb, 10, timeout=12, stable=1.0, now=clock.now, sleep=clock.sleep,
+                log=lambda m: None,
+            )
+        self.assertIn("u0 " + APP_SCREEN, str(caught.exception))
+        starts = [s for s in adb.shells if s.startswith("am start")]
+        self.assertEqual(len(starts), 2, "relaunched every 5 s, not on every poll")
+
+
+class VehicleConnectedWaitTests(unittest.TestCase):
+    def test_returns_when_the_line_appears(self):
+        adb = SequenceAdb(
+            logcats=("", "I AutoBriefLog: SPACE LIVE\nI AutoBriefLog: VEHICLE_CONNECTED\n")
+        )
+        clock = FakeClock()
+        self.assertEqual(
+            se.wait_for_vehicle_connected(adb, now=clock.now, sleep=clock.sleep), 2.0
+        )
+
+    def test_timeout_shows_the_sdk_warnings(self):
+        clock = FakeClock()
+        with self.assertRaises(se.SetupError) as caught:
+            se.wait_for_vehicle_connected(
+                SequenceAdb(), timeout=10, now=clock.now, sleep=clock.sleep
+            )
+        text = str(caught.exception)
+        self.assertIn("VEHICLE_CONNECTED 없음", text)
+        self.assertIn("vehicle service not bound", text)
+
+
+class DirectorFrontTests(unittest.TestCase):
+    def test_app_in_front_is_left_alone(self):
+        adb = SequenceAdb(fronts=(dumpsys_front(APP_SCREEN),))
+        director.ensure_app_in_front(adb, say_fn=lambda m: None)
+        self.assertFalse(any(s.startswith("am start") for s in adb.shells))
+
+    def test_home_in_front_gets_the_app_started_in_the_current_user(self):
+        adb = SequenceAdb(
+            fronts=(dumpsys_front(HOME_SCREEN),), after_start=(dumpsys_front(APP_SCREEN),)
+        )
+        clock, notes = FakeClock(), []
+        front = director.ensure_app_in_front(
+            adb, stable=2.0, now=clock.now, sleep=clock.sleep, say_fn=notes.append
+        )
+        self.assertEqual(front.component, APP_SCREEN)
+        self.assertEqual(
+            [s for s in adb.shells if s.startswith("am start")],
+            ["am start -W --user 10 -n " + APP_SCREEN],
+        )
+        self.assertIn("다시 띄웁니다", notes[0])
+
+    def test_unknown_user_is_an_app_error(self):
+        with self.assertRaises(se.SetupError) as caught:
+            director.ensure_app_in_front(SequenceAdb(users=("",)), say_fn=lambda m: None)
+        self.assertEqual(caught.exception.code, director.EXIT_APP)
+
+    def test_preflight_lines_and_file(self):
+        adb = SequenceAdb()
+        lines = director.preflight_lines(adb, {"gear": {"bridge_ready": True}})
+        self.assertEqual(lines[0], "current user: 10")
+        self.assertEqual(lines[1], "user state: " + UNLOCKED)
+        self.assertEqual(lines[2], "front: u10 " + HOME_SCREEN)
+        self.assertIn("users: UserInfo{10:Driver:412} running", lines)
+        self.assertEqual(lines[-1], 'console: {"gear": {"bridge_ready": true}}')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = director.write_preflight(tmp, lines)
+            with open(path, encoding="utf-8") as handle:
+                self.assertEqual(handle.read().splitlines(), lines)
+        self.assertIsNone(director.write_preflight(None, lines))
+
+
 # --------------------------------------------------------------------------- end-to-end rehearsals
 
 FAKE_ADB = r"""#!{python}
@@ -2224,7 +2583,39 @@ def out(text):
 
 running = flag("emulator.running")
 logcat = os.path.join(state, "logcat.txt")
+front_file = os.path.join(state, "front")
 cmd, rest = (args[0] if args else ""), args[1:]
+HOME = "ai.umos.homescreen/.HomeActivity"
+APP = "app.autobrief.car/.ui.MainActivity"
+NAV = "ai.umos.maps.android.navigation.app/.MainActivity"
+
+
+def front():
+    return open(front_file).read() if os.path.exists(front_file) else HOME
+
+
+def set_front(component):
+    with open(front_file, "w") as handle:
+        handle.write(component)
+
+
+def log_app(text):
+    with open(logcat, "a", encoding="utf-8") as handle:
+        handle.write("10-25 12:00:00.000     1     1 I AutoBriefLog: " + text + "\n")
+
+
+def countdown(name):
+    # True while the counter file <name> (polls left) is above zero; each call uses one
+    path = os.path.join(state, name)
+    if not os.path.exists(path):
+        return False
+    left = int(open(path).read() or "0")
+    if left <= 0:
+        return False
+    with open(path, "w") as handle:
+        handle.write(str(left - 1))
+    return True
+
 if cmd == "devices":
     out("List of devices attached\n" + ("emulator-5554\tdevice\n" if running else "") + "\n")
 elif cmd == "wait-for-device":
@@ -2236,10 +2627,32 @@ elif cmd == "shell":
     line = rest[0] if rest else ""
     if line.startswith("getprop sys.boot_completed"):
         out("1\n" if running and not flag("never_boots") else "\n")
+    elif line.startswith("getprop ro.fw.mu.headless_system_user"):
+        out("true\n")
+    elif line == "am get-current-user":
+        out("0\n" if countdown("switch_polls") else "10\n")
+    elif line.startswith("am get-started-user-state"):
+        state_name = "RUNNING_LOCKED" if countdown("locked_polls") else "RUNNING_UNLOCKED"
+        out("[UserState: id=10, state=%s, lastState=RUNNING_LOCKED, switching=false]\n" % state_name)
+    elif line == "dumpsys activity activities":
+        shown = NAV if countdown("nav_polls") else front()
+        out("Display #0 (activities from top to bottom):\n"
+            "  topResumedActivity=ActivityRecord{1f2e3d4 u10 %s t1000012}\n"
+            "  ResumedActivity: ActivityRecord{1f2e3d4 u10 %s t1000012}\n" % (shown, shown))
+    elif line == "dumpsys user":
+        out("Users:\n  UserInfo{0:Driver:c13} running\n    State: RUNNING_UNLOCKED\n"
+            "  UserInfo{10:Driver:412} running\n    State: RUNNING_UNLOCKED\n")
+    elif line.startswith("am start") and "android.intent.category.HOME" in line:
+        set_front(HOME)
     elif line.startswith("am start") and flag("start_fails"):
         out("Error type 3\nError: Activity class {app.autobrief.car/app.autobrief.car.ui.MainActivity} does not exist.\n")
     elif line.startswith("am start"):
-        out("Starting: Intent { cmp=app.autobrief.car/.ui.MainActivity }\n")
+        out("Starting: Intent { cmp=app.autobrief.car/.ui.MainActivity }\nStatus: ok\n")
+        set_front(APP)
+        if not flag("no_vehicle"):
+            log_app("VEHICLE_CONNECTED")
+    elif line.startswith("settings put"):
+        pass
     elif line.startswith("am broadcast"):
         out("Broadcast completed: result=0\n")
         if "load_sample" in line and not flag("no_demo_hook"):
@@ -2262,6 +2675,8 @@ elif cmd == "emu":
 elif cmd == "logcat":
     if "-c" in rest:
         open(logcat, "w").close()
+    elif "-G" in rest:
+        pass
     elif os.path.exists(logcat):
         out(open(logcat, encoding="utf-8").read())
 elif cmd == "exec-out":
@@ -2541,6 +2956,7 @@ class SetupRehearsalTests(unittest.TestCase):
         for patcher in (
             mock.patch.dict(os.environ, self.device.env()),
             mock.patch.object(se, "CONSOLE_HOST_PORT", self.device.app.port),
+            mock.patch.object(se, "APP_FRONT_STABLE_S", 0.0),
             mock.patch("time.sleep"),
             mock.patch("webbrowser.open"),
         ):
@@ -2611,13 +3027,23 @@ class SetupRehearsalTests(unittest.TestCase):
             calls,
         )
         shells = [self.sh(c) for c in calls]
-        self.assertIn("am start -n app.autobrief.car/.ui.MainActivity", shells)
-        self.assertIn(
-            "am broadcast -a app.autobrief.car.debug.DEMO -p app.autobrief.car --es cmd load_sample "
-            "--es webhook 'http://10.0.2.2:8787/hook?token=s3cret'",
-            shells,
+        start = "am start -W -S --user 10 -n app.autobrief.car/.ui.MainActivity"
+        broadcast = (
+            "am broadcast --user 10 -a app.autobrief.car.debug.DEMO -p app.autobrief.car --es cmd load_sample "
+            "--es webhook 'http://10.0.2.2:8787/hook?token=s3cret'"
         )
+        self.assertIn(start, shells)
+        self.assertIn(broadcast, shells)
+        self.assertIn(["-s", "emulator-5554", "logcat", "-G", "32M"], calls)
         self.assertIn(["-s", "emulator-5554", "logcat", "-c"], calls)
+        # the app starts only after the driver's user is unlocked and in front, and the sample is
+        # sent only after the app is in front and connected to the vehicle SDK
+        first = {s: i for i, s in reversed(list(enumerate(shells)))}
+        self.assertLess(first["am get-started-user-state 10"], first[start])
+        self.assertLess(first[start], first[broadcast])
+        self.assertIn("운전자 화면 준비됨: 사용자 10", text)
+        self.assertIn("앱이 화면 앞에 있습니다: u10 app.autobrief.car/.ui.MainActivity", text)
+        self.assertIn("VEHICLE_CONNECTED", text)
         self.assertIn("DEMO_READY trips=487", text)
         self.assertNotIn("s3cret", text, "webhook query must not be echoed")
         self.assertIn("director.py", text)
@@ -2669,6 +3095,57 @@ class SetupRehearsalTests(unittest.TestCase):
         self.assertIn("종료됐습니다", text)
         self.assertIn("requires hardware acceleration", text, "log tail is shown")
         self.assertIn("가상화", text, "and the matching hint")
+
+    def test_waits_for_the_driver_user_to_unlock_before_starting_the_app(self):
+        self.device.preinstall_image(self.abi)
+        self.device.flag("emulator.running")
+        for name, polls in (("switch_polls", "3"), ("locked_polls", "2")):
+            with open(os.path.join(self.device.state, name), "w") as handle:
+                handle.write(polls)
+        code, text = self.run_main(
+            "--headless", "--no-browser", "--skip-image", "--apk", self.apk
+        )
+        self.assertEqual(code, 0, text)
+        shells = [self.sh(c) for c in self.device.adb_calls()]
+        start = shells.index(
+            "am start -W -S --user 10 -n app.autobrief.car/.ui.MainActivity"
+        )
+        self.assertGreaterEqual(
+            shells[:start].count("am get-current-user"),
+            6,
+            "3 polls in user 0, 2 polls locked, then ready",
+        )
+
+    def test_app_covered_by_the_navigation_panel_is_started_again(self):
+        self.device.preinstall_image(self.abi)
+        with open(os.path.join(self.device.state, "nav_polls"), "w") as handle:
+            handle.write("3")
+        with mock.patch.object(se, "APP_RELAUNCH_EVERY_S", 0.0):
+            code, text = self.run_main(
+                "--headless", "--no-browser", "--skip-image", "--apk", self.apk
+            )
+        self.assertEqual(code, 0, text)
+        self.assertIn("앱을 다시 앞으로 가져옵니다", text)
+        self.assertIn("앱이 화면 앞에 있습니다: u10 app.autobrief.car", text)
+
+    def test_app_that_never_reaches_the_vehicle_sdk_fails_with_its_log(self):
+        self.device.preinstall_image(self.abi)
+        self.device.flag("no_vehicle")
+        with mock.patch.object(se, "VEHICLE_CONNECTED_WAIT_S", 0.2):
+            code, text = self.run_main(
+                "--headless",
+                "--no-browser",
+                "--skip-image",
+                "--apk",
+                self.apk,
+                "--demo-sample",
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("VEHICLE_CONNECTED 없음", text)
+        self.assertFalse(
+            any("load_sample" in (self.sh(c) or "") for c in self.device.adb_calls()),
+            "no sample is sent to an app that is not connected",
+        )
 
     def test_app_start_failure_is_reported(self):
         self.device.preinstall_image(self.abi)
@@ -2793,6 +3270,7 @@ class DirectorRehearsalTests(unittest.TestCase):
             mock.patch.dict(os.environ, self.device.env()),
             mock.patch("time.sleep"),
             mock.patch.object(director, "SESSION_INTERVAL_S", 0.05),
+            mock.patch.object(director, "FRONT_STABLE_S", 0.0),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -2818,8 +3296,21 @@ class DirectorRehearsalTests(unittest.TestCase):
         for key in ("commute", "client", "personal"):
             self.assertIn("[PASS] %s:" % key, text)
         self.assertIn("검증 결과: 3/3 PASS", text)
-        self.assertEqual(len(os.listdir(shots)), 15)
+        self.assertEqual(len([n for n in os.listdir(shots) if n.endswith(".png")]), 15)
+        with open(os.path.join(shots, "preflight.txt"), encoding="utf-8") as handle:
+            preflight = handle.read()
+        self.assertIn("current user: 10", preflight)
+        self.assertIn("state=RUNNING_UNLOCKED", preflight)
+        self.assertIn("front: u10 ai.umos.homescreen/.HomeActivity", preflight)
+        self.assertIn('"bridge_ready": true', preflight)
+        # the home was in front: the app is started once, before the first scenario, then stays
+        self.assertEqual(text.count("다시 띄웁니다"), 1)
         calls = self.device.adb_calls()
+        starts = [c for c in calls if "shell" in c and c[c.index("shell") + 1].startswith("am start")]
+        self.assertEqual(
+            [c[c.index("shell") + 1] for c in starts],
+            ["am start -W --user 10 -n app.autobrief.car/.ui.MainActivity"],
+        )
         self.assertEqual(
             sum(c[2:4] == ["logcat", "-c"] for c in calls),
             1,

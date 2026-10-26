@@ -41,7 +41,11 @@ API_LEVEL = 34
 # <sdk>/system-images/android-34/pleos-connect/<abi>/
 IMAGE_SUBDIRS = ("system-images", "android-%d" % API_LEVEL, "pleos-connect")
 # where Android Studio's SDK Manager puts the same image (repository path system-images;android-34;pleos_car_emulator;<abi>)
-OFFICIAL_IMAGE_SUBDIRS = ("system-images", "android-%d" % API_LEVEL, "pleos_car_emulator")
+OFFICIAL_IMAGE_SUBDIRS = (
+    "system-images",
+    "android-%d" % API_LEVEL,
+    "pleos_car_emulator",
+)
 
 REPO_BASE = "https://nexus-playground.pleos.ai/repository/raw-releases/connect-avd/2.x/"
 REPO_XML_URLS = {
@@ -67,6 +71,19 @@ BOOT_TIMEOUT_HEADLESS_S = 900
 BOOT_TIMEOUT_GUI_S = 420
 CONSOLE_WAIT_S = 180
 DEMO_READY_WAIT_S = 60
+# sys.boot_completed comes from the headless system user (0); the driver's user (10) unlocks and
+# the home comes up behind the lock screen tens of seconds later (measured: about 50 s on CI)
+USER_READY_WAIT_S = 300
+APP_FRONT_WAIT_S = 120
+# the home opens its own panels right after unlock: ours must stay in front this long
+APP_FRONT_STABLE_S = 5.0
+APP_RELAUNCH_EVERY_S = 5.0
+VEHICLE_CONNECTED_WAIT_S = 120
+# the default logcat ring rotates out the setup lines within minutes
+LOGCAT_BUFFER_SIZE = "32M"
+HSUM_PROP = "ro.fw.mu.headless_system_user"
+USER_UNLOCKED = "RUNNING_UNLOCKED"
+SETUP_WIZARD_MARK = "setupwizard"  # ai.umos.setupwizard on Pleos Connect
 
 EXIT_OK = 0
 EXIT_FAIL = 1
@@ -343,6 +360,96 @@ def parse_emu_avd_name(text: str) -> Optional[str]:
     return None
 
 
+def parse_current_user(text: str) -> Optional[int]:
+    """`am get-current-user` prints the foreground user id alone (10 on Pleos Connect)."""
+    found = re.fullmatch(r"\s*(\d+)\s*", text)
+    return int(found.group(1)) if found else None
+
+
+_USER_STATES = (
+    "BOOTING",
+    "RUNNING_LOCKED",
+    "RUNNING_UNLOCKING",
+    "RUNNING_UNLOCKED",
+    "STOPPING",
+    "SHUTDOWN",
+)
+
+
+def parse_user_state(text: str) -> Optional[str]:
+    """`am get-started-user-state <id>` -> 'RUNNING_UNLOCKED' etc.
+
+    The command prints `[UserState: id=10, state=RUNNING_UNLOCKED, lastState=..., ...]`, or
+    `User is not started: <id>` (None)."""
+    found = re.search(r"\bstate=([A-Z_]+)", text)
+    if found:
+        return found.group(1)
+    found = re.search(r"\b(%s)\b" % "|".join(_USER_STATES), text)
+    return found.group(1) if found else None
+
+
+@dataclass(frozen=True)
+class FrontActivity:
+    """The activity in front of the screen, as `dumpsys activity activities` names it."""
+
+    user: int
+    component: str  # package/activity, e.g. app.autobrief.car/.ui.MainActivity
+
+    @property
+    def package(self) -> str:
+        return self.component.split("/", 1)[0]
+
+    def __str__(self) -> str:
+        return "u%d %s" % (self.user, self.component)
+
+
+_RECORD = r"ActivityRecord\{\S+\s+u(\d+)\s+([\w.$]+/[\w.$]+)"
+# topResumedActivity= / mTopResumedActivity= / mResumedActivity: / ResumedActivity: / Resumed:
+# (the field names differ between Android versions); mLastResumedActivity is history, not state
+_RESUMED_RECORD = re.compile(
+    r"\b(\w*?)resumed(?:activity)?\s*[:=]\s*" + _RECORD, re.IGNORECASE
+)
+
+
+def resumed_records(dumpsys: str) -> List[Tuple[bool, FrontActivity]]:
+    """(is_top, activity) for every resumed activity `dumpsys activity activities` lists, in order."""
+    records = []
+    for prefix, user, component in _RESUMED_RECORD.findall(dumpsys):
+        if "last" in prefix.lower():
+            continue
+        records.append(("top" in prefix.lower(), FrontActivity(int(user), component)))
+    return records
+
+
+def parse_front_activity(dumpsys: str) -> Optional[FrontActivity]:
+    """The first top resumed activity (display 0 is listed first), else the first resumed one.
+
+    None while nothing is resumed: the lock screen is up or a user switch is in progress."""
+    records = resumed_records(dumpsys)
+    tops = [activity for is_top, activity in records if is_top]
+    if tops:
+        return tops[0]
+    return records[0][1] if records else None
+
+
+def app_resumed(dumpsys: str, user: int) -> Optional[FrontActivity]:
+    """Our activity when it is resumed (on screen) in `user`, top or not: the Pleos home can show
+    an app in a panel next to its own, and a resumed activity there is visible all the same."""
+    for _, activity in resumed_records(dumpsys):
+        if activity.user == user and activity.package == APP_PACKAGE:
+            return activity
+    return None
+
+
+def resumed_lines(dumpsys: str) -> List[str]:
+    """The lines of `dumpsys activity activities` that say what is resumed (for the preflight log)."""
+    return [
+        line.strip()
+        for line in dumpsys.splitlines()
+        if _RESUMED_RECORD.search(line) or "mFocusedApp" in line
+    ]
+
+
 class Adb:
     """Thin adb wrapper. Output is always decoded as UTF-8 (Windows locale codecs mangle Hangul)."""
 
@@ -405,8 +512,20 @@ class Adb:
     def logcat_clear(self) -> None:
         self.run("logcat", "-c")
 
+    def logcat_buffer_size(self, size: str) -> None:
+        self.run("logcat", "-G", size)
+
     def logcat_dump(self, tag: str = LOG_TAG, level: str = "I") -> str:
         return self.out("logcat", "-d", "-s", "%s:%s" % (tag, level))
+
+    def current_user(self) -> Optional[int]:
+        return parse_current_user(self.shell("am", "get-current-user"))
+
+    def user_state(self, user: int) -> Optional[str]:
+        return parse_user_state(self.shell("am", "get-started-user-state", str(user)))
+
+    def activities(self) -> str:
+        return self.shell("dumpsys", "activity", "activities")
 
     def geo_fix(self, lon: float, lat: float) -> None:
         reply = self.out("emu", "geo", "fix", "%.6f" % lon, "%.6f" % lat)
@@ -1274,6 +1393,17 @@ def wait_for_boot(
     raise fail("%.0f초 안에 부팅이 끝나지 않았습니다." % timeout)
 
 
+def enlarge_logcat(adb: Adb, size: str = LOGCAT_BUFFER_SIZE) -> None:
+    """A bigger logcat ring, so the setup and the first scenario are still there at the end."""
+    try:
+        adb.logcat_buffer_size(size)
+    except AdbError as exc:
+        # logd may refuse the size on a locked-down image; the run works with the default ring
+        say("  (경고) logcat 버퍼를 %s로 늘리지 못했습니다: %s" % (size, exc))
+    else:
+        say("  logcat 버퍼: %s" % size)
+
+
 def wait_for_console(
     timeout: float,
     now: Optional[Callable[[], float]] = None,
@@ -1301,10 +1431,16 @@ def wait_for_console(
 # --------------------------------------------------------------------------- app
 
 
-def demo_broadcast_args(command: str, webhook: Optional[str] = None) -> List[str]:
-    args = [
-        "am",
-        "broadcast",
+def demo_broadcast_args(
+    command: str, webhook: Optional[str] = None, user: Optional[int] = None
+) -> List[str]:
+    """`am broadcast` for the debug DemoReceiver. Without --user, am delivers to every started user
+    whose copy of the app is not stopped: on a headless-system-user image that can be user 0's copy,
+    whose data the driver's screen never shows."""
+    args = ["am", "broadcast"]
+    if user is not None:
+        args += ["--user", str(user)]
+    args += [
         "-a",
         DEMO_ACTION,
         "-p",
@@ -1341,15 +1477,201 @@ def install_apk(adb: Adb, apk: str) -> None:
         )
 
 
-def start_app(adb: Adb) -> None:
-    reply = adb.shell("am", "start", "-n", APP_ACTIVITY)
+def start_app_args(user: int, restart: bool = False) -> List[str]:
+    """`am start -W` (returns once the launch is drawn) in the given user; -S first stops a copy
+    that is already running, so the fresh process logs VEHICLE_CONNECTED again."""
+    args = ["am", "start", "-W"]
+    if restart:
+        args.append("-S")
+    return args + ["--user", str(user), "-n", APP_ACTIVITY]
+
+
+def start_app(adb: Adb, user: int, restart: bool = False) -> None:
+    reply = adb.shell(*start_app_args(user, restart), timeout=90)
     if re.search(r"\bError\b|Exception", reply):
         raise SetupError(EXIT_FAIL, "앱을 시작하지 못했습니다: " + reply.strip())
+
+
+@dataclass(frozen=True)
+class UserSnapshot:
+    headless_system_user: bool
+    user: Optional[int]
+    state: Optional[str]
+    front: Optional[FrontActivity]
+
+
+def user_snapshot(adb: Adb, headless_system_user: bool) -> UserSnapshot:
+    user = adb.current_user()
+    switching = user is None or (headless_system_user and user == 0)
+    state = None if switching else adb.user_state(user)
+    return UserSnapshot(
+        headless_system_user, user, state, parse_front_activity(adb.activities())
+    )
+
+
+def user_not_ready(snap: UserSnapshot) -> Optional[str]:
+    """Why the driver's screen is not usable yet, or None when it is."""
+    if snap.user is None:
+        return "현재 사용자를 알 수 없음 (am get-current-user)"
+    if snap.headless_system_user and snap.user == 0:
+        return "운전자 사용자로 전환 중 (지금 사용자 0)"
+    if snap.state != USER_UNLOCKED:
+        return "사용자 %d 상태 %s (잠금 해제 전)" % (snap.user, snap.state)
+    if snap.front is None:
+        return "앞 화면 없음 (잠금 화면 또는 전환 중)"
+    if snap.front.user != snap.user:
+        return "앞 화면이 다른 사용자의 것 (%s)" % snap.front
+    if SETUP_WIZARD_MARK in snap.front.package:
+        return "설정 마법사가 앞에 있음 (%s)" % snap.front
+    return None
+
+
+def skip_setup_wizard(adb: Adb, user: int) -> None:
+    """The AOSP way to finish first-run setup on a test device, then back to the home screen."""
+    adb.shell(
+        "settings", "put", "--user", str(user), "secure", "user_setup_complete", "1"
+    )
+    adb.shell("settings", "put", "global", "device_provisioned", "1")
+    adb.shell(
+        "am",
+        "start",
+        "--user",
+        str(user),
+        "-a",
+        "android.intent.action.MAIN",
+        "-c",
+        "android.intent.category.HOME",
+    )
+
+
+def wait_for_user_ready(
+    adb: Adb,
+    timeout: Optional[float] = None,
+    now: Optional[Callable[[], float]] = None,
+    sleep: Optional[Callable[[float], None]] = None,
+    log: Callable[[str], None] = say,
+) -> int:
+    """After sys.boot_completed: the driver's user is unlocked and one of its activities (the home)
+    is in front. Returns that user id.
+
+    On Pleos Connect (Android Automotive with a headless system user) sys.boot_completed comes from
+    user 0 while CarService is still bringing up user 10 behind the lock screen; an app started
+    then runs in the wrong user or behind the keyguard, and never sees the console's drive."""
+    timeout = USER_READY_WAIT_S if timeout is None else timeout
+    now = now or time.monotonic
+    sleep = sleep or time.sleep
+    started = now()
+    deadline = started + timeout
+    hsum = adb.getprop(HSUM_PROP) == "true"
+    skipped = False
+    noted = started
+    while True:
+        snap = user_snapshot(adb, hsum)
+        reason = user_not_ready(snap)
+        if reason is None:
+            log(
+                "  운전자 화면 준비됨: 사용자 %d, 앞 화면 %s (%.0f초)"
+                % (snap.user, snap.front.component, now() - started)
+            )
+            return snap.user
+        if (
+            snap.front is not None
+            and SETUP_WIZARD_MARK in snap.front.package
+            and not skipped
+        ):
+            log("  설정 마법사를 건너뜁니다 (%s)" % snap.front)
+            skip_setup_wizard(adb, snap.user if snap.user is not None else 0)
+            skipped = True
+        if now() >= deadline:
+            raise SetupError(
+                EXIT_BOOT,
+                "부팅은 끝났지만 %.0f초 안에 운전자 화면이 준비되지 않았습니다: %s"
+                % (timeout, reason),
+            )
+        if now() - noted >= 30:
+            noted = now()
+            log("  운전자 화면 대기 중: %s" % reason)
+        sleep(2.0)
+
+
+def wait_for_app_in_front(
+    adb: Adb,
+    user: int,
+    timeout: Optional[float] = None,
+    stable: Optional[float] = None,
+    now: Optional[Callable[[], float]] = None,
+    sleep: Optional[Callable[[float], None]] = None,
+    log: Callable[[str], None] = say,
+) -> FrontActivity:
+    """Our activity is in front of `user` and stays there for `stable` seconds in a row.
+
+    Anything else taking the front (the home opens its navigation panel right after unlock) gets
+    the app started again, at most every APP_RELAUNCH_EVERY_S."""
+    timeout = APP_FRONT_WAIT_S if timeout is None else timeout
+    stable = APP_FRONT_STABLE_S if stable is None else stable
+    now = now or time.monotonic
+    sleep = sleep or time.sleep
+    deadline = now() + timeout
+    last_start = now()
+    since = None
+    front = None
+    while True:
+        dumpsys = adb.activities()
+        front = parse_front_activity(dumpsys)
+        ours = app_resumed(dumpsys, user)
+        if ours is not None:
+            if since is None:
+                since = now()
+            if now() - since >= stable:
+                return ours
+        else:
+            since = None
+            if now() - last_start >= APP_RELAUNCH_EVERY_S:
+                log("  앞 화면이 %s 입니다. 앱을 다시 앞으로 가져옵니다." % front)
+                start_app(adb, user)
+                last_start = now()
+        if now() >= deadline:
+            raise SetupError(
+                EXIT_FAIL,
+                "%.0f초 안에 앱이 화면 앞에 자리잡지 못했습니다 (마지막 앞 화면: %s)"
+                % (timeout, front),
+            )
+        sleep(1.0)
+
+
+def wait_for_vehicle_connected(
+    adb: Adb,
+    timeout: Optional[float] = None,
+    now: Optional[Callable[[], float]] = None,
+    sleep: Optional[Callable[[float], None]] = None,
+) -> float:
+    """The app logs VEHICLE_CONNECTED once the Pleos Vehicle SDK answers its odometer probe.
+    Returns the seconds it took."""
+    timeout = VEHICLE_CONNECTED_WAIT_S if timeout is None else timeout
+    now = now or time.monotonic
+    sleep = sleep or time.sleep
+    started = now()
+    deadline = started + timeout
+    while True:
+        if re.search(r"\bVEHICLE_CONNECTED\b", adb.logcat_dump()):
+            return now() - started
+        if now() >= deadline:
+            detail = adb.out(
+                "logcat", "-d", "-s", "AutoBriefVehicle:V", "AutoBriefNavi:V"
+            ).strip()
+            raise SetupError(
+                EXIT_FAIL,
+                "%.0f초 안에 앱이 차량 SDK에 연결되지 않았습니다 (VEHICLE_CONNECTED 없음).\n"
+                "--- AutoBriefVehicle / AutoBriefNavi 로그 ---\n%s"
+                % (timeout, detail[-2000:] or "(없음)"),
+            )
+        sleep(2.0)
 
 
 def load_demo_sample(
     adb: Adb,
     webhook: Optional[str],
+    user: Optional[int] = None,
     timeout: Optional[float] = None,
     now: Optional[Callable[[], float]] = None,
     sleep: Optional[Callable[[float], None]] = None,
@@ -1358,7 +1680,7 @@ def load_demo_sample(
     now = now or time.monotonic
     sleep = sleep or time.sleep
     adb.logcat_clear()  # a DEMO_READY left over from an earlier run must not satisfy the wait
-    adb.shell(*demo_broadcast_args("load_sample", webhook))
+    adb.shell(*demo_broadcast_args("load_sample", webhook, user))
     deadline = now() + timeout
     while True:
         trips = find_demo_ready(adb.logcat_dump())
@@ -1462,7 +1784,10 @@ def run(args: argparse.Namespace) -> int:
     official = official_image_dir(tools.sdk, abi)
     if not args.skip_image and installed_image_problem(official, abi) is None:
         # the presenter already installed the image through Android Studio's SDK Manager: use it as is
-        say("  Android Studio SDK Manager로 설치한 Pleos 이미지를 씁니다 (내려받기 생략): %s" % official)
+        say(
+            "  Android Studio SDK Manager로 설치한 Pleos 이미지를 씁니다 (내려받기 생략): %s"
+            % official
+        )
         install_dir, sysdir = official, image_sysdir(abi, OFFICIAL_IMAGE_SUBDIRS)
         args.skip_image = True
 
@@ -1548,6 +1873,8 @@ def run(args: argparse.Namespace) -> int:
     timeout = BOOT_TIMEOUT_HEADLESS_S if args.headless else BOOT_TIMEOUT_GUI_S
     stage(7, total, "부팅 기다리기 (최대 %d초)" % timeout)
     wait_for_boot(adb, timeout, proc=proc, log_path=log_path)
+    enlarge_logcat(adb)
+    user = wait_for_user_ready(adb)
 
     stage(8, total, "앱 설치, 가상 콘솔 연결")
     if args.apk:
@@ -1561,13 +1888,18 @@ def run(args: argparse.Namespace) -> int:
     say("  가상 콘솔 응답 확인: %s/vehicle/state" % console_url())
 
     stage(9, total, "앱 실행%s" % (", 데모 샘플 불러오기" if args.demo_sample else ""))
-    start_app(adb)
+    adb.logcat_clear()  # VEHICLE_CONNECTED must come from the process started now
+    start_app(adb, user, restart=True)
+    front = wait_for_app_in_front(adb, user)
+    say("  앱이 화면 앞에 있습니다: %s" % front)
+    say("  차량 SDK 연결 확인 중 (최대 %d초)..." % VEHICLE_CONNECTED_WAIT_S)
+    say("  VEHICLE_CONNECTED (%.0f초)" % wait_for_vehicle_connected(adb))
     if args.demo_sample:
         say(
             "  데모 샘플 전송%s"
             % (" (webhook %s)" % redact_url(args.webhook) if args.webhook else "")
         )
-        say("  DEMO_READY trips=%d" % load_demo_sample(adb, args.webhook))
+        say("  DEMO_READY trips=%d" % load_demo_sample(adb, args.webhook, user))
     if not (args.no_browser or args.headless):
         webbrowser.open(console_url() + "/")
         say("  브라우저로 가상 콘솔을 열었습니다: %s/" % console_url())

@@ -99,6 +99,19 @@ jobs:
           cat /tmp/fleet-console.log >&2
           exit 1
 
+      - name: Start the logcat capture
+        # From before the emulator exists to the end of the job, so the boot, the user switch and the
+        # setup stay on record even though setup and director clear the device's logcat ring.
+        # adb wait-for-device starts the adb server; each loop reattaches if the device drops off.
+        run: |
+          mkdir -p e2e-out
+          setsid nohup bash -c 'while true; do adb wait-for-device logcat -v time; sleep 1; done' \
+            > e2e-out/logcat-all.txt 2>&1 < /dev/null &
+          echo $! > /tmp/logcat-all.pid
+          setsid nohup bash -c 'while true; do adb wait-for-device logcat -v time -s AutoBriefLog:V AutoBriefVehicle:V AutoBriefNavi:V ActivityManager:I ActivityTaskManager:I; sleep 1; done' \
+            > e2e-out/logcat-autobrief.txt 2>&1 < /dev/null &
+          echo $! > /tmp/logcat-autobrief.pid
+
       - name: Boot the emulator and install the app
         run: >
           python3 demo/setup_emulator.py --headless --no-browser
@@ -108,10 +121,11 @@ jobs:
 
       - name: Start screen recording
         # 1280x720: the emulator display is 2560x1440, above what the software encoder accepts.
-        # The recording stops by itself after 170 s; the collect step also stops it cleanly.
+        # The recording stops by itself after 180 s (screenrecord's limit); the collect step also
+        # stops it cleanly.
         run: |
           mkdir -p e2e-out
-          nohup adb shell screenrecord --size 1280x720 --time-limit 170 /sdcard/e2e.mp4 > e2e-out/screenrecord.log 2>&1 &
+          nohup adb shell screenrecord --size 1280x720 --time-limit 180 /sdcard/e2e.mp4 > e2e-out/screenrecord.log 2>&1 &
 
       - name: Play the scenarios and verify
         run: python3 demo/director.py --scenario all --mode auto --fast --verify --out e2e-out
@@ -125,8 +139,19 @@ jobs:
           sleep 3
           adb pull /sdcard/e2e.mp4 e2e-out/e2e.mp4 || echo "no screen recording to pull"
           adb logcat -d > e2e-out/logcat.txt || echo "no logcat to dump"
+          {
+            echo "## am get-current-user"; adb shell am get-current-user
+            echo "## dumpsys activity activities (resumed)"; adb shell dumpsys activity activities | grep -E "ResumedActivity|topResumed"
+            echo "## app processes (user is in the uid column)"; adb shell ps -A -o USER,PID,NAME | grep -E "autobrief|vehicle" || true
+            echo "## dumpsys activity services app.autobrief.car"; adb shell dumpsys activity services app.autobrief.car | head -40
+            echo "## dumpsys user"; adb shell dumpsys user | grep -E "UserInfo|State:|urrent"
+            echo "## console /vehicle/state"; curl -s http://127.0.0.1:8088/vehicle/state; echo
+          } > e2e-out/device-state-end.txt 2>&1 || echo "device state incomplete"
           curl -s http://127.0.0.1:8787/api/state > e2e-out/fleet_state.json || echo "no fleet state"
           cp /tmp/fleet-console.log e2e-out/fleet-console.log || echo "no fleet console log"
+          for name in logcat-all logcat-autobrief; do
+            if [ -f "/tmp/$name.pid" ]; then kill -- "-$(cat "/tmp/$name.pid")" 2>/dev/null || true; fi
+          done
 
       - name: Upload e2e-out
         if: always()
