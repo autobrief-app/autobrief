@@ -63,6 +63,22 @@ class TripLogbookTest {
         assertEquals(27.0, s.gapKm, 0.0)
     }
 
+    @Test fun anyJumpAboveTheContinuityToleranceBecomesAGapRow() {
+        val lb = TripLogbook()
+        lb.onOdometer(100.0); lb.onGear(Gear.DRIVE, 1); lb.onOdometer(110.0); lb.onGear(Gear.PARK, 2)
+        lb.onOdometer(110.3) // a real car reports fine steps: 300 m moved while the app was off
+        val gap = lb.onGear(Gear.DRIVE, 3).single()
+        assertEquals(TripPurpose.UNLOGGED_GAP, gap.purpose)
+        assertEquals(110.0, gap.startOdometerKm, 0.0)
+        assertEquals(110.3, gap.endOdometerKm, 0.0)
+        lb.onOdometer(120.0); lb.onGear(Gear.PARK, 4)
+        lb.onOdometer(120.04) // within the 0.05 km tolerance: the same point on the dashboard
+        assertTrue(lb.onGear(Gear.DRIVE, 5).isEmpty())
+        lb.onOdometer(125.0); lb.onGear(Gear.PARK, 6)
+        assertEquals(4, lb.records.size)
+        assertEquals(0, TripLogbook.summarize(lb.records).continuityBreaks)
+    }
+
     @Test fun coldStartOpensTheTripAtTheFirstOdometerValue() {
         val lb = TripLogbook()
         lb.onGear(Gear.DRIVE, 1)

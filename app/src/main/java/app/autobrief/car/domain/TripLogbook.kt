@@ -55,7 +55,7 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
 
     private fun gapRowIfMoved(odo: Double, nowEpochMs: Long): List<TripRecord> {
         val last = rows.lastOrNull() ?: return emptyList()
-        if (odo - last.endOdometerKm < GAP_THRESHOLD_KM) return emptyList()
+        if (odo - last.endOdometerKm <= CONTINUITY_TOLERANCE_KM) return emptyList()
         val gapRow = TripRecord(
             id = "GAP-$nowEpochMs",
             startEpochMs = last.endEpochMs,
@@ -165,9 +165,12 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
     fun summarize(period: ClosedRange<LocalDate>): LogbookSummary = summarize(recordsIn(period))
 
     companion object {
-        /** The Virtual Console odometer moves in 1 km steps; a real car reports finer values. */
-        const val GAP_THRESHOLD_KM = 0.5
-        private const val CONTINUITY_TOLERANCE_KM = 0.05
+        /**
+         * Readings closer than this are the same point on the dashboard (a real car reports the odometer as a Float, a few
+         * metres per step). A larger forward jump between two trips becomes an UNLOGGED_GAP row, and any difference larger
+         * than this left between consecutive rows counts as a continuity break.
+         */
+        const val CONTINUITY_TOLERANCE_KM = 0.05
         const val GAP_MEMO = "앱이 기록하지 못한 주행(비업무로 처리)"
 
         fun localDate(epochMs: Long): LocalDate = Instant.ofEpochMilli(epochMs).atZone(KST).toLocalDate()
