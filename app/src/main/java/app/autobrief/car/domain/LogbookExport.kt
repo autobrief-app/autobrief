@@ -31,9 +31,20 @@ object LogbookExport {
         val headerLines: List<String>,
         val columns: List<String>,
         val rows: List<List<Any?>>,
-        val footer: List<List<Any?>>,
+        val totals: Totals,
         val note: String,
     )
+
+    /**
+     * ⑪ ⑫ ⑬ under the rows. ⑪ and ⑫ are the sums of the printed ⑦ and ⑧+⑨, so the printed cells always add up;
+     * ⑬ = ⑫/⑪, null when there is no distance. [scope] names what the totals cover ("사업연도" on the form).
+     */
+    data class Totals(val scope: String, val totalKm: Double, val businessUseKm: Double, val ratio: Double?) {
+        val totalLabel: String get() = "⑪$scope 총주행 거리(㎞)"
+        val businessUseLabel: String get() = "⑫$scope 업무용 사용거리(㎞)"
+        val ratioLabel: String get() = "⑬업무사용비율(⑫/⑪)"
+        val ratioText: String get() = ratio?.let { "%.1f%%".format(it * 100) } ?: "-"
+    }
 
     /** A plain table sheet (the ledger listing). */
     data class Table(val name: String, val columns: List<String>, val rows: List<List<Any?>>, val widths: List<Int>)
@@ -59,7 +70,7 @@ object LogbookExport {
         val inPeriod = records.filter { TripLogbook.localDate(it.startEpochMs) in period }.sortedBy { it.startEpochMs }
         val summary = TripLogbook.summarize(inPeriod)
         val rows = inPeriod.map { r ->
-            val km = TripLogbook.round1(r.distanceKm)
+            val km = TripLogbook.printedKm(r) // printed ⑥ − printed ⑤
             listOf(
                 dateWithWeekday(TripLogbook.localDate(r.startEpochMs)),
                 r.user?.department ?: "",
@@ -79,11 +90,7 @@ object LogbookExport {
             add("1. 기본정보    ①차종: ${settings.vehicleModel}    ②자동차등록번호: ${settings.plateNumber}")
             add("2. 업무용 사용비율 계산")
         }
-        val footer = listOf(
-            listOf("⑪${unit} 총주행 거리(㎞)", summary.totalKm),
-            listOf("⑫${unit} 업무용 사용거리(㎞)", summary.businessUseKm),
-            listOf("⑬업무사용비율(⑫/⑪)", summary.businessUseRatio?.let { "%.1f%%".format(it * 100) } ?: "-"),
-        )
+        val totals = Totals(unit, summary.totalKm, summary.businessUseKm, summary.businessUseRatio)
         val note = buildString {
             append("작성: 오토브리프. ⑤⑥은 차량 계기판 누적거리(Pleos Vehicle SDK) 값이며 기록 뒤에는 바꿀 수 없고, 목적을 고친 내역은 '검증 기록' 시트에 남습니다. ")
             append("검증 코드 $verificationCode. ")
@@ -91,7 +98,7 @@ object LogbookExport {
             if (summary.unclassifiedCount > 0) append(" 미분류 ${summary.unclassifiedCount}건은 업무용으로 계산하지 않았습니다.")
             if (summary.gapRowCount > 0) append(" 미기록 구간 ${summary.gapRowCount}건은 비업무로 계산했습니다.")
         }
-        return Sheet("업무용승용차 운행기록부", header, COLUMNS, rows, footer, note)
+        return Sheet("업무용승용차 운행기록부", header, COLUMNS, rows, totals, note)
     }
 
     private fun remarks(r: TripRecord): String = buildList {
@@ -165,7 +172,9 @@ object LogbookExport {
         sheet.headerLines.forEach { sb.append(csv(listOf(it))).append("\r\n") }
         sb.append(csv(sheet.columns)).append("\r\n")
         sheet.rows.forEach { sb.append(csv(it)).append("\r\n") }
-        sheet.footer.forEach { sb.append(csv(it)).append("\r\n") }
+        val t = sheet.totals
+        listOf(listOf(t.totalLabel, t.totalKm), listOf(t.businessUseLabel, t.businessUseKm), listOf(t.ratioLabel, t.ratioText))
+            .forEach { sb.append(csv(it)).append("\r\n") }
         sb.append(csv(listOf(sheet.note))).append("\r\n")
         return sb.toString().toByteArray(Charsets.UTF_8)
     }
@@ -254,7 +263,8 @@ object LogbookExport {
         g.row(sheet.columns.map { it to Style.TH })
         val headerRow = g.r - 1
         sheet.rows.forEach { cells -> g.row(cells.map { it to if (it is Number) Style.TD_NUM else Style.TD }) }
-        sheet.footer.forEach { (label, value) ->
+        val t = sheet.totals
+        listOf(t.totalLabel to t.totalKm, t.businessUseLabel to t.businessUseKm, t.ratioLabel to t.ratioText).forEach { (label, value) ->
             // label spans ③~⑥, value sits under ⑦
             g.merges += "A${g.r}:E${g.r}"
             g.row(listOf(label to Style.FOOT, null to Style.FOOT, null to Style.FOOT, null to Style.FOOT, null to Style.FOOT, value to if (value is Number) Style.FOOT_NUM else Style.FOOT_VALUE))
