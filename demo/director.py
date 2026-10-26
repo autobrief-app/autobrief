@@ -93,6 +93,9 @@ POSITION_WAIT_DRIVING_S = 30.0
 # On Pleos Connect NaviHelper's position comes from the navigation app, and that app reads the GPS
 # only while it is on screen (it shares the home's one driver slot with AutoBrief). The director
 # shows the map while the app has a position to learn and AutoBrief when the trip opens and closes.
+# On the emulator image the map never follows the injected GPS at all; the app then takes the
+# platform GPS fix (LocationManager, every 5 s, granted by `install -g`), which does follow it,
+# and logs `POSITION place=<label> source=gps`.
 NAV_PACKAGE = "ai.umos.maps.android.navigation.app"
 NAV_SHOW_WAIT_S = 30.0
 POSITION_RESEND_S = 1.0  # a GPS receiver reports once a second
@@ -883,7 +886,8 @@ class Director:
     def geo_fix(self, step: GeoFix) -> None:
         """Moves the emulated GPS: `geo fix` for the platform location provider, and the same fix
         as NMEA with a valid checksum for the Pleos navigation app (NaviHelper), which drops the
-        emulator's own `geo fix` sentences. The app's purpose rules read NaviHelper's position."""
+        emulator's own `geo fix` sentences. The app's purpose rules read NaviHelper's position, or the
+        platform GPS fix (which takes both) when navigation's is stale or does not follow the car."""
         if self._last_fix is not None and self._last_fix != (step.lat, step.lon):
             self._course = bearing_deg(self._last_fix, (step.lat, step.lon))
         self._last_fix = (step.lat, step.lon)
