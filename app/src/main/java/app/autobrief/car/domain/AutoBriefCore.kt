@@ -116,6 +116,12 @@ class AutoBriefCore(
      */
     private var chainId: String? = null
 
+    /**
+     * Guards every read-modify-write of the outbox together with its save, and the space it belongs to: the sender's
+     * thread marks results while the main thread queues entries or switches the space.
+     */
+    private val outboxLock = Any()
+
     private val _space = MutableStateFlow(space)
     private val _settings = MutableStateFlow(AppSettings())
     private val _vehicle = MutableStateFlow(VehicleSnapshot())
@@ -170,7 +176,11 @@ class AutoBriefCore(
 
     private fun loadSpace(s: Space) {
         val d = store.load(s)
-        space = s
+        synchronized(outboxLock) {
+            space = s
+            _settings.value = d.settings
+            _outbox.value = d.outbox
+        }
         // the ledger is written before the trips file: rows the app died before storing come back from the chain
         val (rows, rebuilt) = Ledger.repair(d.trips, d.ledger)
         if (rebuilt > 0) {
@@ -181,9 +191,7 @@ class AutoBriefCore(
         ledger = Ledger(d.ledger)
         chainId = d.chainId
         _space.value = s
-        _settings.value = d.settings
         _trips.value = logbook.records
-        _outbox.value = d.outbox
         _open.value = null
         _lastClosedId.value = null
         _notice.value = null
@@ -493,7 +501,7 @@ class AutoBriefCore(
         store.saveLedger(space, chainId, ledger.all)
         log("LEDGER seq=${entry.seq} kind=$kind hash=${entry.hash.take(8)}")
         if (_settings.value.archiveWebhookUrl.isNotBlank()) {
-            enqueue(ledgerKey(entry), "ledger", ledgerPayload(entry))
+            enqueue(Queued(ledgerKey(entry), "ledger", ledgerPayload(entry), entry.seq))
         }
         return entry
     }
@@ -546,40 +554,89 @@ class AutoBriefCore(
         _check.value = Ledger.check(ledger.all, logbook.records)
     }
 
-    private fun enqueue(key: String, kind: String, payload: String) = enqueueAll(listOf(Triple(key, kind, payload)))
+    private class Queued(val key: String, val kind: String, val payload: String, val seq: Long? = null)
+
+    private fun enqueue(item: Queued) = enqueueAll(listOf(item))
 
     /** One update and ONE write for a whole batch: the outbox file is rewritten whole, so a write per item is quadratic. */
-    private fun enqueueAll(items: List<Triple<String, String, String>>) {
+    private fun enqueueAll(items: List<Queued>) {
         if (items.isEmpty()) return
-        _outbox.update { list ->
+        synchronized(outboxLock) {
+            val list = _outbox.value
             val known = list.mapTo(HashSet()) { it.key }
-            val fresh = items.filter { known.add(it.first) }.map { (key, kind, payload) -> OutboxItem(key, kind, payload, clock()) }
-            if (fresh.isEmpty()) list else prune(list + fresh)
+            val fresh = items.filter { known.add(it.key) }.map { OutboxItem(it.key, it.kind, it.payload, clock(), seq = it.seq) }
+            if (fresh.isEmpty()) return
+            _outbox.value = prune(list + fresh)
+            store.saveOutbox(space, _outbox.value)
         }
-        store.saveOutbox(space, _outbox.value)
     }
 
-    /** Bounded queue: delivered items are kept only as a short history, undelivered ones up to a hard cap. */
+    /** Bounded queue in queueing order: delivered items are kept only as a short history, undelivered ones up to a hard cap. */
     private fun prune(list: List<OutboxItem>): List<OutboxItem> {
-        val delivered = list.filter { it.deliveredEpochMs != null }.takeLast(OUTBOX_DELIVERED_KEEP)
-        val pending = list.filter { it.deliveredEpochMs == null }.takeLast(OUTBOX_PENDING_MAX)
-        return (delivered + pending).sortedBy { it.createdEpochMs }
+        val drop = HashSet<String>()
+        list.filter { it.deliveredEpochMs != null }.dropLast(OUTBOX_DELIVERED_KEEP).mapTo(drop) { it.key }
+        list.filter { it.deliveredEpochMs == null }.dropLast(OUTBOX_PENDING_MAX).mapTo(drop) { it.key }
+        return if (drop.isEmpty()) list else list.filterNot { it.key in drop }
     }
 
     /** One send result for an outbox item. */
     data class Delivery(val key: String, val delivered: Boolean, val error: String?)
 
-    /** Called from the sender's I/O thread with a batch of results (one write); update{} keeps a concurrent enqueue. */
-    fun markDeliveries(results: List<Delivery>) {
+    /**
+     * What one sending round works from, taken at once: the space, its address, its queue, and the VIN the app keeps
+     * (filled into a queued car block that has none). A space switch mid-round cannot pair one space's entries with
+     * the other space's address.
+     */
+    data class OutboxSnapshot(val space: Space, val url: String, val items: List<OutboxItem>, val vin: String?) {
+        fun body(item: OutboxItem): String = fillMissingVin(item.payloadJson, vin)
+    }
+
+    fun outboxSnapshot(): OutboxSnapshot = synchronized(outboxLock) {
+        OutboxSnapshot(space, _settings.value.archiveWebhookUrl, _outbox.value, currentVin())
+    }
+
+    /** The round's space and address are still the ones in use; a switch or a new address ends the round. */
+    fun isCurrent(snapshot: OutboxSnapshot): Boolean = synchronized(outboxLock) {
+        snapshot.space == space && snapshot.url == _settings.value.archiveWebhookUrl
+    }
+
+    /** Results for the space in use (see the other overload). */
+    fun markDeliveries(results: List<Delivery>) = markDeliveries(space, results)
+
+    /**
+     * Called from the sender's I/O thread with a batch of results for [space] (one write). Results for a space that is
+     * no longer in use go to that space's stored queue. A workbook that failed [ARCHIVE_MAX_ATTEMPTS] times is given up
+     * (it stays saved in the car); ledger entries are never given up, so 대기 counts exactly what will still arrive.
+     */
+    fun markDeliveries(space: Space, results: List<Delivery>) {
         if (results.isEmpty()) return
         val byKey = results.associateBy { it.key }
-        _outbox.update { list ->
-            prune(list.map { item ->
-                val d = byKey[item.key] ?: return@map item
-                item.copy(attempts = item.attempts + 1, deliveredEpochMs = if (d.delivered) clock() else null, lastError = d.error)
-            })
+        val now = clock()
+        fun apply(list: List<OutboxItem>): List<OutboxItem> = prune(
+            list.mapNotNull { item ->
+                val d = byKey[item.key] ?: return@mapNotNull item
+                val next = item.copy(
+                    attempts = item.attempts + 1,
+                    deliveredEpochMs = if (d.delivered) now else null,
+                    lastError = d.error,
+                    lastAttemptEpochMs = now,
+                )
+                if (next.kind != "ledger" && next.deliveredEpochMs == null && next.attempts >= ARCHIVE_MAX_ATTEMPTS) {
+                    log("OUTBOX_GAVE_UP kind=${next.kind} attempts=${next.attempts}")
+                    null
+                } else {
+                    next
+                }
+            },
+        )
+        synchronized(outboxLock) {
+            if (space == this.space) {
+                _outbox.value = apply(_outbox.value)
+                store.saveOutbox(space, _outbox.value)
+            } else {
+                store.saveOutbox(space, apply(store.load(space).outbox))
+            }
         }
-        store.saveOutbox(space, _outbox.value)
     }
 
     // ---------------------------------------------------------------- settings, PIN, demo space
@@ -674,7 +731,7 @@ class AutoBriefCore(
     }
 
     private fun backfillLedger() {
-        enqueueAll(ledger.all.takeLast(BACKFILL_MAX).map { e -> Triple(ledgerKey(e), "ledger", ledgerPayload(e)) })
+        enqueueAll(ledger.all.takeLast(BACKFILL_MAX).map { e -> Queued(ledgerKey(e), "ledger", ledgerPayload(e), e.seq) })
     }
 
     /**
@@ -764,7 +821,7 @@ class AutoBriefCore(
                 put("verificationCode", _check.value.code)
                 put("xlsxBase64", Base64.getEncoder().encodeToString(xlsx))
             }
-            enqueue("archive-${space.dir}-${chainId?.let { "$it-" } ?: ""}$name-${ledger.size}", "archive", payload.toString())
+            enqueue(Queued("archive-${space.dir}-${chainId?.let { "$it-" } ?: ""}$name-${ledger.size}", "archive", payload.toString()))
         }
         log("EXPORT file=$name rows=${sheet.rows.size} queued=$queued")
         return ExportResult(name, savedTo, queued, sheet.rows.size)
@@ -902,6 +959,9 @@ class AutoBriefCore(
         const val AUTO_WAIT_MS = 12_000L
         const val OUTBOX_PENDING_MAX = 10_000
         const val OUTBOX_DELIVERED_KEEP = 200
+
+        /** A workbook is given up after this many failed sends; ledger entries never are. */
+        const val ARCHIVE_MAX_ATTEMPTS = 50
         const val BACKFILL_MAX = 5_000
         const val SEND_COOLDOWN_MS = 60_000L
         const val MONTH_CLOSE_RETRY_MS = 60_000L

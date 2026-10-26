@@ -136,6 +136,10 @@ data class OutboxItem(
     val attempts: Int = 0,
     val deliveredEpochMs: Long? = null,
     val lastError: String? = null,
+    /** The ledger entry's seq for kind "ledger": entries are sent in this order, whatever the clock said. */
+    val seq: Long? = null,
+    /** When the last attempt failed or succeeded (epoch ms): the next try waits out a backoff from here. */
+    val lastAttemptEpochMs: Long? = null,
 )
 
 /**
