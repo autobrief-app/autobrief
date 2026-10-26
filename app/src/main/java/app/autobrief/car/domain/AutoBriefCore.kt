@@ -293,10 +293,8 @@ class AutoBriefCore(
             is NaviEvent.Location -> {
                 val now = clock()
                 _navi.update { it.copy(ready = true, location = e.point, locationEpochMs = now) }
-                // debug builds: which registered place the car is at now, by label (never the coordinates);
-                // the demo director waits for it before it departs or parks, so the place rules see the move
-                if (detailLogs) log("POSITION place=${AutoClassifier.nearest(e.point, allPlaces())?.label ?: "-"}")
-                pendingAuto?.let { p -> if (now > p.askedAt) resolvePendingAuto(e.point) }
+                logPosition(now)
+                pendingAuto?.let { p -> if (now > p.askedAt) resolvePendingAuto(freshLocation(now, LOCATION_FRESH_MS) ?: e.point) }
             }
             is NaviEvent.Bookmarks -> _navi.update { it.copy(ready = true, bookmarks = e.places) }
         }
@@ -315,8 +313,61 @@ class AutoBriefCore(
         if (logbook.openTrip != before) saveOpenTripNow()
     }
 
-    private fun freshLocation(now: Long, maxAgeMs: Long): GeoPoint? =
-        _navi.value.takeIf { it.location != null && now - it.locationEpochMs <= maxAgeMs }?.location
+    /**
+     * A fix from the car's own GNSS (PlatformLocationSource). Only a usable one counts: real coordinates, not (0, 0),
+     * and precise enough to tell places apart. Like navigation's position it stays in memory.
+     */
+    fun onPlatformFix(fix: PlatformFix) {
+        val p = fix.point
+        if (!p.lat.isFinite() || !p.lon.isFinite() || p.lat !in -90.0..90.0 || p.lon !in -180.0..180.0) return
+        if (p.lat == 0.0 && p.lon == 0.0) return
+        if (fix.accuracyM != null && !(fix.accuracyM <= MAX_FIX_ACCURACY_M)) return
+        val now = clock()
+        val taken = minOf(fix.epochMs, now)
+        if (gnssFix?.let { it.epochMs > taken } == true) return // an older fix than the one held (two providers)
+        gnssFix = Fix(p, taken, gnss = true)
+        logPosition(now)
+        pendingAuto?.let { pending -> if (taken > pending.askedAt) resolvePendingAuto(freshLocation(now, LOCATION_FRESH_MS) ?: p) }
+    }
+
+    /** A position and where it came from; coordinates never leave memory. */
+    private data class Fix(val point: GeoPoint, val epochMs: Long, val gnss: Boolean)
+
+    /** The last usable fix of the car's own GNSS. */
+    private var gnssFix: Fix? = null
+
+    /**
+     * Where the car is, no older than [maxAgeMs]: navigation's position while it is younger than [NAVI_PREFERRED_MS]
+     * (map-matched, it also works in tunnels and car parks), otherwise the platform GNSS fix, otherwise the newer of the
+     * two. A fresh navigation position more than [NAVI_GNSS_AGREE_M] from a fresh GNSS fix does not follow the car
+     * (NaviHelper relays the navigation app, which stops reading GPS when it is not in front, and on the emulator never
+     * reads the injected GPS): the GNSS fix wins then.
+     */
+    private fun position(now: Long, maxAgeMs: Long): Fix? {
+        val navi = _navi.value.location?.let { Fix(it, _navi.value.locationEpochMs, gnss = false) }?.takeIf { now - it.epochMs <= maxAgeMs }
+        val gnss = gnssFix?.takeIf { now - it.epochMs <= maxAgeMs }
+        val naviFresh = navi?.takeIf { now - it.epochMs <= NAVI_PREFERRED_MS }
+        val gnssFresh = gnss?.takeIf { now - it.epochMs <= NAVI_PREFERRED_MS }
+        return when {
+            naviFresh != null && gnssFresh != null ->
+                if (AutoClassifier.distanceM(naviFresh.point, gnssFresh.point) <= NAVI_GNSS_AGREE_M) naviFresh else gnssFresh
+            naviFresh != null -> naviFresh
+            else -> listOfNotNull(gnss, navi).maxByOrNull { it.epochMs }
+        }
+    }
+
+    private fun freshLocation(now: Long, maxAgeMs: Long): GeoPoint? = position(now, maxAgeMs)?.point
+
+    /**
+     * Debug builds: which registered place the car is at now, by label (never the coordinates), and `source=gps` when
+     * the position is the platform GNSS fix. The demo director waits for it before it departs or parks, so the place
+     * rules see the move. Release builds log nothing of positions.
+     */
+    private fun logPosition(now: Long) {
+        if (!detailLogs) return
+        val p = position(now, LOCATION_FRESH_MS) ?: return
+        log("POSITION place=${AutoClassifier.nearest(p.point, allPlaces())?.label ?: "-"}" + if (p.gnss) " source=gps" else "")
+    }
 
     private fun onGear(gear: Gear, now: Long) {
         _vehicle.value = _vehicle.value.copy(gear = gear)
@@ -955,6 +1006,15 @@ class AutoBriefCore(
         const val START_LOCATION_MAX_AGE_MS = 10 * 60_000L
         const val ARRIVAL_LOCATION_MAX_AGE_MS = 15_000L
         const val LOCATION_FRESH_MS = 60_000L
+
+        /** Navigation's position is preferred while it is younger than this. */
+        const val NAVI_PREFERRED_MS = 30_000L
+
+        /** Navigation and GNSS farther apart than a place radius would name different places: GNSS wins (see position()). */
+        const val NAVI_GNSS_AGREE_M = AutoClassifier.RADIUS_M
+
+        /** A fix less precise than this (a network-only estimate) cannot tell places apart. */
+        const val MAX_FIX_ACCURACY_M = 150f
         const val PLACE_LOCATION_MAX_AGE_MS = 2 * 60_000L
         const val AUTO_WAIT_MS = 12_000L
         const val OUTBOX_PENDING_MAX = 10_000
