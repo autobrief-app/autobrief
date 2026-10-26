@@ -1,6 +1,7 @@
 package app.autobrief.car.model
 
 import kotlinx.serialization.Serializable
+import java.time.LocalDate
 
 @Serializable
 enum class Gear { PARK, REVERSE, NEUTRAL, DRIVE, UNKNOWN }
@@ -76,13 +77,26 @@ enum class PlaceKind { HOME, OFFICE, CLIENT }
 @Serializable
 data class Place(val label: String, val kind: PlaceKind, val point: GeoPoint, val fromNavigation: Boolean = false)
 
-/** Corporate tax brackets for business years starting 2026-01-01, local income tax (10%) included. */
+/**
+ * Corporate tax brackets, local income tax (10%) included. The owner picks the bracket; the rate follows the start of
+ * the business year (법인세법 §55 with 법률 제21217호 부칙 §5, 지방세법 §103의20 with 법률 제21308호 부칙 §11):
+ * [ratePct] for business years starting on or after [RATES_FROM], [earlierRatePct] for business years that began before.
+ */
 @Serializable
-enum class TaxRate(val label: String, val ratePct: Double) {
-    CORP_11("법인 과세표준 2억 원 이하 11.0%", 11.0),
-    CORP_22("법인 2억 초과 200억 원 이하 22.0%", 22.0),
-    CORP_24("법인 200억 초과 3,000억 원 이하 24.2%", 24.2),
-    CORP_27("법인 3,000억 원 초과 27.5%", 27.5),
+enum class TaxRate(val label: String, val ratePct: Double, val earlierRatePct: Double) {
+    CORP_11("법인 과세표준 2억 원 이하 11.0%", 11.0, 9.9),
+    CORP_22("법인 2억 초과 200억 원 이하 22.0%", 22.0, 20.9),
+    CORP_24("법인 200억 초과 3,000억 원 이하 24.2%", 24.2, 23.1),
+    CORP_27("법인 3,000억 원 초과 27.5%", 27.5, 26.4),
+    ;
+
+    /** The rate for the business year that starts on [businessYearStart]. */
+    fun ratePctFor(businessYearStart: LocalDate): Double = if (businessYearStart.isBefore(RATES_FROM)) earlierRatePct else ratePct
+
+    companion object {
+        /** The first business-year start date that takes [ratePct]. */
+        val RATES_FROM: LocalDate = LocalDate.of(2026, 1, 1)
+    }
 }
 
 @Serializable

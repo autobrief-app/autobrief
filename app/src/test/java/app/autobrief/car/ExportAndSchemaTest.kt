@@ -74,6 +74,32 @@ class LogbookExportTest {
         assertEquals("2026-10-01(목)", LogbookExport.dateWithWeekday(LocalDate.of(2026, 10, 1)))
     }
 
+    @Test fun theSampleYearBookIsTheTotalTo20261023() {
+        // the sample's clock stops on 2026-10-23, inside the business year 2026
+        val sheet = h.core.exportSheet(TaxPeriods.businessYear(2026, 1), businessYear = true)
+        assertEquals("⑪2026-10-23 현재 누계(사업연도 진행 중) 총주행 거리(㎞)", sheet.totals.totalLabel)
+        assertEquals(9_636.0, sheet.totals.totalKm, 0.0)
+        assertEquals(9_117.0, sheet.totals.businessUseKm, 0.0)
+    }
+
+    @Test fun tollEstimateMovesFromRemarksToTheLedgerSheet() {
+        val sheet = LogbookExport.build(rows, SampleHistory.settings(), october, code, businessYear = false)
+        assertFalse(sheet.rows.any { "통행료" in (it[8] as String) })
+        val voiceTrip = rows.single { it.routeTollEstimateKrw != null }
+        val tripEntry = LogbookExport.ledgerTable(entries, rows, october, code).rows
+            .single { it[2] == "운행 기록" && it[3] == LogbookExport.dateWithWeekday(DocsSample.TODAY) && "45,200.0" in (it[4] as String) }
+        assertEquals(1_800, voiceTrip.routeTollEstimateKrw)
+        assertEquals("계기판 45,200.0 → 45,218.0 km · 내비 예상 통행료 1,800원", tripEntry[4])
+    }
+
+    @Test fun theSampleGapPrintsItsDateRangeAndTheNoteCountsBreaks() {
+        val sheet = LogbookExport.build(rows, SampleHistory.settings(), TaxPeriods.businessYear(2026, 1), code)
+        val gap = sheet.rows.single { (it[8] as String).startsWith("미기록 구간") }
+        assertEquals("2026-03-13(금)", gap[0])
+        assertEquals("미기록 구간 2026-03-13(금) ~ 2026-03-16(월)", gap[8])
+        assertTrue(sheet.note, "계기판 연속성 끊김 0곳" in sheet.note)
+    }
+
     @Test fun csvNeutralisesFormulaCells() {
         val bad = rows.map { if (it.purpose == TripPurpose.BUSINESS) it.copy(memo = "=HYPERLINK(\"x\")") else it }
         val sheet = LogbookExport.build(bad, SampleHistory.settings(), october, code, businessYear = false)

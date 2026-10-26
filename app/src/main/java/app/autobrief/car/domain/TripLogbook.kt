@@ -5,12 +5,13 @@ import app.autobrief.car.model.ClassifiedBy
 import app.autobrief.car.model.Gear
 import app.autobrief.car.model.TripPurpose
 import app.autobrief.car.model.TripRecord
+import java.math.BigDecimal
+import java.math.RoundingMode
 import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.ZoneId
 import kotlin.math.abs
-import kotlin.math.round
 
 val KST: ZoneId = ZoneId.of("Asia/Seoul")
 
@@ -55,7 +56,7 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
 
     private fun gapRowIfMoved(odo: Double, nowEpochMs: Long): List<TripRecord> {
         val last = rows.lastOrNull() ?: return emptyList()
-        if (odo - last.endOdometerKm < GAP_THRESHOLD_KM) return emptyList()
+        if (odo - last.endOdometerKm <= CONTINUITY_TOLERANCE_KM) return emptyList()
         val gapRow = TripRecord(
             id = "GAP-$nowEpochMs",
             startEpochMs = last.endEpochMs,
@@ -165,32 +166,37 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
     fun summarize(period: ClosedRange<LocalDate>): LogbookSummary = summarize(recordsIn(period))
 
     companion object {
-        /** The Virtual Console odometer moves in 1 km steps; a real car reports finer values. */
-        const val GAP_THRESHOLD_KM = 0.5
-        private const val CONTINUITY_TOLERANCE_KM = 0.05
+        /**
+         * Readings closer than this are the same point on the dashboard (a real car reports the odometer as a Float, a few
+         * metres per step). A larger forward jump between two trips becomes an UNLOGGED_GAP row, and any difference larger
+         * than this left between consecutive rows counts as a continuity break.
+         */
+        const val CONTINUITY_TOLERANCE_KM = 0.05
         const val GAP_MEMO = "앱이 기록하지 못한 주행(비업무로 처리)"
 
         fun localDate(epochMs: Long): LocalDate = Instant.ofEpochMilli(epochMs).atZone(KST).toLocalDate()
         fun yearMonth(epochMs: Long): YearMonth = YearMonth.from(Instant.ofEpochMilli(epochMs).atZone(KST))
 
+        /** Sums ⑦ as printed, so ⑪ and ⑫ always equal the column totals of the exported rows. */
         fun summarize(records: List<TripRecord>): LogbookSummary {
-            val total = records.sumOf { it.distanceKm }
-            val commute = records.filter { it.purpose == TripPurpose.COMMUTE }.sumOf { it.distanceKm }
-            val business = records.filter { it.purpose == TripPurpose.BUSINESS }.sumOf { it.distanceKm }
-            val personal = records.filter { it.purpose == TripPurpose.PERSONAL }.sumOf { it.distanceKm }
-            val unclassified = records.filter { it.purpose == TripPurpose.UNCLASSIFIED }
-            val gaps = records.filter { it.purpose == TripPurpose.UNLOGGED_GAP }
+            fun km(rows: List<TripRecord>) = round1(rows.sumOf { printedKm(it) })
+            fun of(p: TripPurpose) = records.filter { it.purpose == p }
+            val total = km(records)
+            val commute = km(of(TripPurpose.COMMUTE))
+            val business = km(of(TripPurpose.BUSINESS))
+            val unclassified = of(TripPurpose.UNCLASSIFIED)
+            val gaps = of(TripPurpose.UNLOGGED_GAP)
             val breaks = records.sortedBy { it.startEpochMs }.zipWithNext()
                 .count { (a, b) -> abs(b.startOdometerKm - a.endOdometerKm) > CONTINUITY_TOLERANCE_KM }
             return LogbookSummary(
                 rowCount = records.size,
-                totalKm = round1(total),
-                commuteKm = round1(commute),
-                businessKm = round1(business),
-                personalKm = round1(personal),
-                unclassifiedKm = round1(unclassified.sumOf { it.distanceKm }),
-                gapKm = round1(gaps.sumOf { it.distanceKm }),
-                businessUseRatio = if (total > 0) (commute + business) / total else null,
+                totalKm = total,
+                commuteKm = commute,
+                businessKm = business,
+                personalKm = km(of(TripPurpose.PERSONAL)),
+                unclassifiedKm = km(unclassified),
+                gapKm = km(gaps),
+                businessUseRatio = if (total > 0) round1(commute + business) / total else null,
                 unclassifiedCount = unclassified.size,
                 gapRowCount = gaps.size,
                 continuityBreaks = breaks,
@@ -199,7 +205,14 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
             )
         }
 
-        fun round1(v: Double): Double = round(v * 10.0) / 10.0
+        /**
+         * Half-up to 0.1 (반올림) on the decimal value: the rule `%.1f` prints with, so a reading shows the same digits in
+         * the form and in the ledger sheet (45,218.25 → 45,218.3, 100.05 → 100.1). Non-finite values pass through.
+         */
+        fun round1(v: Double): Double = if (v.isFinite()) BigDecimal.valueOf(v).setScale(1, RoundingMode.HALF_UP).toDouble() else v
+
+        /** ⑦ as printed: ⑥ and ⑤ are each rounded once to 0.1 km, then subtracted, so every row reads ⑦ = ⑥ − ⑤. */
+        fun printedKm(r: TripRecord): Double = round1(round1(r.endOdometerKm) - round1(r.startOdometerKm))
     }
 }
 

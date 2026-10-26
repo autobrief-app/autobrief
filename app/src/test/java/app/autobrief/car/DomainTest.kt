@@ -13,7 +13,9 @@ import app.autobrief.car.model.Gear
 import app.autobrief.car.model.GeoPoint
 import app.autobrief.car.model.Place
 import app.autobrief.car.model.PlaceKind
+import app.autobrief.car.model.TaxRate
 import app.autobrief.car.model.TripPurpose
+import app.autobrief.car.model.TripRecord
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
@@ -63,6 +65,22 @@ class TripLogbookTest {
         assertEquals(27.0, s.gapKm, 0.0)
     }
 
+    @Test fun anyJumpAboveTheContinuityToleranceBecomesAGapRow() {
+        val lb = TripLogbook()
+        lb.onOdometer(100.0); lb.onGear(Gear.DRIVE, 1); lb.onOdometer(110.0); lb.onGear(Gear.PARK, 2)
+        lb.onOdometer(110.3) // a real car reports fine steps: 300 m moved while the app was off
+        val gap = lb.onGear(Gear.DRIVE, 3).single()
+        assertEquals(TripPurpose.UNLOGGED_GAP, gap.purpose)
+        assertEquals(110.0, gap.startOdometerKm, 0.0)
+        assertEquals(110.3, gap.endOdometerKm, 0.0)
+        lb.onOdometer(120.0); lb.onGear(Gear.PARK, 4)
+        lb.onOdometer(120.04) // within the 0.05 km tolerance: the same point on the dashboard
+        assertTrue(lb.onGear(Gear.DRIVE, 5).isEmpty())
+        lb.onOdometer(125.0); lb.onGear(Gear.PARK, 6)
+        assertEquals(4, lb.records.size)
+        assertEquals(0, TripLogbook.summarize(lb.records).continuityBreaks)
+    }
+
     @Test fun coldStartOpensTheTripAtTheFirstOdometerValue() {
         val lb = TripLogbook()
         lb.onGear(Gear.DRIVE, 1)
@@ -84,6 +102,35 @@ class TripLogbookTest {
         assertEquals(user, second.user)
         lb.onOdometer(30.0); val gap = lb.onGear(Gear.DRIVE, 3).single()
         assertNull(lb.classify(gap.id, TripPurpose.BUSINESS, user, "", ClassifiedBy.SCREEN))
+    }
+
+    @Test fun summaryAddsTheDistancesAsPrinted() {
+        fun trip(id: String, start: Double, km: Double, p: TripPurpose) = TripRecord(id, 0, 1, start, start + km, p, user, "")
+        // ⑤⑥ print to 0.1 km, so three separate 10.04 km trips print ⑦ = 10.0 each: ⑪ is 30.0, not 30.12 rounded
+        val separate = listOf(
+            trip("A", 100.0, 10.04, TripPurpose.COMMUTE),
+            trip("B", 200.0, 10.04, TripPurpose.BUSINESS),
+            trip("C", 300.0, 10.04, TripPurpose.PERSONAL),
+        )
+        val s = TripLogbook.summarize(separate)
+        assertEquals(30.0, s.totalKm, 0.0)
+        assertEquals(20.0, s.businessUseKm, 0.0)
+        assertEquals(20.0 / 30.0, s.businessUseRatio!!, 1e-12)
+        // one chain 100.00 → 110.04 → 120.08 → 130.12 prints 100.0, 110.0, 120.1, 130.1, so ⑦ = 10.0, 10.1, 10.0
+        val chain = (0..2).map { i -> trip("T$i", 100.0 + i * 10.04, 10.04, TripPurpose.BUSINESS) }
+        assertEquals(listOf(10.0, 10.1, 10.0), chain.map { TripLogbook.printedKm(it) })
+        assertEquals(30.1, TripLogbook.summarize(chain).totalKm, 0.0)
+        // 100.04 → 110.06 prints 100.0 → 110.1, so ⑦ = 10.1 and not the raw 10.02 rounded
+        assertEquals(10.1, TripLogbook.summarize(listOf(trip("D", 100.04, 10.02, TripPurpose.BUSINESS))).totalKm, 0.0)
+    }
+
+    @Test fun roundingIsHalfUpOnTheDecimalValueLikePercentOneF() {
+        // the ledger sheet prints readings with %.1f, so ⑤⑥ round the same way (반올림), ties included
+        listOf(45_218.25, 100.05, 1.45, 45_218.1015625, 110.06, 100.04).forEach { v ->
+            assertEquals("$v", "%.1f".format(v), "%.1f".format(TripLogbook.round1(v)))
+        }
+        assertEquals(45_218.3, TripLogbook.round1(45_218.25), 0.0)
+        assertEquals(100.1, TripLogbook.round1(100.05), 0.0)
     }
 
     @Test fun ratioCountsOnlyCommuteAndBusiness() {
@@ -235,6 +282,15 @@ class TaxBenefitTest {
         assertEquals(15_095_000, r.withLogbook.deductibleKrw)
         assertEquals(1_173_947, r.extraDeductibleKrw)
         assertEquals(258_268, r.taxEffectKrw)
+    }
+
+    @Test fun rateTableFollowsTheBusinessYearStart() {
+        // 법인세법 §55 (법률 제21217호 부칙 §5) + 지방세법 §103의20 (법률 제21308호 부칙 §11), local tax included
+        val y2026 = LocalDate.of(2026, 1, 1)
+        assertEquals(listOf(11.0, 22.0, 24.2, 27.5), TaxRate.values().map { it.ratePctFor(y2026) })
+        assertEquals(listOf(11.0, 22.0, 24.2, 27.5), TaxRate.values().map { it.ratePctFor(LocalDate.of(2026, 7, 1)) })
+        assertEquals(listOf(9.9, 20.9, 23.1, 26.4), TaxRate.values().map { it.ratePctFor(LocalDate.of(2025, 12, 1)) })
+        assertEquals(listOf(9.9, 20.9, 23.1, 26.4), TaxRate.values().map { it.ratePctFor(LocalDate.of(2025, 1, 1)) })
     }
 
     @Test fun noCostOrNoDistanceMeansNoFigure() {

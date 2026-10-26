@@ -11,6 +11,7 @@ import app.autobrief.car.model.ClassifiedBy
 import app.autobrief.car.model.Gear
 import app.autobrief.car.model.GeoPoint
 import app.autobrief.car.model.PlaceKind
+import app.autobrief.car.model.TaxRate
 import app.autobrief.car.model.TripPurpose
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -222,6 +223,18 @@ class CoreFlowTest {
         assertEquals(45_010.0, gap.startOdometerKm, 0.0)
         assertEquals(45_218.0, gap.endOdometerKm, 0.0)
         assertTrue(h.core.integrity.value.ok)
+    }
+
+    @Test fun taxMeterTakesTheRateTableOfTheBusinessYearsStart() {
+        val costs = base.copy(annualCarCostKrw = 19_000_000, annualDepreciationKrw = 11_500_000, taxRate = TaxRate.CORP_22, fiscalYearStartMonth = 7)
+        // 2026-03-10 lies in the business year 2025-07-01 ~ 2026-06-30, which began before 2026: 20.9%
+        val h = Harness(costs, startAt = Harness.at(LocalDate.of(2026, 3, 10), 9, 0))
+        h.drive(0.0, 10.0, null, null)
+        assertEquals(20.9, h.core.taxBenefit()!!.ratePct, 0.0)
+        // from 2026-07-01 the business year starts in 2026: 22.0%
+        h.now = Harness.at(LocalDate.of(2026, 7, 10), 9, 0)
+        h.drive(10.0, 10.0, null, null)
+        assertEquals(22.0, h.core.taxBenefit()!!.ratePct, 0.0)
     }
 
     @Test fun demoSwitchIsRefusedMidTrip() {
