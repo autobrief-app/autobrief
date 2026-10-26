@@ -165,6 +165,7 @@ tr.tampered.flash td{animation-name:flashbad}   /* the fade ends on the tamper t
   function carView(car, now, known) {
     var sec = el('section', 'car'), head = el('div', 'head'), id = el('div');
     id.appendChild(el('div', 'plate', car.plate || car.key));
+    if (car.label) id.appendChild(el('span', 'badge small warn', car.label)); // 시연: a copy from the app's demo space
     id.appendChild(el('div', 'meta', [car.model, car.entity].filter(Boolean).join(' · ')));
     var chain = el('div', 'chain');
     chain.appendChild(el('span', 'badge ' + (BADGE[car.chainStatus] || 'warn'), car.chainStatus));
