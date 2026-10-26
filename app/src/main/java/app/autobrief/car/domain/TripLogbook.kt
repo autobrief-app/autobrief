@@ -62,9 +62,26 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
         if (!screen.impossible(km, references())) latestOdometerKm = km
     }
 
+    /** A trip resumed after a restart met P before any odometer value: it closes at the next value, at this time. */
+    private var closeAtNextValueMs: Long? = null
+
+    /**
+     * A trip that was open when the app stopped (saved when it opened) goes on and closes at the next P. Refused when
+     * its row exists already (the app stopped after writing the row, before clearing the saved trip).
+     */
+    fun resume(trip: OpenTrip): Boolean {
+        if (open != null || rows.any { it.id == tripId(trip.startEpochMs) }) return false
+        open = trip
+        return true
+    }
+
     private fun takeOdometer(km: Double): List<TripRecord> {
         screen.taken()
         latestOdometerKm = km
+        closeAtNextValueMs?.let { at ->
+            closeAtNextValueMs = null
+            return listOfNotNull(closeOpen(at, km))
+        }
         val pending = pendingStart ?: return emptyList()
         pendingStart = null
         if (open != null) return emptyList()
@@ -99,39 +116,47 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
         val previous = lastGear
         lastGear = gear
         if (gear == Gear.UNKNOWN) return emptyList()
-        if (gear == Gear.PARK) pendingStart = null
+        if (gear == Gear.PARK) pendingStart = null else closeAtNextValueMs = null
         val odo = latestOdometerKm
         val departing = gear != Gear.PARK && open == null && previous != gear
         if (odo == null || (departing && screen.inDoubt)) {
             // remember the departure; the trip opens at the next odometer value taken
             if (gear != Gear.PARK && open == null) pendingStart = pendingStart ?: OpenTrip(nowEpochMs, 0.0, routeTollEstimateKrw)
+            // a trip resumed after a restart found in P: it closes as soon as the odometer is known
+            if (gear == Gear.PARK && open != null) closeAtNextValueMs = nowEpochMs
             return emptyList()
         }
         val added = mutableListOf<TripRecord>()
-        if (gear != Gear.PARK && open == null && previous != gear) {
+        if (departing) {
             added += gapRowIfMoved(odo, nowEpochMs)
             open = OpenTrip(nowEpochMs, odo, routeTollEstimateKrw)
         } else if (gear == Gear.PARK) {
-            val trip = open ?: return added
-            open = null
-            val distance = odo - trip.startOdometerKm
-            if (distance <= 0.0) return added // moved a few metres only: not a logbook row
-            val row = TripRecord(
-                id = "TRIP-${trip.startEpochMs}",
-                startEpochMs = trip.startEpochMs,
-                endEpochMs = nowEpochMs,
-                startOdometerKm = trip.startOdometerKm,
-                endOdometerKm = odo,
-                purpose = TripPurpose.UNCLASSIFIED,
-                user = null,
-                memo = "",
-                routeTollEstimateKrw = trip.tollEstimateKrw,
-            )
-            rows += row
-            added += row
+            closeOpen(nowEpochMs, odo)?.let { added += it }
         }
         return added
     }
+
+    /** Closes the open trip at [odo]; a trip that moved a few metres only is no logbook row. */
+    private fun closeOpen(nowEpochMs: Long, odo: Double): TripRecord? {
+        val trip = open ?: return null
+        open = null
+        if (odo - trip.startOdometerKm <= 0.0) return null
+        val row = TripRecord(
+            id = tripId(trip.startEpochMs),
+            startEpochMs = trip.startEpochMs,
+            endEpochMs = nowEpochMs,
+            startOdometerKm = trip.startOdometerKm,
+            endOdometerKm = odo,
+            purpose = TripPurpose.UNCLASSIFIED,
+            user = null,
+            memo = "",
+            routeTollEstimateKrw = trip.tollEstimateKrw,
+        )
+        rows += row
+        return row
+    }
+
+    private fun tripId(startEpochMs: Long) = "TRIP-$startEpochMs"
 
     /** A toll estimate that arrives after departure (navigation started late) still belongs to the open trip. */
     fun updateOpenRoute(tollEstimateKrw: Int?) {

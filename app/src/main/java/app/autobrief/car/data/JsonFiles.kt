@@ -5,11 +5,13 @@ import app.autobrief.car.domain.AutoBriefCore
 import app.autobrief.car.domain.AutoBriefCore.Space
 import app.autobrief.car.domain.LedgerEntry
 import app.autobrief.car.model.AppSettings
+import app.autobrief.car.model.OpenTripRecord
 import app.autobrief.car.model.OutboxItem
 import app.autobrief.car.model.TripRecord
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.nullable
 import kotlinx.serialization.json.Json
 import java.io.File
 
@@ -37,6 +39,7 @@ class JsonFiles(private val root: File) : AutoBriefCore.Store {
             trips = read(File(d, TRIPS), ListSerializer(TripRecord.serializer())) ?: emptyList(),
             ledger = read(File(d, LEDGER), ListSerializer(LedgerEntry.serializer())) ?: emptyList(),
             outbox = read(File(d, OUTBOX), ListSerializer(OutboxItem.serializer())) ?: emptyList(),
+            openTrip = read(File(d, OPEN_TRIP), OpenTripRecord.serializer().nullable),
         )
     }
 
@@ -44,6 +47,7 @@ class JsonFiles(private val root: File) : AutoBriefCore.Store {
     override fun saveTrips(space: Space, trips: List<TripRecord>) = write(File(dir(space), TRIPS), ListSerializer(TripRecord.serializer()), trips)
     override fun saveLedger(space: Space, entries: List<LedgerEntry>) = write(File(dir(space), LEDGER), ListSerializer(LedgerEntry.serializer()), entries)
     override fun saveOutbox(space: Space, items: List<OutboxItem>) = write(File(dir(space), OUTBOX), ListSerializer(OutboxItem.serializer()), items)
+    override fun saveOpenTrip(space: Space, trip: OpenTripRecord?) = write(File(dir(space), OPEN_TRIP), OpenTripRecord.serializer().nullable, trip)
 
     override fun wipe(space: Space) {
         require(space == Space.DEMO) { "only the demo space can be wiped" }
@@ -77,5 +81,6 @@ class JsonFiles(private val root: File) : AutoBriefCore.Store {
         private const val TRIPS = "trips.json"
         private const val LEDGER = "ledger.json"
         private const val OUTBOX = "outbox.json"
+        private const val OPEN_TRIP = "open_trip.json"
     }
 }

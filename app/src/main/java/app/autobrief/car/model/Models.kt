@@ -135,3 +135,15 @@ data class OutboxItem(
     val deliveredEpochMs: Long? = null,
     val lastError: String? = null,
 )
+
+/**
+ * The trip being driven, saved when it opens so it survives the app being restarted: the row is written at the next
+ * P with these start values. The start place is kept as its label only, like on the rows.
+ */
+@Serializable
+data class OpenTripRecord(
+    val startEpochMs: Long,
+    val startOdometerKm: Double,
+    val tollEstimateKrw: Int? = null,
+    val startPlace: String? = null,
+)

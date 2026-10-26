@@ -11,6 +11,7 @@ import app.autobrief.car.domain.VehicleEvent
 import app.autobrief.car.model.AppSettings
 import app.autobrief.car.model.Gear
 import app.autobrief.car.model.GeoPoint
+import app.autobrief.car.model.OpenTripRecord
 import app.autobrief.car.model.OutboxItem
 import app.autobrief.car.model.PlaceKind
 import app.autobrief.car.model.TripRecord
@@ -29,6 +30,7 @@ class MemoryStore(var active: Space = Space.LIVE) : AutoBriefCore.Store {
     /** How many times the outbox was written (each write is a whole-file rewrite on the device). */
     var outboxSaves = 0
     override fun saveOutbox(space: Space, items: List<OutboxItem>) { outboxSaves++; data[space] = data.getValue(space).copy(outbox = items) }
+    override fun saveOpenTrip(space: Space, trip: OpenTripRecord?) { data[space] = data.getValue(space).copy(openTrip = trip) }
     override fun wipe(space: Space) { data[space] = AutoBriefCore.SpaceData() }
 }
 

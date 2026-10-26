@@ -5,6 +5,7 @@ import app.autobrief.car.model.CarUser
 import app.autobrief.car.model.ClassifiedBy
 import app.autobrief.car.model.Gear
 import app.autobrief.car.model.GeoPoint
+import app.autobrief.car.model.OpenTripRecord
 import app.autobrief.car.model.OutboxItem
 import app.autobrief.car.model.Place
 import app.autobrief.car.model.PlaceKind
@@ -59,6 +60,8 @@ class AutoBriefCore(
         val trips: List<TripRecord> = emptyList(),
         val ledger: List<LedgerEntry> = emptyList(),
         val outbox: List<OutboxItem> = emptyList(),
+        /** The trip that was being driven when the app last stopped; it is resumed at start. */
+        val openTrip: OpenTripRecord? = null,
     )
 
     interface Store {
@@ -69,6 +72,7 @@ class AutoBriefCore(
         fun saveTrips(space: Space, trips: List<TripRecord>)
         fun saveLedger(space: Space, entries: List<LedgerEntry>)
         fun saveOutbox(space: Space, items: List<OutboxItem>)
+        fun saveOpenTrip(space: Space, trip: OpenTripRecord?)
         fun wipe(space: Space)
     }
 
@@ -133,6 +137,10 @@ class AutoBriefCore(
 
     private var routeToll: Int? = null
     private var openStartPoint: GeoPoint? = null
+
+    /** The open trip's start place label: after a restart only the label is known, and it stands for the place. */
+    private var openStartLabel: String? = null
+    private var openTripSaved = false
     private var connectedLogged = false
 
     /** The running PIN lock's end on the [monotonic] clock; null = not locked. */
@@ -163,12 +171,37 @@ class AutoBriefCore(
         _notice.value = null
         pendingAuto = null
         openStartPoint = null
+        openStartLabel = null
+        openTripSaved = d.openTrip != null
         pinLockUntilMono = null
         pinLockRestored = false
+        d.openTrip?.let(::resumeOpenTrip)
         refreshCheck()
         // the new logbook needs the car's current state to detect the next departure correctly
         _vehicle.value.odometerKm?.let { logbook.seedOdometer(it) }
         logbook.onGear(_vehicle.value.gear, clock())
+    }
+
+    /** The trip that was open when the app stopped goes on (it closes at the next P); one already written is dropped. */
+    private fun resumeOpenTrip(t: OpenTripRecord) {
+        if (logbook.resume(TripLogbook.OpenTrip(t.startEpochMs, t.startOdometerKm, t.tollEstimateKrw))) {
+            _open.value = OpenTripView(t.startEpochMs, t.startOdometerKm, t.startPlace)
+            openStartLabel = t.startPlace
+            log("TRIP_RESUMED odo=${t.startOdometerKm}")
+        } else {
+            saveOpenTrip(null)
+        }
+    }
+
+    private fun saveOpenTrip(t: OpenTripRecord?) {
+        store.saveOpenTrip(space, t)
+        openTripSaved = t != null
+    }
+
+    /** The open trip as saved: its start values, the toll estimate known so far and the start place label. */
+    private fun saveOpenTripNow() {
+        val o = logbook.openTrip ?: return
+        saveOpenTrip(OpenTripRecord(o.startEpochMs, o.startOdometerKm, o.tollEstimateKrw, openStartLabel))
     }
 
     fun setRestricted(value: Boolean) {
@@ -206,11 +239,11 @@ class AutoBriefCore(
             // only the toll estimate is kept; the destination's name (where the driver goes) is not stored anywhere
             is NaviEvent.RouteStarted -> {
                 routeToll = e.tollFareKrw
-                logbook.updateOpenRoute(routeToll)
+                updateOpenRoute()
             }
             is NaviEvent.Destination -> {
                 if (e.tollFareKrw != null) routeToll = e.tollFareKrw
-                logbook.updateOpenRoute(routeToll)
+                updateOpenRoute()
             }
             is NaviEvent.Arrived -> Unit
             NaviEvent.RouteEnded -> routeToll = null
@@ -233,6 +266,12 @@ class AutoBriefCore(
         closeMonthIfDue()
     }
 
+    private fun updateOpenRoute() {
+        val before = logbook.openTrip ?: return
+        logbook.updateOpenRoute(routeToll)
+        if (logbook.openTrip != before) saveOpenTripNow()
+    }
+
     private fun freshLocation(now: Long, maxAgeMs: Long): GeoPoint? =
         _navi.value.takeIf { it.location != null && now - it.locationEpochMs <= maxAgeMs }?.location
 
@@ -246,6 +285,8 @@ class AutoBriefCore(
         if (logbook.openTrip == null) {
             _open.value = null
             openStartPoint = null
+            openStartLabel = null
+            if (openTripSaved) saveOpenTrip(null)
         }
         if (gear == Gear.PARK || gear == Gear.DRIVE) naviControl?.requestLocation()
     }
@@ -256,7 +297,9 @@ class AutoBriefCore(
         val now = clock()
         openStartPoint = freshLocation(now, START_LOCATION_MAX_AGE_MS)
         val label = openStartPoint?.let { AutoClassifier.nearest(it, allPlaces()) }?.label
+        openStartLabel = label
         _open.value = OpenTripView(open.startEpochMs, open.startOdometerKm, label)
+        saveOpenTripNow()
         log("TRIP_OPENED odo=${open.startOdometerKm}")
     }
 
@@ -271,14 +314,17 @@ class AutoBriefCore(
             }
         }
         saveTrips()
+        // cleared only after the row is stored: a restart in between finds the row and drops the saved trip
+        if (logbook.openTrip == null && openTripSaved) saveOpenTrip(null)
     }
 
     private fun tripClosed(row: TripRecord) {
         val now = clock()
         _open.value = null
         _lastClosedId.value = row.id
-        val start = openStartPoint
+        val start = openStartPoint ?: openStartLabel?.let { label -> allPlaces().firstOrNull { it.label == label }?.point }
         openStartPoint = null
+        openStartLabel = null
         val arrival = freshLocation(now, ARRIVAL_LOCATION_MAX_AGE_MS)
         if (_settings.value.autoClassify && arrival == null && (start != null || _navi.value.ready)) {
             // the position at the moment of parking is not in yet: write the row now, run the place rules shortly
