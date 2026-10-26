@@ -27,6 +27,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
 import java.util.Base64
+import java.util.UUID
 
 /**
  * The logbook on one vehicle state, free of Android types so every rule is unit-testable.
@@ -59,6 +60,8 @@ class AutoBriefCore(
         val settings: AppSettings = AppSettings(),
         val trips: List<TripRecord> = emptyList(),
         val ledger: List<LedgerEntry> = emptyList(),
+        /** Random identity of this ledger's chain, made with its first entry; null = a ledger from before chain ids. */
+        val chainId: String? = null,
         val outbox: List<OutboxItem> = emptyList(),
         /** The trip that was being driven when the app last stopped; it is resumed at start. */
         val openTrip: OpenTripRecord? = null,
@@ -70,7 +73,8 @@ class AutoBriefCore(
         fun load(space: Space): SpaceData
         fun saveSettings(space: Space, settings: AppSettings)
         fun saveTrips(space: Space, trips: List<TripRecord>)
-        fun saveLedger(space: Space, entries: List<LedgerEntry>)
+        /** The chain id is saved with the entries, in the same file. */
+        fun saveLedger(space: Space, chainId: String?, entries: List<LedgerEntry>)
         fun saveOutbox(space: Space, items: List<OutboxItem>)
         fun saveOpenTrip(space: Space, trip: OpenTripRecord?)
         fun wipe(space: Space)
@@ -104,6 +108,12 @@ class AutoBriefCore(
     private var space: Space = store.activeSpace()
     private var logbook = TripLogbook()
     private var ledger = Ledger()
+
+    /**
+     * The ledger's chain id: random, made when the ledger gets its first entry and kept with it. Delivery keys and
+     * payloads carry it, so the receiver keeps a demo that starts again at entry 1 as a new copy, not a forgery.
+     */
+    private var chainId: String? = null
 
     private val _space = MutableStateFlow(space)
     private val _settings = MutableStateFlow(AppSettings())
@@ -168,6 +178,7 @@ class AutoBriefCore(
         }
         logbook = TripLogbook(rows)
         ledger = Ledger(d.ledger)
+        chainId = d.chainId
         _space.value = s
         _settings.value = d.settings
         _trips.value = logbook.records
@@ -455,15 +466,23 @@ class AutoBriefCore(
 
     // ---------------------------------------------------------------- ledger, storage and outbox
 
+    /** The ledger's chain id (see [chainId]); null until the first entry, or for a ledger from before chain ids. */
+    val ledgerChainId: String? get() = chainId
+
     private fun appendLedger(kind: String, trip: TripRecord, body: JsonObject): LedgerEntry {
+        if (ledger.size == 0) chainId = newChainId()
         val entry = ledger.append(kind, trip.id, body, clock())
-        store.saveLedger(space, ledger.all)
+        store.saveLedger(space, chainId, ledger.all)
         log("LEDGER seq=${entry.seq} kind=$kind hash=${entry.hash.take(8)}")
         if (_settings.value.archiveWebhookUrl.isNotBlank()) {
-            enqueue("ledger-${space.dir}-${entry.seq}", "ledger", ledgerPayload(entry))
+            enqueue(ledgerKey(entry), "ledger", ledgerPayload(entry))
         }
         return entry
     }
+
+    /** One delivery key per entry of one chain; a ledger from before chain ids keeps its old keys. */
+    private fun ledgerKey(e: LedgerEntry): String =
+        chainId?.let { "ledger-${space.dir}-$it-${e.seq}" } ?: "ledger-${space.dir}-${e.seq}"
 
     private fun carJson() = buildJsonObject {
         put("vin", _vehicle.value.vin)
@@ -476,6 +495,7 @@ class AutoBriefCore(
         put("type", "ledger_entry")
         put("app", "autobrief")
         put("appVersion", APP_VERSION)
+        chainId?.let { put("chainId", it) }
         put("car", carJson())
         put("entry", buildJsonObject {
             put("seq", e.seq)
@@ -625,7 +645,7 @@ class AutoBriefCore(
     }
 
     private fun backfillLedger() {
-        enqueueAll(ledger.all.takeLast(BACKFILL_MAX).map { e -> Triple("ledger-${space.dir}-${e.seq}", "ledger", ledgerPayload(e)) })
+        enqueueAll(ledger.all.takeLast(BACKFILL_MAX).map { e -> Triple(ledgerKey(e), "ledger", ledgerPayload(e)) })
     }
 
     /**
@@ -655,7 +675,7 @@ class AutoBriefCore(
         store.wipe(Space.DEMO)
         store.saveSettings(Space.DEMO, SampleHistory.settings(webhookUrl))
         store.saveTrips(Space.DEMO, rows)
-        store.saveLedger(Space.DEMO, sampleLedger.all)
+        store.saveLedger(Space.DEMO, newChainId(), sampleLedger.all)
         // the closing of past months is part of the sample, not something to resend now
         store.saveSettings(Space.DEMO, SampleHistory.settings(webhookUrl).copy(lastMonthlyCloseYm = YearMonth.from(today).minusMonths(1).toString()))
         loadSpace(Space.DEMO)
@@ -706,6 +726,7 @@ class AutoBriefCore(
         if (queued) {
             val payload = buildJsonObject {
                 put("type", "logbook_archive")
+                chainId?.let { put("chainId", it) }
                 put("car", carJson())
                 put("fileName", name)
                 put("periodStart", period.start.toString())
@@ -713,7 +734,7 @@ class AutoBriefCore(
                 put("verificationCode", _check.value.code)
                 put("xlsxBase64", Base64.getEncoder().encodeToString(xlsx))
             }
-            enqueue("archive-${space.dir}-$name-${ledger.size}", "archive", payload.toString())
+            enqueue("archive-${space.dir}-${chainId?.let { "$it-" } ?: ""}$name-${ledger.size}", "archive", payload.toString())
         }
         log("EXPORT file=$name rows=${sheet.rows.size} queued=$queued")
         return ExportResult(name, savedTo, queued, sheet.rows.size)
@@ -864,6 +885,9 @@ class AutoBriefCore(
         const val GLEO_PACKAGE = "ai.umos.ambientai"
         const val GLEO_SENDER_PERMISSION = "ai.umos.gleo.permission.APP_ACTION"
         private const val MEMO_MAX = 80
+
+        /** 64 random bits as 16 hex digits: a fresh chain id. */
+        fun newChainId(): String = UUID.randomUUID().toString().replace("-", "").take(16)
 
         /** Memo text arrives from voice or the screen: one line, no control characters, bounded length. */
         fun sanitizeMemo(raw: String?): String =

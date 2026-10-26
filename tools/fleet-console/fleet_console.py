@@ -73,10 +73,22 @@ def epoch(v, default):
 def car_key(car):
     return next((car[k].strip() for k in ("vin", "plate") if isinstance(car.get(k), str) and car[k].strip()), None)
 
+CHAIN_ID = re.compile(r"[0-9A-Za-z_-]{1,64}")
+
+def chain_key(p):
+    """One car's copy of one ledger chain: the car (VIN or plate) and the payload's chainId. The app makes a random
+    chainId when a ledger starts, so a demo that starts again at seq 1 is a new copy, not a forgery of the old one.
+    Payloads without chainId (apps up to 2.0.0) are keyed by the car alone."""
+    key, chain = car_key(p["car"]), p.get("chainId")
+    return key if key is None or chain is None else "%s#%s" % (key, chain)
+
 def validate(p):
     """Error string for a malformed payload, else None."""
     if not isinstance(p, dict) or not isinstance(p.get("car"), dict) or car_key(p["car"]) is None:
         return "JSON 객체와 car.vin 또는 car.plate가 필요합니다"
+    chain = p.get("chainId")
+    if chain is not None and not (isinstance(chain, str) and CHAIN_ID.fullmatch(chain)):
+        return "chainId는 영문, 숫자, -, _ 64자 이내여야 합니다"
     if p.get("type") == "logbook_archive":
         return next(("%s가 없습니다" % k for k in ("fileName", "xlsxBase64") if not isinstance(p.get(k), str) or not p[k]), None)
     e = p.get("entry")
@@ -93,8 +105,8 @@ def validate(p):
 
 class Car:
     """One vehicle's chain state; entries are keyed by seq and bounded by MAX_ENTRIES_PER_CAR."""
-    def __init__(self, key):
-        self.key, self.meta = key, {"vin": None, "plate": None, "model": None, "entity": None}
+    def __init__(self, key, chain=None):
+        self.key, self.chain, self.meta = key, chain, {"vin": None, "plate": None, "model": None, "entity": None}
         self.by_seq, self.trip_ids, self.floor = {}, set(), 0     # floor = highest trimmed seq
         self.last_seq, self.last_hash = 0, GENESIS
         self.status, self.alerts, self.view = OK, [], None        # view None = projection stale
@@ -234,9 +246,9 @@ class Store:
         self.cars, self.archives = {}, []          # archives: oldest first
         self._replay()
 
-    def _car(self, key):
+    def _car(self, key, chain=None):
         if key not in self.cars and len(self.cars) < MAX_CARS:
-            self.cars[key] = Car(key)
+            self.cars[key] = Car(key, chain)
         return self.cars.get(key)
 
     def _append(self, key, obj):
@@ -274,8 +286,8 @@ class Store:
             sys.stderr.write("%s 저장 파일에서 %d줄을 건너뛰었습니다\n" % (now_iso(), skipped))
 
     def _replay_one(self, p, pending):
-        key = car_key(p["car"])
-        car = self._car(key) if key else None
+        key = chain_key(p)
+        car = self._car(key, p.get("chainId")) if key else None
         if car is None:
             raise ValueError("car")
         car.update_meta(p["car"])
@@ -298,7 +310,7 @@ class Store:
             except (binascii.Error, ValueError):
                 return 400, {"ok": False, "error": "xlsxBase64가 올바른 base64가 아닙니다"}
         with self.lock:
-            car = self._car(car_key(p["car"]))
+            car = self._car(chain_key(p), p.get("chainId"))
             if car is None:
                 return 429, {"ok": False, "error": "차량 수 한도(%d대)를 넘었습니다" % MAX_CARS}
             if idem and idem in car.idem_s:
@@ -345,7 +357,7 @@ class Store:
                 h = car.last_hash if car.last_seq else ""
                 arch = [dict({k: a[k] for k in ARCHIVE_PUBLIC}, url="/archives/" + quote(a["savedAs"]))
                         for a in reversed(self.archives) if a["key"] == car.key]
-                cars.append({"key": car.key, **car.meta, "chainStatus": car.status, "entries": len(car.by_seq),
+                cars.append({"key": car.key, **car.meta, "chainId": car.chain, "chainStatus": car.status, "entries": len(car.by_seq),
                              "lastSeq": car.last_seq, "lastHashShort": (h[:4] + "-" + h[4:8]).upper() if h else "",
                              **car.view, "archives": arch, "alerts": list(car.alerts)})
             return {"generatedAt": now_iso(), "cars": cars}

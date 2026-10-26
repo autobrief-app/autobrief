@@ -202,7 +202,8 @@ class CoreFlowTest {
         assertTrue(h.core.outbox.value.isEmpty())
         assertEquals(AutoBriefCore.SettingsResult.INVALID_URL, h.core.saveSettings(h.core.settings.value.copy(archiveWebhookUrl = "http://example.com/hook"), null, null))
         assertEquals(AutoBriefCore.SettingsResult.SAVED, h.core.saveSettings(h.core.settings.value.copy(archiveWebhookUrl = "http://10.0.2.2:8787/hook"), null, null))
-        assertEquals(listOf("ledger-live-1", "ledger-live-2"), h.core.outbox.value.map { it.key })
+        val chain = h.core.ledgerChainId // delivery keys name the ledger's chain (a demo reset starts a new one)
+        assertEquals(listOf("ledger-live-$chain-1", "ledger-live-$chain-2"), h.core.outbox.value.map { it.key })
     }
 
     @Test fun adminPinGuardsAddressPinAndDemoSwitch() {

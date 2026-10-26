@@ -26,7 +26,7 @@ class MemoryStore(var active: Space = Space.LIVE) : AutoBriefCore.Store {
     override fun load(space: Space) = data.getValue(space)
     override fun saveSettings(space: Space, settings: AppSettings) { data[space] = data.getValue(space).copy(settings = settings) }
     override fun saveTrips(space: Space, trips: List<TripRecord>) { data[space] = data.getValue(space).copy(trips = trips) }
-    override fun saveLedger(space: Space, entries: List<LedgerEntry>) { data[space] = data.getValue(space).copy(ledger = entries) }
+    override fun saveLedger(space: Space, chainId: String?, entries: List<LedgerEntry>) { data[space] = data.getValue(space).copy(chainId = chainId, ledger = entries) }
     /** How many times the outbox was written (each write is a whole-file rewrite on the device). */
     var outboxSaves = 0
     override fun saveOutbox(space: Space, items: List<OutboxItem>) { outboxSaves++; data[space] = data.getValue(space).copy(outbox = items) }

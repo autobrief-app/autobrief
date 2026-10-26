@@ -13,6 +13,10 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.nullable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonTransformingSerializer
 import java.io.File
 
 /**
@@ -26,6 +30,16 @@ class JsonFiles(private val root: File) : AutoBriefCore.Store {
     @Serializable
     private data class AppState(val space: Space = Space.LIVE)
 
+    /** ledger.json: the chain id and the entries in one file, so they are always written together. */
+    @Serializable
+    private data class LedgerFile(val chainId: String? = null, val entries: List<LedgerEntry> = emptyList())
+
+    /** Up to 2.0.0 ledger.json was the bare list of entries (a chain without an id). */
+    private object LedgerFileSerializer : JsonTransformingSerializer<LedgerFile>(LedgerFile.serializer()) {
+        override fun transformDeserialize(element: JsonElement): JsonElement =
+            if (element is JsonArray) JsonObject(mapOf("entries" to element)) else element
+    }
+
     private fun dir(space: Space) = File(root, space.dir)
 
     override fun activeSpace(): Space = read(stateFile, AppState.serializer())?.space ?: Space.LIVE
@@ -34,10 +48,12 @@ class JsonFiles(private val root: File) : AutoBriefCore.Store {
 
     override fun load(space: Space): AutoBriefCore.SpaceData {
         val d = dir(space)
+        val ledger = read(File(d, LEDGER), LedgerFileSerializer)
         return AutoBriefCore.SpaceData(
             settings = read(File(d, SETTINGS), AppSettings.serializer()) ?: AppSettings(),
             trips = read(File(d, TRIPS), ListSerializer(TripRecord.serializer())) ?: emptyList(),
-            ledger = read(File(d, LEDGER), ListSerializer(LedgerEntry.serializer())) ?: emptyList(),
+            ledger = ledger?.entries ?: emptyList(),
+            chainId = ledger?.chainId,
             outbox = read(File(d, OUTBOX), ListSerializer(OutboxItem.serializer())) ?: emptyList(),
             openTrip = read(File(d, OPEN_TRIP), OpenTripRecord.serializer().nullable),
         )
@@ -45,7 +61,8 @@ class JsonFiles(private val root: File) : AutoBriefCore.Store {
 
     override fun saveSettings(space: Space, settings: AppSettings) = write(File(dir(space), SETTINGS), AppSettings.serializer(), settings)
     override fun saveTrips(space: Space, trips: List<TripRecord>) = write(File(dir(space), TRIPS), ListSerializer(TripRecord.serializer()), trips)
-    override fun saveLedger(space: Space, entries: List<LedgerEntry>) = write(File(dir(space), LEDGER), ListSerializer(LedgerEntry.serializer()), entries)
+    override fun saveLedger(space: Space, chainId: String?, entries: List<LedgerEntry>) =
+        write(File(dir(space), LEDGER), LedgerFileSerializer, LedgerFile(chainId, entries))
     override fun saveOutbox(space: Space, items: List<OutboxItem>) = write(File(dir(space), OUTBOX), ListSerializer(OutboxItem.serializer()), items)
     override fun saveOpenTrip(space: Space, trip: OpenTripRecord?) = write(File(dir(space), OPEN_TRIP), OpenTripRecord.serializer().nullable, trip)
 
