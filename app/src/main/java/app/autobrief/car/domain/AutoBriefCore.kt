@@ -230,8 +230,20 @@ class AutoBriefCore(
         saveOpenTrip(OpenTripRecord(o.startEpochMs, o.startOdometerKm, o.tollEstimateKrw, openStartLabel))
     }
 
-    fun setRestricted(value: Boolean) {
-        _restricted.value = value
+    /** What CarUxRestrictions last said; null = unknown (the car service cannot be reached, or has no state yet). */
+    private var uxRestricted: Boolean? = false
+
+    /**
+     * The driving restrictions from the car service. While they are unknown the screen counts as restricted unless
+     * the car is known to be in P: the safe side for a driver.
+     */
+    fun setRestricted(value: Boolean?) {
+        uxRestricted = value
+        updateRestricted()
+    }
+
+    private fun updateRestricted() {
+        _restricted.value = uxRestricted ?: (_vehicle.value.gear != Gear.PARK)
     }
 
     // ---------------------------------------------------------------- vehicle and navigation input
@@ -371,6 +383,7 @@ class AutoBriefCore(
 
     private fun onGear(gear: Gear, now: Long) {
         _vehicle.value = _vehicle.value.copy(gear = gear)
+        updateRestricted()
         val wasOpen = logbook.openTrip != null
         val added = logbook.onGear(gear, now, routeToll)
         if (added.isNotEmpty()) recordRows(added)

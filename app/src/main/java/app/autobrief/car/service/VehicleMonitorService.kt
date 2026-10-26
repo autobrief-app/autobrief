@@ -80,6 +80,9 @@ class VehicleMonitorService : Service() {
 
     private fun onTick(n: Int) {
         core.tick()
+        // SDK links that went quiet while the car is out of P are made again
+        vehicle.checkQuiet()
+        navi.checkQuiet(core.vehicle.value.gear)
         // the position is needed at departure and arrival; while driving keep it reasonably fresh
         if (core.vehicle.value.gear == Gear.DRIVE || core.vehicle.value.gear == Gear.REVERSE) {
             if (n % LOCATION_EVERY_TICKS_DRIVING == 0) navi.requestLocation()
