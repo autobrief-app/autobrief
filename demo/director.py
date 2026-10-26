@@ -19,7 +19,9 @@ unreachable or rejected a request, 4 the app could not be brought to the front.
 """
 
 import argparse
+import datetime
 import json
+import math
 import os
 import random
 import re
@@ -46,6 +48,7 @@ from setup_emulator import (  # noqa: E402  (shared helpers live next to this sc
     console_request,
     console_url,
     find_sdk_tools,
+    nmea_fix_sentences,
     parse_current_user,
     parse_front_activity,
     resumed_lines,
@@ -82,6 +85,12 @@ EXIT_TOOLS = 2
 EXIT_CONSOLE = 3
 EXIT_APP = 4
 
+# The app asks navigation for the position every 60 s while parked and every 6 s while driving
+# (and at every P/D shift); the director holds the car at a place until the app has seen it there.
+POSITION_WAIT_PARKED_S = 75.0
+POSITION_WAIT_DRIVING_S = 15.0
+POSITION_RESEND_S = 1.0  # a GPS receiver reports once a second
+
 FRONT_STABLE_S = 2.0  # before a scenario the app must hold the front this long
 PREFLIGHT_FILE = "preflight.txt"
 
@@ -96,13 +105,19 @@ class Place:
     name: str
     lat: float
     lon: float
+    registered: bool = True  # the demo sample registers it in the app under the same name
+
+    @property
+    def app_label(self) -> str:
+        """What the app logs for this place (`POSITION place=<label>`); '-' = no registered place."""
+        return self.name if self.registered else "-"
 
 
 # fictional demo places (labels only; the app's debug demo sample registers the same ones)
 HOME = Place("집", 37.5444, 127.0374)
 OFFICE = Place("회사", 37.3947, 127.1112)
 CLIENT = Place("가상상사", 37.5126, 127.0590)
-UNREGISTERED = Place("미등록 장소", 37.5665, 126.9780)
+UNREGISTERED = Place("미등록 장소", 37.5665, 126.9780, registered=False)
 
 
 @dataclass(frozen=True)
@@ -228,6 +243,17 @@ class Pause:
 
 
 @dataclass(frozen=True)
+class AwaitPosition:
+    """Hold the car at `place` (the fix re-sent every second) until the app logs that it is there.
+
+    The app's purpose rules use the position it last received, so departing before it has seen
+    the origin, or parking before it has seen the destination, records the wrong places."""
+
+    place: Place
+    timeout: float
+
+
+@dataclass(frozen=True)
 class ParkVehicle:
     """The console's own Park routine: speed/pedals to 0, gear Park, confirm via /vehicle/state."""
 
@@ -255,6 +281,15 @@ def jitter_speeds(key: str, count: int) -> List[int]:
     return [rng.randint(*JITTER_KPH) for _ in range(count)]
 
 
+def bearing_deg(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    """Initial great-circle bearing from a to b ((lat, lon) in degrees), 0..360, north = 0."""
+    lat1, lat2 = math.radians(a[0]), math.radians(b[0])
+    d_lon = math.radians(b[1] - a[1])
+    y = math.sin(d_lon) * math.cos(lat2)
+    x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(d_lon)
+    return math.degrees(math.atan2(y, x)) % 360.0
+
+
 def time_scale(km_interval: float) -> float:
     """Ramps and pauses shrink with the km tick (--fast keeps the same shape, just quicker)."""
     return km_interval / DEFAULT_KM_INTERVAL
@@ -268,11 +303,12 @@ def plan_beats(
     speeds = jitter_speeds(scenario.key, scenario.km)
 
     ready = (
+        GeoFix(origin.lat, origin.lon),  # before P: the app asks for the position at every P
         ParkVehicle(),
         SetSeat("driver", True),
-        GeoFix(origin.lat, origin.lon),
         SetOdometer(scenario.odometer_start),
         Pause(SETTLE_S * scale),
+        AwaitPosition(origin, POSITION_WAIT_PARKED_S),
     )
 
     depart = [SetGear("Drive")]
@@ -299,6 +335,7 @@ def plan_beats(
             SetControls(speed, accelerator=0, brake=30, steering=0),
             Pause(RAMP_DOWN_S / RAMP_STEPS * scale),
         ]
+    arrive.append(AwaitPosition(dest, POSITION_WAIT_DRIVING_S))
 
     park = (ParkVehicle(), Pause(SETTLE_S * scale))
 
@@ -330,6 +367,15 @@ class TripClosed:
     km: Optional[float]
     purpose: str
     line: str
+
+
+_POSITION = re.compile(r"\bPOSITION place=(\S+)")
+
+
+def last_position_label(logcat: str) -> Optional[str]:
+    """The place label of the app's latest `POSITION place=<label>` line, or None."""
+    found = _POSITION.findall(logcat)
+    return found[-1] if found else None
 
 
 _TRIP_CLOSED = re.compile(r"\bTRIP_CLOSED\b")
@@ -721,6 +767,7 @@ class Director:
         clock: Optional[Callable[[], float]] = None,
         ask: Callable[[str], str] = input,
         say_fn: Callable[[str], None] = say,
+        utc: Optional[Callable[[], datetime.datetime]] = None,
     ):
         self.console = console
         self.adb = adb
@@ -731,10 +778,14 @@ class Director:
         self.clock = clock or time.monotonic
         self.ask = ask
         self.say = say_fn
+        self.utc = utc or (lambda: datetime.datetime.now(datetime.timezone.utc))
         self.beat_number = 0
         self.speed = 0
         self._geo_warned = False
+        self._nmea_warned = False
         self._shot_warned = False
+        self._last_fix = None  # (lat, lon) of the previous GeoFix
+        self._course = 0.0
 
     def run_scenario(self, scenario: Scenario) -> None:
         self.say("")
@@ -769,6 +820,8 @@ class Director:
             self.console.set_seat_occupied(step.area, step.occupied)
         elif isinstance(step, GeoFix):
             self.geo_fix(step)
+        elif isinstance(step, AwaitPosition):
+            self.await_position(step)
         elif isinstance(step, ParkVehicle):
             self.park()
         else:
@@ -794,14 +847,45 @@ class Director:
             self.sleep(0.5)
 
     def geo_fix(self, step: GeoFix) -> None:
-        if self._geo_warned:
-            return  # the emulator console refused once; the scenario does not depend on it
-        try:
-            # `adb emu geo fix` takes longitude first
-            self.adb.geo_fix(step.lon, step.lat)
-        except AdbError as exc:
-            self._geo_warned = True
-            self.say("  (경고) 위치 이동을 건너뜁니다: %s" % exc)
+        """Moves the emulated GPS: `geo fix` for the platform location provider, and the same fix
+        as NMEA with a valid checksum for the Pleos navigation app (NaviHelper), which drops the
+        emulator's own `geo fix` sentences. The app's purpose rules read NaviHelper's position."""
+        if self._last_fix is not None and self._last_fix != (step.lat, step.lon):
+            self._course = bearing_deg(self._last_fix, (step.lat, step.lon))
+        self._last_fix = (step.lat, step.lon)
+        if not self._geo_warned:
+            try:
+                # `adb emu geo fix` takes longitude first
+                self.adb.geo_fix(step.lon, step.lat)
+            except AdbError as exc:
+                self._geo_warned = True
+                self.say("  (경고) 위치 이동을 건너뜁니다: %s" % exc)
+        if not self._nmea_warned:
+            try:
+                for sentence in nmea_fix_sentences(
+                    step.lat, step.lon, self.utc(), self.speed, self._course
+                ):
+                    self.adb.geo_nmea(sentence)
+            except AdbError as exc:
+                self._nmea_warned = True
+                self.say("  (경고) 내비게이션 위치(NMEA) 전송을 건너뜁니다: %s" % exc)
+
+    def await_position(self, step: AwaitPosition) -> None:
+        want = step.place.app_label
+        deadline = self.clock() + step.timeout
+        while True:
+            seen = last_position_label(self.adb.logcat_dump())
+            if seen == want:
+                self.say("  - 앱이 위치를 확인했습니다: %s" % step.place.name)
+                return
+            if self.clock() >= deadline:
+                self.say(
+                    "  (경고) %.0f초 안에 앱이 위치(%s)를 확인하지 못했습니다 (앱의 마지막 위치: %s). 그대로 진행합니다."
+                    % (step.timeout, step.place.name, seen or "없음")
+                )
+                return
+            self.sleep(POSITION_RESEND_S)
+            self.geo_fix(GeoFix(step.place.lat, step.place.lon))
 
     def screenshot(self, scenario: Scenario, beat: Beat) -> None:
         if not self.out_dir or self._shot_warned:

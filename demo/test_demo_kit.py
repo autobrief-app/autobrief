@@ -8,6 +8,7 @@ Vehicle Virtual Console. The two end-to-end rehearsals at the bottom need POSIX 
 """
 
 import contextlib
+import datetime
 import hashlib
 import io
 import json
@@ -1704,17 +1705,51 @@ class FakeConsole:
         return {"gear": {"actual": {"value": self.gear}}}
 
 
+def place_label_at(lat, lon):
+    """What the app logs for a position: the registered demo place within 300 m, else '-'."""
+    for place in (director.HOME, director.OFFICE, director.CLIENT):
+        # 0.0025 degrees is about 280 m north-south here; enough for fixes placed on the pins
+        if abs(place.lat - lat) < 0.0025 and abs(place.lon - lon) < 0.0025:
+            return place.name
+    return "-"
+
+
 class FakeAdb:
+    """The emulator side of Director: geo fixes, NMEA, screenshots, and the app's POSITION log
+    (the place of the latest fix, unless `app_silent`)."""
+
     def __init__(self, png=PNG):
         self.geo = []
+        self.nmea = []
         self.png = png
         self.geo_error = None
+        self.nmea_error = None
         self.shot_error = None
+        self.app_silent = False
+        self.position = None  # (lat, lon) the emulated GPS reports now
+        self.dumps = 0
+
+    def logcat_dump(self, *args, **kwargs):
+        self.dumps += 1
+        if self.app_silent or self.position is None:
+            return ""
+        return "I AutoBriefLog: POSITION place=%s\n" % place_label_at(*self.position)
 
     def geo_fix(self, lon, lat):
         if self.geo_error:
             raise self.geo_error
         self.geo.append((lon, lat))
+
+    def geo_nmea(self, sentence):
+        if self.nmea_error:
+            raise self.nmea_error
+        self.nmea.append(sentence)
+        fields = sentence.split(",")
+        if fields[0] == "$GPGGA":  # the navigation app reads the position from the NMEA stream
+            self.position = (
+                int(fields[2][:2]) + float(fields[2][2:]) / 60,
+                int(fields[4][:3]) + float(fields[4][3:]) / 60,
+            )
 
     def screencap_png(self):
         if self.shot_error:
@@ -1733,10 +1768,67 @@ class DirectorExecutorTests(unittest.TestCase):
             mode=mode,
             km_interval=0.3,
             sleep=self.sleeps.append,
-            clock=lambda: 0.0,
+            clock=lambda: sum(self.sleeps),
             ask=lambda prompt: self.asked.append(prompt) or "",
             say_fn=self.said.append,
         )
+
+    def test_every_position_also_goes_out_as_valid_nmea(self):
+        runner = self.make()
+        runner.utc = lambda: FIX_TIME
+        runner.run_scenario(director.SCENARIOS[0])
+        self.assertEqual(len(self.adb.nmea), 2 * len(self.adb.geo))
+        first_gga, first_rmc = self.adb.nmea[:2]
+        self.assertTrue(first_gga.startswith("$GPGGA,052019,3732.6640,N,12702.2440,E,"))
+        self.assertTrue(first_rmc.startswith("$GPRMC,052019,A,3732.6640,N,12702.2440,E,"))
+        last_rmc = self.adb.nmea[-1].split("*")[0].split(",")
+        self.assertEqual(last_rmc[3:7], ["3723.6820", "N", "12706.6720", "E"])
+        course = float(last_rmc[8])
+        self.assertTrue(90.0 < course < 180.0, "home -> office heads south-east: %s" % course)
+
+    def test_departure_and_parking_wait_until_the_app_has_seen_the_place(self):
+        steps = director.plan_beats(director.SCENARIOS[1], 0.3)
+        ready, arrive = steps[0].steps, steps[3].steps
+        self.assertIsInstance(ready[0], director.GeoFix, "the fix comes before P (P asks for it)")
+        self.assertIsInstance(ready[1], director.ParkVehicle)
+        self.assertEqual(
+            ready[-1], director.AwaitPosition(director.OFFICE, director.POSITION_WAIT_PARKED_S)
+        )
+        self.assertEqual(
+            arrive[-1], director.AwaitPosition(director.CLIENT, director.POSITION_WAIT_DRIVING_S)
+        )
+        self.assertEqual(director.UNREGISTERED.app_label, "-")
+        self.assertEqual(director.CLIENT.app_label, "가상상사")
+
+    def test_position_wait_resends_the_fix_until_the_app_reports_it(self):
+        runner = self.make()
+        self.adb.position = (37.0, 127.0)  # the app last saw the car elsewhere
+        reports = iter(["", "POSITION place=-", "POSITION place=회사"])
+        self.adb.logcat_dump = lambda *a, **k: next(reports)
+        runner.await_position(director.AwaitPosition(director.OFFICE, 15.0))
+        self.assertEqual(len(self.adb.geo), 2, "re-sent once a second while waiting")
+        self.assertEqual(self.sleeps, [1.0, 1.0])
+        self.assertIn("  - 앱이 위치를 확인했습니다: 회사", self.said)
+
+    def test_position_wait_gives_up_with_a_warning(self):
+        runner = self.make()
+        self.adb.app_silent = True
+        runner.await_position(director.AwaitPosition(director.HOME, 5.0))
+        self.assertEqual(sum(self.sleeps), 5.0)
+        self.assertTrue(any("확인하지 못했습니다" in m and "없음" in m for m in self.said))
+
+    def test_last_position_label(self):
+        text = "I AutoBriefLog: POSITION place=집\nI AutoBriefLog: TRIP_OPENED odo=1.0\nI AutoBriefLog: POSITION place=-\n"
+        self.assertEqual(director.last_position_label(text), "-")
+        self.assertIsNone(director.last_position_label("I AutoBriefLog: SPACE DEMO\n"))
+
+    def test_nmea_refusal_warns_once_and_geo_fix_goes_on(self):
+        runner = self.make()
+        self.adb.nmea_error = se.AdbError("geo nmea 거부됨: KO: unknown command")
+        runner.run_scenario(director.SCENARIOS[0])
+        warnings = [m for m in self.said if "NMEA" in m]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(self.adb.geo[-1], (127.1112, 37.3947))
 
     def test_commute_replay_hits_the_console_in_trip_order(self):
         runner = self.make()
@@ -2200,6 +2292,51 @@ class BridgeWaitTests(unittest.TestCase):
         self.assertIn("emulator_active=False", text)
 
 
+# --------------------------------------------------------------------------- GPS as NMEA
+
+# Logged by the Pleos navigation app on the CI emulator (run 40272821598, after `adb emu geo fix`):
+#   Invalid NMEA message: $GPGGA,052019,3723.6820,N,12706.6719,E,1,6,,0.0,M,0.,M,,,*47
+#   NMEA checksum mismatch: expected=47, actual=7B   (and actual=68 for the $GPRMC beside it)
+EMULATOR_GGA = "GPGGA,052019,3723.6820,N,12706.6719,E,1,6,,0.0,M,0.,M,,,"
+EMULATOR_RMC = "GPRMC,052019,A,3723.6820,N,12706.6719,E,0.00,0.00,261026,0.0,W"
+FIX_TIME = datetime.datetime(2026, 10, 26, 5, 20, 19, tzinfo=datetime.timezone.utc)
+
+
+class NmeaTests(unittest.TestCase):
+    def test_checksum_matches_what_the_navigation_app_computed(self):
+        self.assertEqual(se.nmea_checksum(EMULATOR_GGA), "7B")
+        self.assertEqual(se.nmea_checksum(EMULATOR_RMC), "68")
+
+    def test_degrees_and_minutes(self):
+        self.assertEqual(se.nmea_degrees(37.3947, 2), "3723.6820")
+        self.assertEqual(se.nmea_degrees(127.1112, 3), "12706.6720")
+        self.assertEqual(se.nmea_degrees(-0.5, 2), "0030.0000")
+        self.assertEqual(se.nmea_degrees(37.9999999, 2), "3800.0000", "59.99999' rolls over")
+
+    def test_sentences_keep_the_emulator_layout_with_a_real_checksum(self):
+        gga, rmc = se.nmea_fix_sentences(37.3947, 127.1112, FIX_TIME)
+        self.assertEqual(gga, "$GPGGA,052019,3723.6820,N,12706.6720,E,1,6,,0.0,M,0.,M,,,*71")
+        self.assertEqual(
+            rmc, "$GPRMC,052019,A,3723.6820,N,12706.6720,E,0.00,0.00,261026,0.0,W*62"
+        )
+        for sentence in (gga, rmc):
+            body, checksum = sentence[1:].split("*")
+            self.assertEqual(se.nmea_checksum(body), checksum)
+            self.assertNotIn(" ", sentence, "one argument for `adb emu geo nmea`")
+
+    def test_speed_in_knots_course_and_hemispheres(self):
+        _, rmc = se.nmea_fix_sentences(-33.8688, -70.6693, FIX_TIME, 92.6, 370.0)
+        fields = rmc.split("*")[0].split(",")
+        self.assertEqual(fields[3:7], ["3352.1280", "S", "07040.1580", "W"])
+        self.assertEqual(fields[7:9], ["50.00", "10.00"])
+
+    def test_bearing(self):
+        self.assertAlmostEqual(director.bearing_deg((37.0, 127.0), (38.0, 127.0)), 0.0)
+        self.assertAlmostEqual(director.bearing_deg((37.0, 127.0), (36.0, 127.0)), 180.0)
+        east = director.bearing_deg((37.0, 127.0), (37.0, 128.0))
+        self.assertTrue(89.0 < east < 91.0, east)
+
+
 # --------------------------------------------------------------------------- device readiness
 
 HOME_SCREEN = "ai.umos.homescreen/.HomeActivity"
@@ -2390,6 +2527,13 @@ class ReadinessParseTests(unittest.TestCase):
                 se.UserSnapshot(True, 10, se.USER_UNLOCKED, se.FrontActivity(10, WIZARD_SCREEN)),
                 "설정 마법사",
             ),
+            (
+                se.UserSnapshot(
+                    True, 10, se.USER_UNLOCKED,
+                    se.FrontActivity(10, "com.android.car.settings/.FallbackHome"),
+                ),
+                "임시 홈",
+            ),
         ]
         for snap, words in cases:
             self.assertIn(words, se.user_not_ready(snap), snap)
@@ -2495,6 +2639,23 @@ class AppFrontWaitTests(unittest.TestCase):
         self.assertIn("u0 " + APP_SCREEN, str(caught.exception))
         starts = [s for s in adb.shells if s.startswith("am start")]
         self.assertEqual(len(starts), 2, "relaunched every 5 s, not on every poll")
+
+
+class BroadcastIdleTests(unittest.TestCase):
+    def test_waits_on_the_device_command(self):
+        adb = SequenceAdb()
+        clock = FakeClock()
+        self.assertEqual(se.wait_for_broadcast_idle(adb, now=clock.now), 0.0)
+        self.assertEqual(adb.shells, ["am wait-for-broadcast-idle"])
+
+    def test_timeout_is_a_boot_error(self):
+        class Slow(SequenceAdb):
+            def shell(self, *args, timeout=None):
+                raise se.AdbTimeout("adb shell: 시간 초과")
+
+        with self.assertRaises(se.SetupError) as caught:
+            se.wait_for_broadcast_idle(Slow(), timeout=5)
+        self.assertEqual(caught.exception.code, se.EXIT_BOOT)
 
 
 class VehicleConnectedWaitTests(unittest.TestCase):
@@ -2639,6 +2800,8 @@ elif cmd == "shell":
         out("Display #0 (activities from top to bottom):\n"
             "  topResumedActivity=ActivityRecord{1f2e3d4 u10 %s t1000012}\n"
             "  ResumedActivity: ActivityRecord{1f2e3d4 u10 %s t1000012}\n" % (shown, shown))
+    elif line == "am wait-for-broadcast-idle":
+        out("All broadcast queues are idle!\n")
     elif line == "dumpsys user":
         out("Users:\n  UserInfo{0:Driver:c13} running\n    State: RUNNING_UNLOCKED\n"
             "  UserInfo{10:Driver:412} running\n    State: RUNNING_UNLOCKED\n")
@@ -2670,6 +2833,15 @@ elif cmd == "emu":
         out(("Some_Other_Avd" if flag("other_avd") else "Pleos_Connect_v2.1.0") + "\nOK\n")
     elif rest[:2] == ["geo", "fix"]:
         out("KO: emulator console authentication failed\n" if flag("geo_ko") else "OK\n")
+    elif rest[:2] == ["geo", "nmea"]:
+        out("KO: bad sentence\n" if flag("nmea_ko") else "OK\n")
+        fields = rest[2].split(",") if len(rest) > 2 else []
+        if not flag("nmea_ko") and fields and fields[0] == "$GPGGA" and not flag("no_position"):
+            lat = int(fields[2][:2]) + float(fields[2][2:]) / 60
+            lon = int(fields[4][:3]) + float(fields[4][3:]) / 60
+            places = {"집": (37.5444, 127.0374), "회사": (37.3947, 127.1112), "가상상사": (37.5126, 127.0590)}
+            label = next((n for n, (a, o) in places.items() if abs(a - lat) < 0.0025 and abs(o - lon) < 0.0025), "-")
+            log_app("POSITION place=" + label)
     else:
         out("KO: unknown command\n")
 elif cmd == "logcat":
@@ -3042,6 +3214,10 @@ class SetupRehearsalTests(unittest.TestCase):
         self.assertLess(first["am get-started-user-state 10"], first[start])
         self.assertLess(first[start], first[broadcast])
         self.assertIn("운전자 화면 준비됨: 사용자 10", text)
+        self.assertLess(
+            shells.index("am wait-for-broadcast-idle"), first[start],
+            "the app starts after the boot broadcasts are delivered",
+        )
         self.assertIn("앱이 화면 앞에 있습니다: u10 app.autobrief.car/.ui.MainActivity", text)
         self.assertIn("VEHICLE_CONNECTED", text)
         self.assertIn("DEMO_READY trips=487", text)
@@ -3355,12 +3531,15 @@ class DirectorRehearsalTests(unittest.TestCase):
             first_post, first_put, "the session starts before the first write"
         )
 
-    def test_single_scenario_without_verify_touches_no_logcat(self):
+    def test_single_scenario_without_verify_never_clears_logcat(self):
         self.start()
         code, text = self.run_main("--scenario", "personal", "--fast")
         self.assertEqual(code, 0, text)
         self.assertNotIn("[PASS]", text)
-        self.assertFalse(any(c[2:3] == ["logcat"] for c in self.device.adb_calls()))
+        calls = self.device.adb_calls()
+        self.assertFalse(any(c[2:4] == ["logcat", "-c"] for c in calls))
+        # it only reads the app's log, for the position it reports
+        self.assertTrue(any(c[2:4] == ["logcat", "-d"] for c in calls))
         self.assertIn("④ 주차합니다", text)
 
     def test_missing_trip_line_fails_verification_with_exit_1(self):

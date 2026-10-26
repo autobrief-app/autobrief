@@ -13,6 +13,7 @@ Exit codes: 0 ok, 1 other failure, 2 missing tools or usage, 3 download/verify f
 """
 
 import argparse
+import datetime
 import hashlib
 import http.client
 import os
@@ -84,6 +85,11 @@ LOGCAT_BUFFER_SIZE = "32M"
 HSUM_PROP = "ro.fw.mu.headless_system_user"
 USER_UNLOCKED = "RUNNING_UNLOCKED"
 SETUP_WIZARD_MARK = "setupwizard"  # ai.umos.setupwizard on Pleos Connect
+# Settings' stand-in launcher while the user is still unlocking; the real home comes after it
+FALLBACK_HOME_MARK = "FallbackHome"
+# BOOT_COMPLETED of the driver's user reaches every app after the unlock (measured on CI: 55 s
+# after FallbackHome, with the CPU saturated meanwhile); the app starts after that settles
+BROADCAST_IDLE_WAIT_S = 300
 
 EXIT_OK = 0
 EXIT_FAIL = 1
@@ -360,6 +366,60 @@ def parse_emu_avd_name(text: str) -> Optional[str]:
     return None
 
 
+def nmea_checksum(body: str) -> str:
+    """XOR of the characters between '$' and '*', as two upper-case hex digits."""
+    value = 0
+    for char in body:
+        value ^= ord(char)
+    return "%02X" % value
+
+
+def nmea_degrees(value: float, degree_digits: int) -> str:
+    """Decimal degrees -> NMEA ddmm.mmmm (latitude, 2 degree digits) or dddmm.mmmm (longitude)."""
+    value = abs(value)
+    degrees = int(value)
+    minutes = round((value - degrees) * 60.0, 4)
+    if minutes >= 60.0:
+        degrees, minutes = degrees + 1, 0.0
+    return "%0*d%07.4f" % (degree_digits, degrees, minutes)
+
+
+def nmea_fix_sentences(
+    lat: float,
+    lon: float,
+    utc: datetime.datetime,
+    speed_kph: float = 0.0,
+    course_deg: float = 0.0,
+) -> List[str]:
+    """$GPGGA + $GPRMC for one fix, laid out like the emulator's own `geo fix` sentences.
+
+    `adb emu geo fix` ends every sentence with a constant `*47` instead of the checksum. The
+    platform GPS provider ignores it, but the Pleos navigation app checks it and drops the
+    sentence ("NMEA checksum mismatch: expected=47, actual=7B"), so NaviHelper never moves. These
+    carry the real checksum."""
+    hhmmss = utc.strftime("%H%M%S")
+    lat_text, north = nmea_degrees(lat, 2), "N" if lat >= 0 else "S"
+    lon_text, east = nmea_degrees(lon, 3), "E" if lon >= 0 else "W"
+    gga = "GPGGA,%s,%s,%s,%s,%s,1,6,,0.0,M,0.,M,,," % (
+        hhmmss,
+        lat_text,
+        north,
+        lon_text,
+        east,
+    )
+    rmc = "GPRMC,%s,A,%s,%s,%s,%s,%.2f,%.2f,%s,0.0,W" % (
+        hhmmss,
+        lat_text,
+        north,
+        lon_text,
+        east,
+        speed_kph / 1.852,  # knots
+        course_deg % 360.0,
+        utc.strftime("%d%m%y"),
+    )
+    return ["$%s*%s" % (body, nmea_checksum(body)) for body in (gga, rmc)]
+
+
 def parse_current_user(text: str) -> Optional[int]:
     """`am get-current-user` prints the foreground user id alone (10 on Pleos Connect)."""
     found = re.fullmatch(r"\s*(\d+)\s*", text)
@@ -531,6 +591,11 @@ class Adb:
         reply = self.out("emu", "geo", "fix", "%.6f" % lon, "%.6f" % lat)
         if "KO" in reply:
             raise AdbError("geo fix 거부됨: " + reply.strip())
+
+    def geo_nmea(self, sentence: str) -> None:
+        reply = self.out("emu", "geo", "nmea", sentence)
+        if "KO" in reply:
+            raise AdbError("geo nmea 거부됨: " + reply.strip())
 
     def screencap_png(self) -> bytes:
         return self.run("exec-out", "screencap", "-p")[1]
@@ -1523,6 +1588,8 @@ def user_not_ready(snap: UserSnapshot) -> Optional[str]:
         return "앞 화면이 다른 사용자의 것 (%s)" % snap.front
     if SETUP_WIZARD_MARK in snap.front.package:
         return "설정 마법사가 앞에 있음 (%s)" % snap.front
+    if FALLBACK_HOME_MARK in snap.front.component:
+        return "임시 홈(%s)만 떠 있음, 실제 홈 화면 대기" % snap.front
     return None
 
 
@@ -1592,6 +1659,25 @@ def wait_for_user_ready(
             noted = now()
             log("  운전자 화면 대기 중: %s" % reason)
         sleep(2.0)
+
+
+def wait_for_broadcast_idle(
+    adb: Adb, timeout: Optional[float] = None, now: Optional[Callable[[], float]] = None
+) -> float:
+    """`am wait-for-broadcast-idle`: returns once every queued broadcast (the driver's
+    BOOT_COMPLETED to each app, which starts them all) has been delivered. Until then a 2-core
+    emulator has no CPU to spare: the demo sample load took over 60 s instead of 20 s."""
+    timeout = BROADCAST_IDLE_WAIT_S if timeout is None else timeout
+    now = now or time.monotonic
+    started = now()
+    try:
+        adb.shell("am", "wait-for-broadcast-idle", timeout=timeout)
+    except AdbTimeout:
+        raise SetupError(
+            EXIT_BOOT,
+            "%.0f초 안에 부팅 직후 방송(BOOT_COMPLETED 등)이 끝나지 않았습니다." % timeout,
+        )
+    return now() - started
 
 
 def wait_for_app_in_front(
@@ -1680,7 +1766,16 @@ def load_demo_sample(
     now = now or time.monotonic
     sleep = sleep or time.sleep
     adb.logcat_clear()  # a DEMO_READY left over from an earlier run must not satisfy the wait
-    adb.shell(*demo_broadcast_args("load_sample", webhook, user))
+    try:
+        # am broadcast returns when the receiver has finished loading (a background broadcast
+        # that runs past 60 s is an ANR on the device as well)
+        adb.shell(*demo_broadcast_args("load_sample", webhook, user))
+    except AdbTimeout:
+        raise SetupError(
+            EXIT_FAIL,
+            "앱이 데모 샘플을 60초 안에 다 불러오지 못했습니다 (DemoReceiver). 에뮬레이터가 바쁜지 "
+            "확인하세요 (adb shell cat /proc/loadavg).",
+        )
     deadline = now() + timeout
     while True:
         trips = find_demo_ready(adb.logcat_dump())
@@ -1875,6 +1970,8 @@ def run(args: argparse.Namespace) -> int:
     wait_for_boot(adb, timeout, proc=proc, log_path=log_path)
     enlarge_logcat(adb)
     user = wait_for_user_ready(adb)
+    say("  부팅 직후 방송 처리 대기 중...")
+    say("  방송 처리 끝 (%.0f초)" % wait_for_broadcast_idle(adb))
 
     stage(8, total, "앱 설치, 가상 콘솔 연결")
     if args.apk:
