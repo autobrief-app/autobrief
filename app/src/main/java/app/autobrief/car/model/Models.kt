@@ -85,19 +85,25 @@ data class Place(val label: String, val kind: PlaceKind, val point: GeoPoint, va
  * [ratePct] for business years starting on or after [RATES_FROM], [earlierRatePct] for business years that began before.
  */
 @Serializable
-enum class TaxRate(val label: String, val ratePct: Double, val earlierRatePct: Double) {
-    CORP_11("법인 과세표준 2억 원 이하 11.0%", 11.0, 9.9),
-    CORP_22("법인 2억 초과 200억 원 이하 22.0%", 22.0, 20.9),
-    CORP_24("법인 200억 초과 3,000억 원 이하 24.2%", 24.2, 23.1),
-    CORP_27("법인 3,000억 원 초과 27.5%", 27.5, 26.4),
+enum class TaxRate(val bracket: String, val ratePct: Double, val earlierRatePct: Double) {
+    CORP_11("법인 과세표준 2억 원 이하", 11.0, 9.9),
+    CORP_22("법인 2억 초과 200억 원 이하", 22.0, 20.9),
+    CORP_24("법인 200억 초과 3,000억 원 이하", 24.2, 23.1),
+    CORP_27("법인 3,000억 원 초과", 27.5, 26.4),
     ;
 
     /** The rate for the business year that starts on [businessYearStart]. */
     fun ratePctFor(businessYearStart: LocalDate): Double = if (businessYearStart.isBefore(RATES_FROM)) earlierRatePct else ratePct
 
+    /** The bracket with the rate of the business year that starts on [businessYearStart], e.g. "법인 과세표준 2억 원 이하 9.9%". */
+    fun labelFor(businessYearStart: LocalDate): String = "$bracket ${pctText(ratePctFor(businessYearStart))}"
+
     companion object {
         /** The first business-year start date that takes [ratePct]. */
         val RATES_FROM: LocalDate = LocalDate.of(2026, 1, 1)
+
+        /** 22.0 -> "22.0%" (one decimal, a dot in every locale). */
+        fun pctText(pct: Double): String = String.format(java.util.Locale.ROOT, "%.1f%%", pct)
     }
 }
 

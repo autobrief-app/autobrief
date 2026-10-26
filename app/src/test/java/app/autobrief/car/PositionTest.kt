@@ -16,6 +16,7 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -33,6 +34,18 @@ class PositionTest {
 
     /** 100 m east of [p]. */
     private fun near(p: GeoPoint) = GeoPoint(p.lat, p.lon + 0.00113)
+
+    @Test fun theStatusPillNamesThePositionTheAppHasNow() {
+        val h = Harness(base)
+        assertNull(h.core.positionSource.value)
+        h.gps(SampleHistory.CLIENT.point)
+        assertEquals(AutoBriefCore.PositionSource.GPS, h.core.positionSource.value)
+        h.at(near(SampleHistory.CLIENT.point)) // navigation agrees with the GNSS fix: its position is the one used
+        assertEquals(AutoBriefCore.PositionSource.NAVIGATION, h.core.positionSource.value)
+        h.advance(AutoBriefCore.PLACE_LOCATION_MAX_AGE_MS + 1)
+        h.core.tick()
+        assertNull("a position too old to register a place ages out with the monitor's tick", h.core.positionSource.value)
+    }
 
     @Test fun aFreshNavigationPositionWins() {
         val h = Harness(base)

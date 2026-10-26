@@ -82,6 +82,15 @@ class LogbookExportTest {
         assertEquals(9_117.0, sheet.totals.businessUseKm, 0.0)
     }
 
+    @Test fun aYearStillRunningIsTheTotalToTheDayTheWorkbookIsMade() {
+        // the last trip was on 2026-10-23; the workbook is made ten days later, still inside the business year
+        val h = Harness()
+        h.drive(1_000.0, 12.0, null, null)
+        h.advance(10 * 86_400_000L)
+        val sheet = h.core.exportSheet(TaxPeriods.businessYear(2026, 1), businessYear = true)
+        assertEquals("⑪2026-11-02 현재 누계(사업연도 진행 중) 총주행 거리(㎞)", sheet.totals.totalLabel)
+    }
+
     @Test fun tollEstimateMovesFromRemarksToTheLedgerSheet() {
         val sheet = LogbookExport.build(rows, SampleHistory.settings(), october, code, businessYear = false)
         assertFalse(sheet.rows.any { "통행료" in (it[8] as String) })

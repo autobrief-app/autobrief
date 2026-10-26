@@ -291,6 +291,10 @@ class TaxBenefitTest {
         assertEquals(listOf(11.0, 22.0, 24.2, 27.5), TaxRate.values().map { it.ratePctFor(LocalDate.of(2026, 7, 1)) })
         assertEquals(listOf(9.9, 20.9, 23.1, 26.4), TaxRate.values().map { it.ratePctFor(LocalDate.of(2025, 12, 1)) })
         assertEquals(listOf(9.9, 20.9, 23.1, 26.4), TaxRate.values().map { it.ratePctFor(LocalDate.of(2025, 1, 1)) })
+        // the settings chips and their label show the rate of the year, never the 2026 table for a year begun in 2025
+        assertEquals("법인 과세표준 2억 원 이하 9.9%", TaxRate.CORP_11.labelFor(LocalDate.of(2025, 7, 1)))
+        assertEquals("법인 2억 초과 200억 원 이하 22.0%", TaxRate.CORP_22.labelFor(y2026))
+        assertEquals("24.2%", TaxRate.pctText(TaxRate.CORP_24.ratePctFor(y2026)))
     }
 
     @Test fun noCostOrNoDistanceMeansNoFigure() {

@@ -162,7 +162,7 @@ fun AppMark(size: Int = 72) {
 private fun StatusBar(core: AutoBriefCore) {
     val p = LocalPalette.current
     val v by core.vehicle.collectAsState()
-    val navi by core.navi.collectAsState()
+    val position by core.positionSource.collectAsState()
     val check by core.integrity.collectAsState()
     val space by core.activeSpace.collectAsState()
     FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -173,7 +173,15 @@ private fun StatusBar(core: AutoBriefCore) {
         if (v.gear == Gear.UNKNOWN) StatusPill("기어 확인 중", p.muted)
         else StatusPill("기어 ${gearLabel(v.gear)}", if (v.gear == Gear.PARK) p.muted else p.accent)
         StatusPill(v.odometerKm?.let { "계기판 ${km1(it)} km" } ?: "계기판 확인 중", if (v.odometerKm != null) p.commute else p.muted)
-        StatusPill(if (navi.location != null) "내비 위치 받는 중" else "내비 위치 없음", if (navi.location != null) p.ok else p.muted)
+        // navigation's position, else the car's own GPS (the fallback when navigation does not follow the car)
+        StatusPill(
+            when (position) {
+                AutoBriefCore.PositionSource.NAVIGATION -> "내비 위치 받는 중"
+                AutoBriefCore.PositionSource.GPS -> "차량 GPS 위치 받는 중"
+                null -> "위치 정보 없음"
+            },
+            if (position != null) p.ok else p.muted,
+        )
         StatusPill(
             when {
                 !check.ok -> "기록 확인 필요"

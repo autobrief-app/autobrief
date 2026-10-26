@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import app.autobrief.car.domain.AutoBriefCore
+import app.autobrief.car.domain.TaxPeriods
 import app.autobrief.car.model.CarUser
 import app.autobrief.car.model.PlaceKind
 import app.autobrief.car.model.TaxRate
@@ -83,8 +84,10 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                         Field("연간 차량 관련비용 (만원)", cost, Modifier.fillMaxWidth(), numeric = true) { cost = it.filter(Char::isDigit).take(6) }
                         Field("그중 감가상각비 또는 리스·렌트료의 감가상각비 상당액 (만원)", dep, Modifier.fillMaxWidth(), numeric = true) { dep = it.filter(Char::isDigit).take(6) }
                         Muted("관련비용 = 감가상각비(리스·렌트료), 유류비, 보험료, 수리비, 자동차세, 통행료 등. 세율은 지방소득세를 포함합니다.")
-                        ChipRow { TaxRate.values().forEach { r -> Choice("${"%.1f".format(r.ratePct)}%", r == taxRate) { taxRate = r } } }
-                        Muted(taxRate.label)
+                        // the rate table follows the start of the business year (the one being edited above, once valid)
+                        val yearStart = TaxPeriods.businessYearOf(core.today(), fyStart.toIntOrNull()?.takeIf { it in 1..12 } ?: settings.fiscalYearStartMonth).start
+                        ChipRow { TaxRate.values().forEach { r -> Choice(TaxRate.pctText(r.ratePctFor(yearStart)), r == taxRate) { taxRate = r } } }
+                        Muted("${taxRate.labelFor(yearStart)} · ${yearStart.year}년 ${yearStart.monthValue}월 시작 사업연도 세율")
                     }
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {

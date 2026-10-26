@@ -98,6 +98,9 @@ class AutoBriefCore(
         val bookmarks: List<NaviBookmark> = emptyList(),
     )
 
+    /** Where the position the place rules would use now comes from (see [positionSource]). */
+    enum class PositionSource { NAVIGATION, GPS }
+
     data class OpenTripView(val startEpochMs: Long, val startOdometerKm: Double, val startPlace: String?)
 
     data class Notice(val text: String, val fileName: String?)
@@ -131,6 +134,7 @@ class AutoBriefCore(
     private val _restricted = MutableStateFlow(false)
     private val _navi = MutableStateFlow(NaviStatus())
     private val _open = MutableStateFlow<OpenTripView?>(null)
+    private val _positionSource = MutableStateFlow<PositionSource?>(null)
     private val _notice = MutableStateFlow<Notice?>(null)
     private val _lastClosedId = MutableStateFlow<String?>(null)
 
@@ -144,6 +148,12 @@ class AutoBriefCore(
     /** CarUxRestrictions: true while the screen must stay in its glanceable driving layout. */
     val restricted: StateFlow<Boolean> = _restricted.asStateFlow()
     val navi: StateFlow<NaviStatus> = _navi.asStateFlow()
+
+    /**
+     * The source of the position a place could be registered from now (no older than [PLACE_LOCATION_MAX_AGE_MS]):
+     * navigation, the car's own GNSS, or null. Updated with every position and every [tick], so an old one ages out.
+     */
+    val positionSource: StateFlow<PositionSource?> = _positionSource.asStateFlow()
     val openTrip: StateFlow<OpenTripView?> = _open.asStateFlow()
     val notice: StateFlow<Notice?> = _notice.asStateFlow()
 
@@ -310,6 +320,7 @@ class AutoBriefCore(
             is NaviEvent.Location -> {
                 val now = clock()
                 _navi.update { it.copy(ready = true, location = e.point, locationEpochMs = now) }
+                updatePositionSource(now)
                 logPosition(now)
                 pendingAuto?.let { p -> if (now > p.askedAt) resolvePendingAuto(freshLocation(now, LOCATION_FRESH_MS) ?: e.point) }
             }
@@ -320,6 +331,7 @@ class AutoBriefCore(
     /** Periodic call (every few seconds): pending place rules time out, the month closes. */
     fun tick() {
         val now = clock()
+        updatePositionSource(now)
         pendingAuto?.let { if (now >= it.deadline) resolvePendingAuto(freshLocation(now, LOCATION_FRESH_MS)) }
         closeMonthIfDue()
     }
@@ -343,6 +355,7 @@ class AutoBriefCore(
         val taken = minOf(fix.epochMs, now)
         if (gnssFix?.let { it.epochMs > taken } == true) return // an older fix than the one held (two providers)
         gnssFix = Fix(p, taken, gnss = true)
+        updatePositionSource(now)
         logPosition(now)
         pendingAuto?.let { pending -> if (taken > pending.askedAt) resolvePendingAuto(freshLocation(now, LOCATION_FRESH_MS) ?: p) }
     }
@@ -374,6 +387,10 @@ class AutoBriefCore(
     }
 
     private fun freshLocation(now: Long, maxAgeMs: Long): GeoPoint? = position(now, maxAgeMs)?.point
+
+    private fun updatePositionSource(now: Long) {
+        _positionSource.value = position(now, PLACE_LOCATION_MAX_AGE_MS)?.let { if (it.gnss) PositionSource.GPS else PositionSource.NAVIGATION }
+    }
 
     /**
      * Debug builds: which registered place the car is at now, by label (never the coordinates), and `source=gps` when
@@ -867,8 +884,9 @@ class AutoBriefCore(
         return TaxBenefit.compute(s.annualCarCostKrw, s.annualDepreciationKrw, ratio, s.taxRate.ratePctFor(currentBusinessYear().start))
     }
 
+    /** The form for [period] as of today: a business year still running is labelled as the total to today. */
     fun exportSheet(period: ClosedRange<LocalDate>, businessYear: Boolean): LogbookExport.Sheet =
-        LogbookExport.build(logbook.records, _settings.value, period, _check.value.code, businessYear)
+        LogbookExport.build(logbook.records, _settings.value, period, _check.value.code, businessYear, exportDate = today())
 
     /** Writes the period workbook (form + ledger sheet) and queues it for the sending address when one is set. */
     fun exportWorkbook(period: ClosedRange<LocalDate>, businessYear: Boolean, send: Boolean = true): ExportResult {
