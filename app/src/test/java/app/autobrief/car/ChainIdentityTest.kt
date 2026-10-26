@@ -26,6 +26,7 @@ class ChainIdentityTest {
     private val hook = "http://10.0.2.2:8787/hook"
 
     private fun payloadChain(json: String): String? = Json.parseToJsonElement(json).jsonObject["chainId"]?.jsonPrimitive?.content
+    private fun payloadSpace(json: String): String? = Json.parseToJsonElement(json).jsonObject["space"]?.jsonPrimitive?.content
 
     @Test fun aDemoResetStartsANewChainWithItsOwnDeliveryKeys() {
         val h = Harness()
@@ -36,6 +37,8 @@ class ChainIdentityTest {
         val firstKeys = h.core.outbox.value.map { it.key }.toSet()
         assertTrue(firstKeys.all { it.startsWith("ledger-demo-$first-") })
         assertTrue(h.core.outbox.value.all { payloadChain(it.payloadJson) == first })
+        // the receiver tells a demo restart (silent, labelled 시연) from a live one (a warning) by this field
+        assertTrue(h.core.outbox.value.all { payloadSpace(it.payloadJson) == "demo" })
 
         h.core.resetDemo()
         h.core.loadSampleHistory(hook) // the same sample again: seq 1.. again, but a different chain
@@ -53,6 +56,7 @@ class ChainIdentityTest {
         val id = h.core.ledgerChainId!!
         assertEquals(id, h.store.data.getValue(Space.LIVE).chainId)
         assertEquals(listOf("ledger-live-$id-1"), h.core.outbox.value.map { it.key })
+        assertEquals("live", payloadSpace(h.core.outbox.value.single().payloadJson))
         val again = AutoBriefCore(h.store, clock = { h.now })
         assertEquals(id, again.ledgerChainId)
         h.drive(112.0, 5.0, null, null)

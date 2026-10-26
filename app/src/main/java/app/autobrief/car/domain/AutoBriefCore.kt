@@ -515,6 +515,8 @@ class AutoBriefCore(
         put("app", "autobrief")
         put("appVersion", APP_VERSION)
         chainId?.let { put("chainId", it) }
+        // the receiver starts a new demo chain silently; a new live chain for a known car is a warning there
+        put("space", space.dir)
         put("entry", buildJsonObject {
             put("seq", e.seq)
             put("epochMs", e.epochMs)
@@ -752,6 +754,7 @@ class AutoBriefCore(
             val payload = buildJsonObject {
                 put("type", "logbook_archive")
                 chainId?.let { put("chainId", it) }
+                put("space", space.dir)
                 put("fileName", name)
                 put("periodStart", period.start.toString())
                 put("periodEnd", period.endInclusive.toString())

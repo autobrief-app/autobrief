@@ -185,19 +185,43 @@ class LimitTests(Base):
 class ChainIdentityTests(Base):
     """The app gives every ledger a random chainId: a car's copy is keyed by the car plus that id."""
 
-    def chained(self, payloads, chain):
-        return [dict(p, chainId=chain) for p in payloads]
+    def chained(self, payloads, chain, space=None):
+        return [dict(p, chainId=chain, **({"space": space} if space else {})) for p in payloads]
 
-    def test_a_restarted_demo_ledger_is_a_new_copy_not_a_forgery(self):
-        first = self.chained(Chain().run(3), "aaaa0000aaaa0000")
-        again = self.chained([Chain().trip(1, T, 1000.0, 1099.0)], "bbbb1111bbbb1111")    # seq 1 again, other content
-        self.assertEqual(self.feed(*first, *again), [(200, {"ok": True})] * 4)                # no "duplicate" for the new chain
+    def texts(self, car):
+        return [a["text"] if isinstance(a, dict) else a for a in car["alerts"]]
+
+    def test_a_restarted_demo_ledger_is_a_new_demo_copy_without_a_warning(self):
+        first = self.chained(Chain().run(3), "aaaa0000aaaa0000", "demo")
+        again = self.chained([Chain().trip(1, T, 1000.0, 1099.0)], "bbbb1111bbbb1111", "demo")    # seq 1 again, other content
+        self.assertEqual(self.feed(*first, *again), [(200, {"ok": True})] * 4)                      # no "duplicate" for the new chain
         cars = {c["key"]: c for c in self.store.state()["cars"]}
         old, new = cars[VIN + "#aaaa0000aaaa0000"], cars[VIN + "#bbbb1111bbbb1111"]
-        self.assertEqual((old["chainStatus"], old["entries"], old["chainId"]), ("정상", 3, "aaaa0000aaaa0000"))
-        self.assertEqual((new["chainStatus"], new["entries"], new["vin"]), ("정상", 1, VIN))
-        again_store = fc.Store(self.tmp)                                                      # the copies survive a restart
+        self.assertEqual((old["chainStatus"], old["entries"], old["chainId"], old["label"]), ("정상", 3, "aaaa0000aaaa0000", "시연"))
+        self.assertEqual((new["chainStatus"], new["entries"], new["vin"], new["label"], new["alerts"]), ("정상", 1, VIN, "시연", []))
+        again_store = fc.Store(self.tmp)                                                            # the copies survive a restart
         self.assertEqual({**self.store.state(), "generatedAt": 0}, {**again_store.state(), "generatedAt": 0})
+
+    def test_a_live_ledger_that_starts_again_for_a_known_car_is_a_warning(self):
+        first = self.chained(Chain().run(3), "aaaa0000aaaa0000", "live")
+        self.feed(*first)
+        self.feed(*self.chained([Chain().trip(1, T + 9 * H, 1030.0, 1040.0)], "bbbb1111bbbb1111", "live"))
+        cars = {c["key"]: c for c in self.store.state()["cars"]}
+        old, new = cars[VIN + "#aaaa0000aaaa0000"], cars[VIN + "#bbbb1111bbbb1111"]
+        self.assertEqual(old["chainStatus"], "정상")
+        self.assertEqual(new["chainStatus"], "누락 있음")                                            # a warning, not 정상
+        self.assertIn("원장이 새로 시작되었습니다 (이전 원장 마지막 순번 3): 앱 초기화 또는 위조 가능성", self.texts(new))
+        again_store = fc.Store(self.tmp)                                                            # the warning survives a restart
+        self.assertEqual({**self.store.state(), "generatedAt": 0}, {**again_store.state(), "generatedAt": 0})
+
+    def test_without_a_space_field_a_new_chain_counts_as_live_and_a_demo_chain_does_not_hide_a_live_reset(self):
+        self.feed(*Chain().run(2))                                                                    # an app from before chain ids
+        self.feed(*self.chained(Chain().run(4), "dddd0000dddd0000", "demo"))                          # a demo on the same car
+        self.feed(*self.chained(Chain().run(1), "cccc0000cccc0000"))                                  # then the live record restarts
+        new = self.car(VIN + "#cccc0000cccc0000")
+        self.assertEqual(new["chainStatus"], "누락 있음")
+        self.assertTrue(any("이전 원장 마지막 순번 2" in t for t in self.texts(new)), self.texts(new))
+        self.assertEqual(self.car(VIN + "#dddd0000dddd0000")["chainStatus"], "정상")
 
     def test_a_different_entry_resent_into_the_same_chain_is_still_suspect(self):
         a = self.chained([Chain().trip(1, T, 1000.0, 1010.0)], "aaaa0000aaaa0000")[0]
@@ -219,6 +243,9 @@ class ChainIdentityTests(Base):
         self.assertEqual([a["fileName"] for a in self.car(VIN + "#aaaa0000aaaa0000")["archives"]], ["운행기록부_2026-10-01_2026-10-31.xlsx"])
         for bad in ("../x", "", 7, "a" * 65, "가나"):
             code, out = self.store.ingest(dict(Chain().run(1)[0], chainId=bad))
+            self.assertEqual((code, out["ok"]), (400, False), bad)
+        for bad in ("DEMO", "", 1, "test"):
+            code, out = self.store.ingest(dict(Chain().run(1)[0], chainId="eeee0000eeee0000", space=bad))
             self.assertEqual((code, out["ok"]), (400, False), bad)
 
 class HttpTests(Base):

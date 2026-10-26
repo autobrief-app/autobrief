@@ -75,10 +75,12 @@ def car_key(car):
 
 CHAIN_ID = re.compile(r"[0-9A-Za-z_-]{1,64}")
 
+SPACES = ("live", "demo")
+
 def chain_key(p):
     """One car's copy of one ledger chain: the car (VIN or plate) and the payload's chainId. The app makes a random
-    chainId when a ledger starts, so a demo that starts again at seq 1 is a new copy, not a forgery of the old one.
-    Payloads without chainId (apps up to 2.0.0) are keyed by the car alone."""
+    chainId when a ledger starts. Payloads without chainId (apps up to 2.0.0) are keyed by the car alone. Whether a
+    new chain is a warning is decided per car, in Store._copy."""
     key, chain = car_key(p["car"]), p.get("chainId")
     return key if key is None or chain is None else "%s#%s" % (key, chain)
 
@@ -89,6 +91,8 @@ def validate(p):
     chain = p.get("chainId")
     if chain is not None and not (isinstance(chain, str) and CHAIN_ID.fullmatch(chain)):
         return "chainId는 영문, 숫자, -, _ 64자 이내여야 합니다"
+    if p.get("space") is not None and p["space"] not in SPACES:
+        return "space는 live 또는 demo여야 합니다"
     if p.get("type") == "logbook_archive":
         return next(("%s가 없습니다" % k for k in ("fileName", "xlsxBase64") if not isinstance(p.get(k), str) or not p[k]), None)
     e = p.get("entry")
@@ -106,7 +110,8 @@ def validate(p):
 class Car:
     """One vehicle's chain state; entries are keyed by seq and bounded by MAX_ENTRIES_PER_CAR."""
     def __init__(self, key, chain=None):
-        self.key, self.chain, self.meta = key, chain, {"vin": None, "plate": None, "model": None, "entity": None}
+        self.key, self.chain, self.label = key, chain, None      # label "시연": a demo copy
+        self.meta = {"vin": None, "plate": None, "model": None, "entity": None}
         self.by_seq, self.trip_ids, self.floor = {}, set(), 0     # floor = highest trimmed seq
         self.last_seq, self.last_hash = 0, GENESIS
         self.status, self.alerts, self.view = OK, [], None        # view None = projection stale
@@ -244,12 +249,26 @@ class Store:
         self.arch_dir = os.path.join(self.dir, "archives")
         os.makedirs(self.arch_dir, exist_ok=True)
         self.cars, self.archives = {}, []          # archives: oldest first
+        self.current = {}                          # (car, space) -> that car's newest copy in the space; <= MAX_CARS
         self._replay()
 
-    def _car(self, key, chain=None):
-        if key not in self.cars and len(self.cars) < MAX_CARS:
-            self.cars[key] = Car(key, chain)
-        return self.cars.get(key)
+    def _copy(self, p):
+        """The car's copy of this payload's chain (None past MAX_CARS). Tamper tracking is per chain (the copy) and per
+        car: a live chain that starts while the car already has one is a warning (the app's data was wiped, or someone
+        restarts the record). Only a payload that says it comes from the app's demo space starts a chain silently, as a
+        copy labelled 시연; payloads without the field count as live."""
+        key = chain_key(p)
+        if key in self.cars or len(self.cars) >= MAX_CARS:
+            return self.cars.get(key)
+        car = self.cars[key] = Car(key, p.get("chainId"))
+        demo = p.get("space") == "demo"
+        slot = (car_key(p["car"]), "demo" if demo else "live")
+        previous, self.current[slot] = self.current.get(slot), car
+        if demo:
+            car.label = "시연"
+        elif previous is not None:
+            car.alert("원장이 새로 시작되었습니다 (이전 원장 마지막 순번 %d): 앱 초기화 또는 위조 가능성" % previous.last_seq, GAP)
+        return car
 
     def _append(self, key, obj):
         path = os.path.join(self.dir, sanitize(key) + ".jsonl")
@@ -286,15 +305,14 @@ class Store:
             sys.stderr.write("%s 저장 파일에서 %d줄을 건너뛰었습니다\n" % (now_iso(), skipped))
 
     def _replay_one(self, p, pending):
-        key = chain_key(p)
-        car = self._car(key, p.get("chainId")) if key else None
+        car = self._copy(p) if car_key(p["car"]) else None    # files are per car, in arrival order: warnings come back
         if car is None:
             raise ValueError("car")
         car.update_meta(p["car"])
         if p.get("type") == "logbook_archive":
             name = sanitize(p["savedAs"])
             if os.path.isfile(os.path.join(self.arch_dir, name)):
-                pending.append(self._rec(key, p, name, txt(p["receivedAt"])))
+                pending.append(self._rec(car.key, p, name, txt(p["receivedAt"])))
         elif validate(p) is None and not car.is_dup(p["entry"]):
             car.add_entry(p["entry"])
 
@@ -310,7 +328,7 @@ class Store:
             except (binascii.Error, ValueError):
                 return 400, {"ok": False, "error": "xlsxBase64가 올바른 base64가 아닙니다"}
         with self.lock:
-            car = self._car(chain_key(p), p.get("chainId"))
+            car = self._copy(p)
             if car is None:
                 return 429, {"ok": False, "error": "차량 수 한도(%d대)를 넘었습니다" % MAX_CARS}
             if idem and idem in car.idem_s:
@@ -329,7 +347,7 @@ class Store:
         if p["type"] == "ledger_entry":
             if car.is_dup(p["entry"]):
                 return True
-            self._append(car.key, p)               # persist first: memory never runs ahead of disk
+            self._append(car_key(p["car"]), p)     # persist first: memory never runs ahead of disk; one file per car
             car.add_entry(p["entry"])
             return False
         name = sanitize("%s_%s" % (car.key, p["fileName"]))
@@ -339,7 +357,7 @@ class Store:
         os.replace(path + ".tmp", path)
         rec = self._rec(car.key, p, name, now_iso())
         line = {k: v for k, v in p.items() if k != "xlsxBase64"}
-        self._append(car.key, dict(line, savedAs=name, receivedAt=rec["receivedAt"]))
+        self._append(car_key(p["car"]), dict(line, savedAs=name, receivedAt=rec["receivedAt"]))
         self._register(rec)
         return False
 
@@ -357,7 +375,7 @@ class Store:
                 h = car.last_hash if car.last_seq else ""
                 arch = [dict({k: a[k] for k in ARCHIVE_PUBLIC}, url="/archives/" + quote(a["savedAs"]))
                         for a in reversed(self.archives) if a["key"] == car.key]
-                cars.append({"key": car.key, **car.meta, "chainId": car.chain, "chainStatus": car.status, "entries": len(car.by_seq),
+                cars.append({"key": car.key, **car.meta, "chainId": car.chain, "label": car.label, "chainStatus": car.status, "entries": len(car.by_seq),
                              "lastSeq": car.last_seq, "lastHashShort": (h[:4] + "-" + h[4:8]).upper() if h else "",
                              **car.view, "archives": arch, "alerts": list(car.alerts)})
             return {"generatedAt": now_iso(), "cars": cars}
