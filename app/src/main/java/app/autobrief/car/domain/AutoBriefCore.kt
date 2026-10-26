@@ -202,6 +202,9 @@ class AutoBriefCore(
             is NaviEvent.Location -> {
                 val now = clock()
                 _navi.update { it.copy(ready = true, location = e.point, locationEpochMs = now) }
+                // which registered place the car is at now, by label only (never the coordinates): the
+                // demo director waits for it before it departs or parks, so the place rules see the move
+                log("POSITION place=${AutoClassifier.nearest(e.point, allPlaces())?.label ?: "-"}")
                 pendingAuto?.let { p -> if (now > p.askedAt) resolvePendingAuto(e.point) }
             }
             is NaviEvent.Bookmarks -> _navi.update { it.copy(ready = true, bookmarks = e.places) }

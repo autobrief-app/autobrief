@@ -40,6 +40,19 @@ class CoreFlowTest {
         assertEquals(row.id, h.core.lastClosedId.value)
     }
 
+    @Test fun everyPositionIsLoggedAsThePlaceLabelOnly() {
+        val h = Harness(base.copy(places = listOf(SampleHistory.CLIENT)))
+        h.bookmarks()
+        h.at(SampleHistory.HOME.point)
+        h.at(GeoPoint(37.4127, 127.0947)) // between places: no label
+        h.at(SampleHistory.CLIENT.point)
+        assertEquals(
+            listOf("POSITION place=집", "POSITION place=-", "POSITION place=가상상사"),
+            h.logs.filter { it.startsWith("POSITION") },
+        )
+        assertFalse("no coordinates in the log", h.logs.any { "37." in it || "127." in it })
+    }
+
     @Test fun arrivalPositionThatComesAfterParkingStillClassifies() {
         val h = Harness(base)
         h.bookmarks()
