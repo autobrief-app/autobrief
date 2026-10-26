@@ -80,6 +80,14 @@
 
 장면은 다섯 개입니다: 준비(주차, 운전석 착석, 계기판 맞춤) -> 출발(기어 D, 속도 0에서 70 km/h) -> 이동(1 km마다 계기판과 위치 갱신) -> 도착(감속) -> 주차(기어 P, 운행기록 닫힘).
 
+앱은 마지막으로 받은 위치로 목적을 정합니다(주차 중 60초, 주행 중 6초마다 내비게이션에 위치를 묻습니다).
+그래서 준비 장면은 출발 전에, 도착 장면은 주차 전에 앱이 그 장소를 확인할 때까지 차를 그 자리에 둡니다
+(디버그 APK가 남기는 `POSITION place=집` 같은 줄을 기다림, 최대 75초/15초, 넘으면 경고 후 진행).
+위치는 `geo fix`와 함께 올바른 체크섬의 NMEA 문장(`geo nmea`)으로도 보냅니다. 에뮬레이터의 `geo fix` 문장은 체크섬이
+고정값(`*47`)이라 Pleos 내비게이션이 버리기 때문입니다.
+Pleos에서 앱이 받는 위치(NaviHelper)는 내비게이션 앱이 화면에 있을 때만 GPS를 따라갑니다(홈의 운전석 칸 하나를 우리 앱과 나눠 씀).
+그래서 화면은 이렇게 바뀝니다: 준비(앱이 아직 출발지를 모르면 잠깐 지도) -> 앱 화면에서 출발 -> 이동과 도착은 지도 -> 주차하면 앱 화면(닫힌 운행기록).
+
 ### 반복 시연 (처음 상태로 되돌리기)
 
 시나리오는 항상 같은 계기판 값에서 시작합니다. 앱에 쌓인 데모 기록을 지우고 다시 시작하려면:
@@ -125,6 +133,13 @@ python3 demo/setup_emulator.py --demo-sample --no-browser
 부팅 직후에는 차량 데이터 연결(`gear.bridge_ready`)이 아직 꺼져 있어서, 첫 시나리오 전에 켜질 때까지 최대 300초 기다립니다.
 그 사이 쓰기가 503이면 1초 간격으로 최대 5번 다시 시도합니다.
 
+`setup_emulator.py`는 `sys.boot_completed` 뒤에도 기다립니다. Pleos Connect는 시스템 사용자(0)가 먼저 부팅되고
+운전자 사용자(10)는 잠금 화면 뒤에서 수십 초 늦게 올라오기 때문입니다. 운전자 사용자가 잠금 해제되고 실제 홈 화면이 뜨고
+(임시 홈 `FallbackHome`이나 설정 마법사가 아님) 부팅 직후 방송이 끝나면(`am wait-for-broadcast-idle`), 앱을 그 사용자로 켜고
+화면 앞에 5초 이상 머무는지, `VEHICLE_CONNECTED`가 찍히는지 확인한 뒤 샘플을 그 사용자에게만 보냅니다.
+`director.py`는 첫 시나리오 전에 기기 상태(현재 사용자, 앞 화면, 콘솔 상태)를 `<--out>/preflight.txt`에 남기고,
+시나리오마다 앱이 화면 앞에 없으면 다시 띄웁니다.
+
 ## 6. 종료 코드
 
 | 코드 | `setup_emulator.py` | `director.py` |
@@ -133,7 +148,7 @@ python3 demo/setup_emulator.py --demo-sample --no-browser
 | 1 | 기타 실패 (APK 설치 실패, DEMO_READY 없음, 다른 에뮬레이터가 5554 사용 중) | `--verify` 하나 이상 FAIL |
 | 2 | SDK/도구 없음, 사용법 오류 | adb/SDK 없음, 사용법 오류 |
 | 3 | 내려받기 또는 체크섬 실패 | 가상 콘솔 연결 실패 또는 요청 거절 |
-| 4 | 부팅 시간 초과 (또는 부팅 중 에뮬레이터 종료) | |
+| 4 | 부팅 시간 초과 (또는 부팅 중 에뮬레이터 종료, 운전자 사용자가 준비되지 않음) | 앱을 화면 앞에 띄우지 못함 |
 | 5 | 가상 콘솔 연결 실패 (180초) | |
 
 ## 7. 문제 해결
@@ -152,7 +167,9 @@ python3 demo/setup_emulator.py --demo-sample --no-browser
 | `APK 설치 실패 ... UPDATE_INCOMPATIBLE` | 서명이 다른 앱(릴리스/디버그)이 이미 있습니다: `adb uninstall app.autobrief.car` 후 다시 실행 |
 | `DEMO_READY` 로그가 없음 | 디버그 APK가 아니면 데모 훅이 없습니다. `./gradlew assembleDebug` 결과물을 쓰세요 |
 | `--verify`가 FAIL | 출력의 "로그에 있던 TRIP_CLOSED" 줄을 보세요. 직접 확인: `adb logcat -d -s AutoBriefLog:I`. 기억할 점: 앱 권한(차량 속도)을 허용했는지, `--demo-sample`로 장소가 등록됐는지 |
-| `위치 이동을 건너뜁니다` 경고 | 에뮬레이터가 GPS 명령을 거절했습니다. 시연 진행에는 영향이 없습니다(경고는 한 번만) |
+| `위치 이동을 건너뜁니다` / `내비게이션 위치(NMEA) 전송을 건너뜁니다` 경고 | 에뮬레이터가 GPS 명령을 거절했습니다. 시연은 계속되지만 장소 규칙(출퇴근, 업무)이 맞지 않을 수 있습니다(경고는 한 번만) |
+| `앱이 위치(...)를 확인하지 못했습니다` 경고 | 릴리스 APK는 장소 이름을 로그에 남기지 않으므로 디버그 APK를 쓰세요. 디버그 APK인데도 나오면 내비게이션 앱이 떠 있는지 확인 |
+| `차량 SDK에 연결되지 않았습니다` (1) | 출력에 `AutoBriefVehicle` 로그가 붙습니다. 에뮬레이터를 다시 켜 보세요 |
 | `스크린샷을 건너뜁니다` 경고 | 화면 저장이 안 됩니다. 시연은 계속됩니다. `adb exec-out screencap -p`가 동작하는지 확인 |
 | 시연 중 멈춤 | Ctrl+C로 끄고 다시 실행하세요. 시작할 때 먼저 주차(P)로 맞춥니다 |
 
@@ -160,7 +177,8 @@ python3 demo/setup_emulator.py --demo-sample --no-browser
 
 `.github/workflows/emulator-e2e.yml`은 `main`에 `app/**`, `demo/**` 또는 워크플로 파일이 바뀌어 올라갈 때와, Actions 탭의 `Run workflow`로 돕니다.
 리눅스 서버에서 KVM으로 에뮬레이터를 화면 없이 켜고 디버그 APK를 설치한 뒤 `director.py --scenario all --fast --verify`까지 확인합니다.
-결과물(`e2e-out`): `e2e.mp4`(화면 녹화), `logcat.txt`, `fleet_state.json`, `emulator.log`, `fleet-console.log`, 장면별 스크린샷. 14일 보관됩니다.
+결과물(`e2e-out`): `e2e.mp4`(화면 녹화, 180초씩 이어 찍은 조각을 합친 것), `logcat-all.txt`·`logcat-autobrief.txt`(부팅 전부터 끝까지 이어 받은 로그),
+`logcat.txt`(끝에 남은 로그), `preflight.txt`, `device-state-end.txt`, `fleet_state.json`, `emulator.log`, `fleet-console.log`, 장면별 스크린샷. 14일 보관됩니다.
 이미지(약 4 GB)는 캐시에 보관되어 두 번째부터 다시 받지 않습니다.
 참고: 워크플로 파일을 올리려면 GitHub 토큰에 `workflow` 권한(scope)이 있어야 합니다.
 
