@@ -36,13 +36,14 @@ class MemoryStore(var active: Space = Space.LIVE) : AutoBriefCore.Store {
 class Harness(
     settings: AppSettings = AppSettings(),
     startAt: Long = at(LocalDate.of(2026, 10, 23), 8, 0),
+    detailLogs: Boolean = false,
 ) {
     var now = startAt
     val store = MemoryStore().also { it.saveSettings(Space.LIVE, settings) }
     val logs = mutableListOf<String>()
     val files = linkedMapOf<String, ByteArray>()
     var locationRequests = 0
-    val core = AutoBriefCore(store, { space, name, bytes -> files["${space.dir}/$name"] = bytes; name }, { now }, { logs += it })
+    val core = AutoBriefCore(store, { space, name, bytes -> files["${space.dir}/$name"] = bytes; name }, { now }, { logs += it }, detailLogs)
         .also { it.naviControl = AutoBriefCore.NaviControl { locationRequests++ } }
 
     fun odo(km: Double) = core.onVehicle(VehicleEvent.Odometer(km))

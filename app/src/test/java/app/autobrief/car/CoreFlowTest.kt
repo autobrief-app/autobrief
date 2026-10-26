@@ -40,8 +40,8 @@ class CoreFlowTest {
         assertEquals(row.id, h.core.lastClosedId.value)
     }
 
-    @Test fun everyPositionIsLoggedAsThePlaceLabelOnly() {
-        val h = Harness(base.copy(places = listOf(SampleHistory.CLIENT)))
+    @Test fun debugBuildsLogEveryPositionAsThePlaceLabelOnly() {
+        val h = Harness(base.copy(places = listOf(SampleHistory.CLIENT)), detailLogs = true)
         h.bookmarks()
         h.at(SampleHistory.HOME.point)
         h.at(GeoPoint(37.4127, 127.0947)) // between places: no label
@@ -51,6 +51,28 @@ class CoreFlowTest {
             h.logs.filter { it.startsWith("POSITION") },
         )
         assertFalse("no coordinates in the log", h.logs.any { "37." in it || "127." in it })
+    }
+
+    @Test fun releaseLogsCarryNoPlaceNames() {
+        val h = Harness(base.copy(places = listOf(SampleHistory.CLIENT)))
+        h.bookmarks()
+        h.drive(45_200.0, 18.0, SampleHistory.HOME.point, SampleHistory.OFFICE.point) // 집→회사
+        h.drive(45_218.0, 11.0, SampleHistory.OFFICE.point, SampleHistory.CLIENT.point) // 거래처 도착
+        // arrival position after P: the rule runs later and logs TRIP_CLASSIFIED
+        h.at(SampleHistory.CLIENT.point)
+        h.gear(Gear.PARK); h.advance(60_000); h.gear(Gear.DRIVE); h.advance(20 * 60_000); h.odo(45_240.0)
+        h.gear(Gear.PARK)
+        h.advance(2_000)
+        h.at(SampleHistory.OFFICE.point) // 가상상사→회사
+        val purposes = h.core.trips.value.map { it.purpose }
+        assertEquals(listOf(TripPurpose.COMMUTE, TripPurpose.BUSINESS, TripPurpose.BUSINESS), purposes)
+        val names = listOf("집", "회사", "가상상사", "우리집")
+        val leaks = h.logs.filter { line -> names.any { it in line } }
+        assertTrue("place names in release logs: $leaks", leaks.isEmpty())
+        assertTrue(h.logs.none { it.startsWith("POSITION") })
+        // the verdict fields stay: the end-to-end check reads purpose= on TRIP_CLOSED
+        assertTrue(h.logs.toString(), h.logs.any { it.startsWith("TRIP_CLOSED") && "purpose=COMMUTE by=${ClassifiedBy.AUTO} reason=hidden" in it })
+        assertTrue(h.logs.toString(), h.logs.any { it.startsWith("TRIP_CLASSIFIED") && "purpose=BUSINESS by=${ClassifiedBy.AUTO} reason=hidden" in it })
     }
 
     @Test fun arrivalPositionThatComesAfterParkingStillClassifies() {

@@ -54,6 +54,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true // BuildConfig.DEBUG: place labels are logged by debug builds only
     }
 
     composeOptions {

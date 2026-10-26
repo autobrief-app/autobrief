@@ -40,6 +40,12 @@ class AutoBriefCore(
     private val files: FileSink = FileSink { _, name, _ -> name },
     private val clock: () -> Long = System::currentTimeMillis,
     private val log: (String) -> Unit = {},
+    /**
+     * Place labels in the log (`POSITION place=`, the place part of `reason=`). Only debug builds turn it
+     * on: a release build matches positions and keeps nothing of them, not even the owner's own place
+     * names in logcat.
+     */
+    private val detailLogs: Boolean = false,
 ) {
     enum class Space(val dir: String) { LIVE("live"), DEMO("demo") }
 
@@ -202,9 +208,9 @@ class AutoBriefCore(
             is NaviEvent.Location -> {
                 val now = clock()
                 _navi.update { it.copy(ready = true, location = e.point, locationEpochMs = now) }
-                // which registered place the car is at now, by label only (never the coordinates): the
-                // demo director waits for it before it departs or parks, so the place rules see the move
-                log("POSITION place=${AutoClassifier.nearest(e.point, allPlaces())?.label ?: "-"}")
+                // debug builds: which registered place the car is at now, by label (never the coordinates);
+                // the demo director waits for it before it departs or parks, so the place rules see the move
+                if (detailLogs) log("POSITION place=${AutoClassifier.nearest(e.point, allPlaces())?.label ?: "-"}")
                 pendingAuto?.let { p -> if (now > p.askedAt) resolvePendingAuto(e.point) }
             }
             is NaviEvent.Bookmarks -> _navi.update { it.copy(ready = true, bookmarks = e.places) }
@@ -289,7 +295,7 @@ class AutoBriefCore(
             val (_, updated) = logbook.classify(placed.id, purpose, defaultUser(), result.memo, ClassifiedBy.AUTO, result.reason) ?: return
             appendLedger(LedgerKind.CLASSIFY, updated, Ledger.classifyBody(updated))
             if (writeTrip) logClosed(updated)
-            else log("TRIP_CLASSIFIED id=${updated.id} purpose=${updated.purpose.name} by=${ClassifiedBy.AUTO} reason=${result.reason}")
+            else log("TRIP_CLASSIFIED id=${updated.id} purpose=${updated.purpose.name} by=${ClassifiedBy.AUTO} reason=${logReason(result.reason)}")
         } else if (writeTrip) {
             logClosed(placed)
         }
@@ -300,8 +306,15 @@ class AutoBriefCore(
     private fun logClosed(r: TripRecord) {
         log(
             "TRIP_CLOSED id=${r.id} start=${r.startOdometerKm} end=${r.endOdometerKm} km=${TripLogbook.round1(r.distanceKm)} " +
-                "purpose=${r.purpose.name} by=${r.classifiedBy ?: "-"} reason=${r.autoReason ?: "-"}",
+                "purpose=${r.purpose.name} by=${r.classifiedBy ?: "-"} reason=${logReason(r.autoReason)}",
         )
+    }
+
+    /** The automatic rule's reason names places ("집→회사"): only debug builds log it, release logs `hidden`. */
+    private fun logReason(reason: String?): String = when {
+        reason == null -> "-"
+        detailLogs -> reason
+        else -> "hidden"
     }
 
     // ---------------------------------------------------------------- places

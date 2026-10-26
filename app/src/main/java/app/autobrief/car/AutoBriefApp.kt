@@ -21,6 +21,7 @@ class AutoBriefApp : Application() {
                 File(dir, name).apply { writeBytes(bytes) }.absolutePath
             },
             log = { line -> Log.i(LOG_TAG, line) },
+            detailLogs = BuildConfig.DEBUG,
         )
     }
 
