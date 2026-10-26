@@ -1,5 +1,7 @@
 package app.autobrief.car
 
+import app.autobrief.car.domain.Ledger
+import app.autobrief.car.domain.LedgerKind
 import app.autobrief.car.domain.LogbookExport
 import app.autobrief.car.domain.TaxPeriods
 import app.autobrief.car.domain.TripLogbook
@@ -11,7 +13,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.w3c.dom.Document
+import org.w3c.dom.Element
+import java.io.ByteArrayInputStream
 import java.time.LocalDate
+import java.util.zip.ZipInputStream
+import javax.xml.parsers.DocumentBuilderFactory
 
 /** The NTS form on small hand-made logbooks: real-car decimals, labels, layout. */
 class LogbookFormTest {
@@ -111,5 +118,131 @@ class LogbookFormTest {
         val sheet = LogbookExport.build(listOf(first, gap, second, third), settings, year2026, "CODE")
         assertEquals("미기록 구간", sheet.rows[1][8])
         assertTrue(sheet.note, "계기판 연속성 끊김 1곳" in sheet.note)
+    }
+
+    // ------------------------------------------------------------------ the workbook as written
+
+    private fun parts(bytes: ByteArray): Map<String, String> = buildMap {
+        ZipInputStream(ByteArrayInputStream(bytes)).use { z ->
+            while (true) {
+                val e = z.nextEntry ?: break
+                put(e.name, z.readBytes().toString(Charsets.UTF_8))
+            }
+        }
+    }
+
+    private fun dom(xml: String): Document = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(ByteArrayInputStream(xml.toByteArray()))
+
+    private fun Document.elements(tag: String): List<Element> = getElementsByTagName(tag).let { l -> (0 until l.length).map { l.item(it) as Element } }
+
+    /** Text (inline string or cached value), formula and style of one cell. */
+    private data class Cell(val text: String?, val formula: String?, val style: Int)
+
+    private fun cells(sheetXml: String): Map<String, Cell> = dom(sheetXml).elements("c").associate { c ->
+        fun child(tag: String) = c.getElementsByTagName(tag).item(0)?.textContent
+        c.getAttribute("r") to Cell(child("t") ?: child("v"), child("f"), c.getAttribute("s").toInt())
+    }
+
+    private fun merges(sheetXml: String): Set<String> = dom(sheetXml).elements("mergeCell").map { it.getAttribute("ref") }.toSet()
+
+    /** The number format a cellXfs entry applies. */
+    private fun formatOf(stylesXml: String, xf: Int): String {
+        val d = dom(stylesXml)
+        val custom = d.elements("numFmt").associate { it.getAttribute("numFmtId").toInt() to it.getAttribute("formatCode") }
+        val id = (d.getElementsByTagName("cellXfs").item(0) as Element).getElementsByTagName("xf").item(xf).let { (it as Element).getAttribute("numFmtId").toInt() }
+        return custom[id] ?: mapOf(0 to "General", 3 to "#,##0")[id] ?: "built-in $id"
+    }
+
+    private val finished = LocalDate.of(2027, 1, 5)
+
+    @Test fun columnHeaderNestsLikeTheFormAndRepeatsOnEveryPage() {
+        val sheet = LogbookExport.build(chainOf1004(), settings, year2026, "CODE", exportDate = finished)
+        val wb = parts(LogbookExport.toXlsx(sheet))
+        val s1 = wb.getValue("xl/worksheets/sheet1.xml")
+        val c = cells(s1)
+        val h = sheet.headerLines.size + 2 // title, header lines, then the column header
+        assertEquals("③사용일자(요일)", c.getValue("A$h").text)
+        assertEquals("④사용자 부서", c.getValue("B$h").text)
+        assertEquals("운 행 내 역", c.getValue("D$h").text)
+        assertEquals("⑤주행 전 계기판의 거리(㎞)", c.getValue("D${h + 1}").text)
+        assertEquals("⑦주행거리(㎞)", c.getValue("F${h + 1}").text)
+        assertEquals("업무용 사용거리(㎞)", c.getValue("G${h + 1}").text)
+        assertEquals("⑩비고", c.getValue("I${h + 1}").text)
+        assertEquals("⑧출·퇴근용(㎞)", c.getValue("G${h + 2}").text)
+        assertEquals("⑨일반 업무용(㎞)", c.getValue("H${h + 2}").text)
+        val m = merges(s1)
+        listOf("A$h:A${h + 2}", "B$h:B${h + 2}", "C$h:C${h + 2}", "D$h:I$h", "D${h + 1}:D${h + 2}", "E${h + 1}:E${h + 2}",
+            "F${h + 1}:F${h + 2}", "G${h + 1}:H${h + 1}", "I${h + 1}:I${h + 2}").forEach { assertTrue("$it in $m", it in m) }
+        assertTrue(wb.getValue("xl/workbook.xml"), "localSheetId=\"0\">'업무용승용차 운행기록부'!\$$h:\$${h + 2}</definedName>" in wb.getValue("xl/workbook.xml"))
+        assertTrue("ySplit=\"${h + 2}\"" in s1)
+        assertEquals("2026-03-02(월)", c.getValue("A${h + 3}").text)
+    }
+
+    @Test fun totalsSitUnderTheirColumnsAndAddUpThePrintedCells() {
+        val sheet = LogbookExport.build(chainOf1004(), settings, year2026, "CODE", exportDate = finished)
+        val wb = parts(LogbookExport.toXlsx(sheet))
+        val s1 = wb.getValue("xl/worksheets/sheet1.xml")
+        val c = cells(s1)
+        val first = sheet.headerLines.size + 5
+        val last = first + sheet.rows.size - 1
+        val label = last + 1
+        val value = last + 2
+        assertEquals("⑪사업연도 총주행 거리(㎞)", c.getValue("D$label").text)
+        assertEquals("⑫사업연도 업무용 사용거리(㎞)", c.getValue("G$label").text)
+        assertEquals("⑬업무사용비율(⑫/⑪)", c.getValue("I$label").text)
+        val m = merges(s1)
+        listOf("A$label:A$value", "B$label:C$value", "D$label:F$label", "G$label:H$label", "D$value:F$value", "G$value:H$value")
+            .forEach { assertTrue("$it in $m", it in m) }
+        assertEquals("SUM(F$first:F$last)", c.getValue("D$value").formula)
+        assertEquals("SUM(G$first:H$last)", c.getValue("G$value").formula)
+        assertEquals("G$value/D$value", c.getValue("I$value").formula)
+        // the cached results equal the formulas over the printed cells
+        val sevens = (first..last).sumOf { c.getValue("F$it").text!!.toDouble() }
+        val business = (first..last).sumOf { r -> listOf("G", "H").sumOf { col -> c.getValue("$col$r").text?.toDouble() ?: 0.0 } }
+        assertEquals(30.1, c.getValue("D$value").text!!.toDouble(), 0.0)
+        assertEquals(sevens, c.getValue("D$value").text!!.toDouble(), 1e-9)
+        assertEquals(20.1, c.getValue("G$value").text!!.toDouble(), 0.0)
+        assertEquals(business, c.getValue("G$value").text!!.toDouble(), 1e-9)
+        assertEquals(20.1 / 30.1, c.getValue("I$value").text!!.toDouble(), 1e-12)
+        // ⑬ is a number shown as 0.0%, not text
+        val styles = wb.getValue("xl/styles.xml")
+        assertEquals("0.0%", formatOf(styles, c.getValue("I$value").style))
+        assertEquals("#,##0.0", formatOf(styles, c.getValue("D$value").style))
+    }
+
+    @Test fun printedPagesCarryTheCarThePeriodAndPageNumbers() {
+        val running = LogbookExport.build(chainOf1004(), settings, year2026, "CODE", exportDate = LocalDate.of(2026, 10, 26))
+        val ledger = Ledger().also { l -> chainOf1004().forEach { l.append(LedgerKind.TRIP, it.id, Ledger.tripBody(it, null), it.endEpochMs) } }
+        val wb = parts(LogbookExport.toXlsx(running, listOf(LogbookExport.ledgerTable(ledger.all, chainOf1004(), year2026, "CODE"))))
+        listOf("xl/worksheets/sheet1.xml", "xl/worksheets/sheet2.xml").forEach { part ->
+            val d = dom(wb.getValue(part))
+            val top = d.elements("oddHeader").single().textContent
+            assertTrue(top, top.startsWith("&L자동차등록번호 00가 0000&R사업연도 2026-01-01 ~ 2026-12-31, 2026-10-26 현재 누계"))
+            assertEquals("&C페이지 &P / &N", d.elements("oddFooter").single().textContent)
+            assertTrue("<pageSetup paperSize=\"9\" orientation=\"landscape\" fitToWidth=\"1\" fitToHeight=\"0\"/>" in wb.getValue(part))
+        }
+        // the merged note gets an explicit height for its wrapped lines
+        val note = dom(wb.getValue("xl/worksheets/sheet1.xml")).elements("row").last()
+        assertTrue(note.textContent.startsWith("작성: 오토브리프"))
+        assertEquals("1", note.getAttribute("customHeight"))
+        assertTrue(note.getAttribute("ht"), note.getAttribute("ht").toDouble() >= 30.0)
+        // an extract names its period on every page; ledger sequence numbers print as whole numbers
+        val march = LogbookExport.build(chainOf1004(), settings, TaxPeriods.month(2026, 3), "CODE", businessYear = false)
+        assertTrue(dom(parts(LogbookExport.toXlsx(march)).getValue("xl/worksheets/sheet1.xml")).elements("oddHeader").single().textContent
+            .endsWith("&R발췌 기간 2026-03-01 ~ 2026-03-31"))
+        assertEquals("#,##0", formatOf(wb.getValue("xl/styles.xml"), cells(wb.getValue("xl/worksheets/sheet2.xml")).getValue("A2").style))
+    }
+
+    @Test fun csvKeepsOneSimpleHeaderRow() {
+        val sheet = LogbookExport.build(chainOf1004(), settings, year2026, "CODE", exportDate = finished)
+        val lines = LogbookExport.toCsv(sheet).toString(Charsets.UTF_8).removePrefix("\uFEFF").split("\r\n")
+        val header = sheet.headerLines.size
+        assertEquals(LogbookExport.COLUMNS.joinToString(","), lines[header])
+        assertEquals(1, lines.count { it.startsWith("③사용일자(요일),") })
+        assertFalse(lines.any { "운 행 내 역" in it })
+        assertEquals("2026-03-02(월),영업팀,김예시,100,110,10,10,,", lines[header + 1])
+        assertEquals("⑪사업연도 총주행 거리(㎞),30.1", lines[header + 4])
+        assertEquals("⑫사업연도 업무용 사용거리(㎞),20.1", lines[header + 5])
+        assertEquals("⑬업무사용비율(⑫/⑪),66.8%", lines[header + 6])
     }
 }

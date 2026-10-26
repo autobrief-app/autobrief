@@ -14,8 +14,10 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
+import java.util.SortedMap
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import kotlin.math.ceil
 
 /**
  * Writes the NTS 「업무용승용차 운행기록부」 — the unnumbered annex form of the notice
@@ -33,6 +35,8 @@ object LogbookExport {
         val rows: List<List<Any?>>,
         val totals: Totals,
         val note: String,
+        /** Printed at the top of every page: the car on the left, the period on the right. */
+        val pageHeader: Pair<String, String>,
     )
 
     /**
@@ -116,7 +120,10 @@ object LogbookExport {
             append(" 계기판 연속성 끊김 ${summary.continuityBreaks}곳(앞 행의 ⑥과 다음 행의 ⑤가 0.05㎞ 넘게 다른 곳).")
             if (!businessYear) append(" 이 파일은 사업연도 중 일부 기간의 발췌본입니다. 세무 신고에 쓰는 ⑬업무사용비율은 이 발췌 기간이 아니라 사업연도 전체의 ⑫/⑪입니다.")
         }
-        return Sheet(if (businessYear) TITLE else "$TITLE (기간 발췌)", header, COLUMNS, rows, totals, note)
+        val pagePeriod = if (businessYear) "사업연도 ${period.start} ~ ${period.endInclusive}${running?.let { ", $it" } ?: ""}"
+        else "발췌 기간 ${period.start} ~ ${period.endInclusive}"
+        val title = if (businessYear) TITLE else "$TITLE (기간 발췌)"
+        return Sheet(title, header, COLUMNS, rows, totals, note, "자동차등록번호 ${settings.plateNumber}" to pagePeriod)
     }
 
     private fun remarks(r: TripRecord): String = buildList {
@@ -223,19 +230,34 @@ object LogbookExport {
         const val TH = 3
         const val TD = 4
         const val TD_NUM = 5
-        const val FOOT = 6
-        const val FOOT_NUM = 7
+        const val SHADE = 6
+        const val TOTAL_NUM = 7
         const val NOTE = 8
-        const val FOOT_VALUE = 9
+        const val TOTAL_PCT = 9
+        const val TOTAL_TEXT = 10
+        const val TD_INT = 11
     }
 
-    /** Workbook with the logbook form (borders, number format, landscape A4 fit-to-width) and optional tables. */
+    /** Column widths of the form sheet, ③ to ⑩. */
+    private val FORM_WIDTHS = listOf(15, 11, 10, 14, 14, 13, 15, 15, 44)
+    private const val LINE_PT = 15.0
+
+    /** A formula cell and the value it evaluates to, cached so viewers that do not recalculate still show it. */
+    private class Formula(val expr: String, val cached: Double)
+
+    /** A worksheet part and the rows its printed pages repeat at the top. */
+    private class Part(val xml: String, val titleRows: IntRange)
+
+    /**
+     * Workbook with the logbook form (the form's three-row column header and totals block, A4 landscape one page wide,
+     * the car and the period on every page) and optional tables.
+     */
     fun toXlsx(sheet: Sheet, tables: List<Table> = emptyList()): ByteArray {
-        val sheets = listOf(sheet.title.take(31) to formXml(sheet)) + tables.map { it.name.take(31) to tableXml(it) }
-        val headerRows = listOf(sheet.headerLines.size + 2) + tables.map { 1 }
-        val printTitles = sheets.indices.joinToString("") { i ->
-            "<definedName name=\"_xlnm.Print_Titles\" localSheetId=\"$i\">'${xml(sheets[i].first)}'!\$${headerRows[i]}:\$${headerRows[i]}</definedName>"
-        }
+        val page = headerFooter(sheet.pageHeader)
+        val sheets = listOf(sheet.title.take(31) to formXml(sheet, page)) + tables.map { it.name.take(31) to tableXml(it, page) }
+        val printTitles = sheets.mapIndexed { i, (name, part) ->
+            "<definedName name=\"_xlnm.Print_Titles\" localSheetId=\"$i\">'${xml(name)}'!\$${part.titleRows.first}:\$${part.titleRows.last}</definedName>"
+        }.joinToString("")
         val files = linkedMapOf<String, String>()
         files["[Content_Types].xml"] = HEAD + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">" +
             "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>" +
@@ -252,7 +274,7 @@ object LogbookExport {
             sheets.indices.joinToString("") { "<Relationship Id=\"rId${it + 1}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet${it + 1}.xml\"/>" } +
             "<Relationship Id=\"rId${sheets.size + 1}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/></Relationships>"
         files["xl/styles.xml"] = STYLES
-        sheets.forEachIndexed { i, (_, body) -> files["xl/worksheets/sheet${i + 1}.xml"] = body }
+        sheets.forEachIndexed { i, (_, part) -> files["xl/worksheets/sheet${i + 1}.xml"] = part.xml }
 
         val out = ByteArrayOutputStream()
         ZipOutputStream(out).use { zip ->
@@ -265,59 +287,142 @@ object LogbookExport {
         return out.toByteArray()
     }
 
-    private class Grid(val lastCol: String) {
-        val rows = StringBuilder()
+    /** Cells placed by row and column; a block is merged, with its value in the top-left cell and its style on every cell. */
+    private class Grid(private val columns: Int) {
+        private val cells = sortedMapOf<Int, SortedMap<Int, Pair<Any?, Int>>>()
+        private val heights = mutableMapOf<Int, Double>()
         val merges = mutableListOf<String>()
-        var r = 1
-        fun row(cells: List<Pair<Any?, Int>>) {
-            rows.append("<row r=\"$r\">")
-            cells.forEachIndexed { i, (v, s) -> rows.append(cell("${colName(i)}$r", v, s)) }
-            rows.append("</row>")
-            r++
+
+        /** The first row below everything placed so far. */
+        var next = 1
+            private set
+
+        fun put(row: Int, col: Int, value: Any?, style: Int) {
+            cells.getOrPut(row) { sortedMapOf() }[col] = value to style
+            next = maxOf(next, row + 1)
         }
-        fun mergedLine(text: String, style: Int) {
-            merges += "A$r:$lastCol$r"
-            row(listOf(text to style))
+
+        fun block(row: Int, col: Int, lastRow: Int, lastCol: Int, value: Any?, style: Int) {
+            for (r in row..lastRow) for (c in col..lastCol) put(r, c, if (r == row && c == col) value else null, style)
+            if (lastRow > row || lastCol > col) merges += "${colName(col)}$row:${colName(lastCol)}$lastRow"
+        }
+
+        /** A new row of single cells. */
+        fun row(values: List<Any?>, style: (Any?) -> Int) {
+            val r = next
+            values.forEachIndexed { c, v -> put(r, c, v, style(v)) }
+        }
+
+        /** A new merged line across the sheet, as tall as its wrapped text needs. */
+        fun line(text: String, style: Int, widths: List<Int>, minPt: Double = 0.0) {
+            val r = next
+            block(r, 0, r, columns - 1, text, style)
+            height(r, maxOf(minPt, heightFor(listOf(text to widths.sum()))))
+        }
+
+        fun height(row: Int, pt: Double) {
+            heights[row] = pt
+        }
+
+        fun xml(): String = buildString {
+            cells.forEach { (r, row) ->
+                append("<row r=\"$r\"")
+                heights[r]?.let { append(" ht=\"$it\" customHeight=\"1\"") }
+                append(">")
+                row.forEach { (c, cell) -> append(cellXml("${colName(c)}$r", cell.first, cell.second)) }
+                append("</row>")
+            }
         }
     }
 
-    private fun formXml(sheet: Sheet): String {
-        val g = Grid(colName(sheet.columns.size - 1))
-        g.mergedLine(sheet.title, Style.TITLE)
-        sheet.headerLines.forEach { g.mergedLine(it, Style.HEADER_LINE) }
-        g.row(sheet.columns.map { it to Style.TH })
-        val headerRow = g.r - 1
-        sheet.rows.forEach { cells -> g.row(cells.map { it to if (it is Number) Style.TD_NUM else Style.TD }) }
-        val t = sheet.totals
-        listOf(t.totalLabel to t.totalKm, t.businessUseLabel to t.businessUseKm, t.ratioLabel to t.ratioText).forEach { (label, value) ->
-            // label spans ③~⑥, value sits under ⑦
-            g.merges += "A${g.r}:E${g.r}"
-            g.row(listOf(label to Style.FOOT, null to Style.FOOT, null to Style.FOOT, null to Style.FOOT, null to Style.FOOT, value to if (value is Number) Style.FOOT_NUM else Style.FOOT_VALUE))
+    private fun bodyStyle(value: Any?): Int = when (value) {
+        is Int, is Long -> Style.TD_INT
+        is Number -> Style.TD_NUM
+        else -> Style.TD
+    }
+
+    private fun formXml(sheet: Sheet, page: String): Part {
+        val g = Grid(COLUMNS.size)
+        g.line(sheet.title, Style.TITLE, FORM_WIDTHS, minPt = 26.0)
+        sheet.headerLines.forEach { g.line(it, Style.HEADER_LINE, FORM_WIDTHS) }
+        // the column header over three rows, as on the form: 운 행 내 역 over ⑤~⑩, 업무용 사용거리 over ⑧⑨
+        val h = g.next
+        listOf(0, 1, 2).forEach { c -> g.block(h, c, h + 2, c, COLUMNS[c], Style.TH) }
+        g.block(h, 3, h, 8, "운 행 내 역", Style.TH)
+        listOf(3, 4, 5, 8).forEach { c -> g.block(h + 1, c, h + 2, c, COLUMNS[c], Style.TH) }
+        g.block(h + 1, 6, h + 1, 7, "업무용 사용거리(㎞)", Style.TH)
+        g.put(h + 2, 6, COLUMNS[6], Style.TH)
+        g.put(h + 2, 7, COLUMNS[7], Style.TH)
+        g.height(h, 20.0)
+        g.height(h + 1, 20.0)
+        g.height(h + 2, 30.0)
+        val first = g.next
+        sheet.rows.forEach { g.row(it, ::bodyStyle) }
+        totals(g, sheet.totals, first, g.next - 1)
+        g.line(sheet.note, Style.NOTE, FORM_WIDTHS)
+        return Part(worksheet(FORM_WIDTHS, g, frozenRows = h + 2, page), h..h + 2)
+    }
+
+    /**
+     * The form's totals block: labels, then values, ⑪ under ⑤~⑦, ⑫ under ⑧⑨, ⑬ under ⑩, with ③ and ④ shaded.
+     * ⑪ and ⑫ are SUMs over the printed ⑦ and ⑧⑨ cells and ⑬ divides them, so the printed figures always reconcile.
+     */
+    private fun totals(g: Grid, t: Totals, first: Int, last: Int) {
+        val label = g.next
+        val value = label + 1
+        g.block(label, 0, value, 0, null, Style.SHADE)
+        g.block(label, 1, value, 2, null, Style.SHADE)
+        g.block(label, 3, label, 5, t.totalLabel, Style.TH)
+        g.block(label, 6, label, 7, t.businessUseLabel, Style.TH)
+        g.put(label, 8, t.ratioLabel, Style.TH)
+        val hasRows = last >= first
+        g.block(value, 3, value, 5, if (hasRows) Formula("SUM(F$first:F$last)", t.totalKm) else t.totalKm, Style.TOTAL_NUM)
+        g.block(value, 6, value, 7, if (hasRows) Formula("SUM(G$first:H$last)", t.businessUseKm) else t.businessUseKm, Style.TOTAL_NUM)
+        if (t.ratio != null) g.put(value, 8, Formula("G$value/D$value", t.ratio), Style.TOTAL_PCT) else g.put(value, 8, "-", Style.TOTAL_TEXT)
+        g.height(label, heightFor(listOf(t.totalLabel to FORM_WIDTHS.subList(3, 6).sum(), t.businessUseLabel to FORM_WIDTHS.subList(6, 8).sum(), t.ratioLabel to FORM_WIDTHS[8])))
+        g.height(value, 20.0)
+    }
+
+    private fun tableXml(t: Table, page: String): Part {
+        val g = Grid(t.columns.size)
+        g.row(t.columns) { Style.TH }
+        t.rows.forEach { g.row(it, ::bodyStyle) }
+        return Part(worksheet(t.widths, g, frozenRows = 1, page), 1..1)
+    }
+
+    /** Rows Excel will not grow to fit (merged cells) get a height from the text's estimated width in column units. */
+    private fun heightFor(cells: List<Pair<String, Int>>): Double =
+        cells.maxOf { (text, width) -> ceil(units(text) / (width * 0.9)).coerceAtLeast(1.0) } * LINE_PT + 4.0
+
+    /** Width in column units (one '0' of the 10 pt font): Hangul, circled numbers and other wide characters count about two. */
+    private fun units(text: String): Double = text.sumOf { ch ->
+        when {
+            ch == ' ' -> 0.6
+            ch.code < 0x1100 -> 1.0
+            else -> 1.9
         }
-        g.mergedLine(sheet.note, Style.NOTE)
-        val widths = listOf(15, 11, 10, 14, 14, 13, 15, 15, 44)
-        return worksheet(widths, g, frozenRows = headerRow, landscape = true)
     }
 
-    private fun tableXml(t: Table): String {
-        val g = Grid(colName(t.columns.size - 1))
-        g.row(t.columns.map { it to Style.TH })
-        t.rows.forEach { cells -> g.row(cells.map { it to if (it is Number) Style.TD_NUM else Style.TD }) }
-        return worksheet(t.widths, g, frozenRows = 1, landscape = true)
+    /** Every printed page: the car on the left and the period on the right at the top, the page number at the bottom. */
+    private fun headerFooter(pageHeader: Pair<String, String>): String {
+        fun literal(s: String) = s.replace("&", "&&") // a single & starts a header/footer code
+        val top = "&L" + literal(pageHeader.first) + "&R" + literal(pageHeader.second)
+        return "<headerFooter><oddHeader>${xml(top)}</oddHeader><oddFooter>${xml("&C페이지 &P / &N")}</oddFooter></headerFooter>"
     }
 
-    private fun worksheet(widths: List<Int>, g: Grid, frozenRows: Int, landscape: Boolean): String {
+    private fun worksheet(widths: List<Int>, g: Grid, frozenRows: Int, page: String): String {
         val cols = widths.mapIndexed { i, w -> "<col min=\"${i + 1}\" max=\"${i + 1}\" width=\"$w\" customWidth=\"1\"/>" }.joinToString("")
         val pane = "<sheetViews><sheetView workbookViewId=\"0\"><pane ySplit=\"$frozenRows\" topLeftCell=\"A${frozenRows + 1}\" activePane=\"bottomLeft\" state=\"frozen\"/></sheetView></sheetViews>"
         val merges = if (g.merges.isEmpty()) "" else "<mergeCells count=\"${g.merges.size}\">${g.merges.joinToString("") { "<mergeCell ref=\"$it\"/>" }}</mergeCells>"
         return HEAD + "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">" +
-            "<sheetPr><pageSetUpPr fitToPage=\"1\"/></sheetPr>$pane<cols>$cols</cols><sheetData>${g.rows}</sheetData>$merges" +
-            "<pageMargins left=\"0.4\" right=\"0.4\" top=\"0.5\" bottom=\"0.5\" header=\"0.3\" footer=\"0.3\"/>" +
-            "<pageSetup paperSize=\"9\" orientation=\"${if (landscape) "landscape" else "portrait"}\" fitToWidth=\"1\" fitToHeight=\"0\"/></worksheet>"
+            "<sheetPr><pageSetUpPr fitToPage=\"1\"/></sheetPr>$pane<cols>$cols</cols><sheetData>${g.xml()}</sheetData>$merges" +
+            "<pageMargins left=\"0.4\" right=\"0.4\" top=\"0.6\" bottom=\"0.6\" header=\"0.3\" footer=\"0.3\"/>" +
+            "<pageSetup paperSize=\"9\" orientation=\"landscape\" fitToWidth=\"1\" fitToHeight=\"0\"/>$page</worksheet>"
     }
 
-    private fun cell(ref: String, value: Any?, style: Int): String = when (value) {
+    private fun cellXml(ref: String, value: Any?, style: Int): String = when (value) {
         null -> "<c r=\"$ref\" s=\"$style\"/>"
+        is Formula -> "<c r=\"$ref\" s=\"$style\"><f>${xml(value.expr)}</f><v>${value.cached}</v></c>"
         is Number -> "<c r=\"$ref\" s=\"$style\"><v>$value</v></c>"
         else -> "<c r=\"$ref\" s=\"$style\" t=\"inlineStr\"><is><t xml:space=\"preserve\">${xml(value.toString())}</t></is></c>"
     }
@@ -337,25 +442,28 @@ object LogbookExport {
 
     private const val HEAD = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
 
-    /** cellXfs order matches [Style]: 0 default, 1 title, 2 header line, 3 th, 4 td, 5 td number, 6 footer, 7 footer number, 8 note, 9 footer value. */
+    /** cellXfs order matches [Style]: 0 default, then title … integer cell. */
     private val STYLES = HEAD + "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">" +
-        "<numFmts count=\"1\"><numFmt numFmtId=\"164\" formatCode=\"#,##0.0\"/></numFmts>" +
+        "<numFmts count=\"2\"><numFmt numFmtId=\"164\" formatCode=\"#,##0.0\"/><numFmt numFmtId=\"165\" formatCode=\"0.0%\"/></numFmts>" +
         "<fonts count=\"3\"><font><sz val=\"10\"/><name val=\"맑은 고딕\"/></font><font><b/><sz val=\"10\"/><name val=\"맑은 고딕\"/></font><font><b/><sz val=\"14\"/><name val=\"맑은 고딕\"/></font></fonts>" +
-        "<fills count=\"3\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill>" +
-        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFEEF1F6\"/><bgColor indexed=\"64\"/></patternFill></fill></fills>" +
+        "<fills count=\"4\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill>" +
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFEEF1F6\"/><bgColor indexed=\"64\"/></patternFill></fill>" +
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFBFBFBF\"/><bgColor indexed=\"64\"/></patternFill></fill></fills>" +
         "<borders count=\"2\"><border><left/><right/><top/><bottom/><diagonal/></border>" +
         "<border><left style=\"thin\"><color rgb=\"FF8A94A6\"/></left><right style=\"thin\"><color rgb=\"FF8A94A6\"/></right><top style=\"thin\"><color rgb=\"FF8A94A6\"/></top><bottom style=\"thin\"><color rgb=\"FF8A94A6\"/></bottom><diagonal/></border></borders>" +
         "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>" +
-        "<cellXfs count=\"10\">" +
+        "<cellXfs count=\"12\">" +
         "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>" +
         "<xf numFmtId=\"0\" fontId=\"2\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>" +
-        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\"><alignment vertical=\"center\"/></xf>" +
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\"><alignment vertical=\"center\" wrapText=\"1\"/></xf>" +
         "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\" wrapText=\"1\"/></xf>" +
         "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyBorder=\"1\" applyAlignment=\"1\"><alignment vertical=\"center\" wrapText=\"1\"/></xf>" +
         "<xf numFmtId=\"164\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment vertical=\"center\"/></xf>" +
-        "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment vertical=\"center\"/></xf>" +
-        "<xf numFmtId=\"164\" fontId=\"1\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\"/>" +
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"3\" borderId=\"1\" xfId=\"0\" applyFill=\"1\" applyBorder=\"1\"/>" +
+        "<xf numFmtId=\"164\" fontId=\"1\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>" +
         "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\"><alignment vertical=\"top\" wrapText=\"1\"/></xf>" +
-        "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"right\" vertical=\"center\"/></xf>" +
+        "<xf numFmtId=\"165\" fontId=\"1\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>" +
+        "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>" +
+        "<xf numFmtId=\"3\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment vertical=\"center\"/></xf>" +
         "</cellXfs><cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles></styleSheet>"
 }
