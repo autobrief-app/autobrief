@@ -161,7 +161,7 @@ object LogbookExport {
     }
 
     fun toCsv(sheet: Sheet): ByteArray {
-        val sb = StringBuilder("﻿") // BOM so Excel opens the Korean text as UTF-8
+        val sb = StringBuilder("\uFEFF") // BOM so Excel opens the Korean text as UTF-8
         sheet.headerLines.forEach { sb.append(csv(listOf(it))).append("\r\n") }
         sb.append(csv(sheet.columns)).append("\r\n")
         sheet.rows.forEach { sb.append(csv(it)).append("\r\n") }
