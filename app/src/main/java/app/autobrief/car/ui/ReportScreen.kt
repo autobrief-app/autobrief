@@ -168,7 +168,7 @@ private fun PreviewPanel(rows: List<TripRecord>, count: Int, m: PreviewMetrics) 
 }
 
 private fun previewCells(r: TripRecord): List<String> {
-    val km = TripLogbook.round1(r.distanceKm)
+    val km = TripLogbook.printedKm(r)
     return listOf(
         LogbookExport.dateWithWeekday(TripLogbook.localDate(r.startEpochMs)),
         r.user?.let { "${it.department} ${it.name}" } ?: "",

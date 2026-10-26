@@ -91,7 +91,7 @@ private fun TripRow(t: TripRecord, onClick: () -> Unit) {
             Txt("${km1(t.startOdometerKm)} → ${km1(t.endOdometerKm)}", Type.body)
             Muted(listOfNotNull(t.startPlace, t.endPlace).joinToString(" → ").ifBlank { "장소 미등록" })
         }
-        Txt("${km1(TripLogbook.round1(t.distanceKm))} km", Type.heading, modifier = Modifier.width(170.dp))
+        Txt("${km1(TripLogbook.printedKm(t))} km", Type.heading, modifier = Modifier.width(170.dp))
         // a fixed box, so the user column starts at the same x whatever the chip says
         Box(Modifier.width(PURPOSE_COLUMN)) { PurposeChip(t.purpose) }
         Column(Modifier.weight(1f)) {
@@ -137,7 +137,7 @@ private fun TripDialog(core: AutoBriefCore, t: TripRecord, onClose: () -> Unit) 
             }
             KeyValue("⑤ 주행 전 계기판", "${km1(t.startOdometerKm)} km")
             KeyValue("⑥ 주행 후 계기판", "${km1(t.endOdometerKm)} km")
-            KeyValue("⑦ 주행거리", "${km1(TripLogbook.round1(t.distanceKm))} km", strong = true)
+            KeyValue("⑦ 주행거리", "${km1(TripLogbook.printedKm(t))} km", strong = true)
             KeyValue("출발 → 도착 장소", listOfNotNull(t.startPlace, t.endPlace).joinToString(" → ").ifBlank { "등록된 장소 아님" })
             t.routeTollEstimateKrw?.takeIf { it > 0 }?.let { KeyValue("내비 예상 통행료", "%,d원".format(it)) }
             if (t.purpose == TripPurpose.UNLOGGED_GAP) {

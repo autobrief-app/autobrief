@@ -105,7 +105,7 @@ private fun TodayCard(todays: List<TripRecord>) {
         todays.take(5).forEach { t ->
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Txt("${hm(t.startEpochMs)}~${hm(t.endEpochMs)}", Type.body, p.muted)
-                Txt("${km1(TripLogbook.round1(t.distanceKm))} km", Type.bodyBold)
+                Txt("${km1(TripLogbook.printedKm(t))} km", Type.bodyBold)
                 PurposeChip(t.purpose)
                 Muted(
                     listOfNotNull(
@@ -143,7 +143,7 @@ private fun AskPurposeCard(core: AutoBriefCore, trip: TripRecord) {
     var userIndex by remember(trip.id) { mutableStateOf(settings.defaultUserIndex.coerceIn(0, (settings.users.size - 1).coerceAtLeast(0))) }
     Panel(border = p.pending) {
         StatusPill("방금 끝난 운행", p.pending, filled = true)
-        Txt("${km1(TripLogbook.round1(trip.distanceKm))} km 운행했습니다", Type.hero)
+        Txt("${km1(TripLogbook.printedKm(trip))} km 운행했습니다", Type.hero)
         Txt(
             "${hm(trip.startEpochMs)}~${hm(trip.endEpochMs)} · 계기판 ${km1(trip.startOdometerKm)} → ${km1(trip.endOdometerKm)} km" +
                 (trip.endPlace?.let { " · 도착 $it" } ?: ""),
@@ -174,7 +174,7 @@ private fun AutoConfirmCard(core: AutoBriefCore, trip: TripRecord) {
         Txt(
             listOfNotNull(
                 trip.autoReason,
-                "${km1(TripLogbook.round1(trip.distanceKm))} km",
+                "${km1(TripLogbook.printedKm(trip))} km",
                 "${hm(trip.startEpochMs)}~${hm(trip.endEpochMs)}",
                 trip.user?.let { "${it.name}(${it.department})" },
             ).joinToString(" · "),
@@ -213,7 +213,7 @@ private fun ReadyCard(core: AutoBriefCore, last: TripRecord?, vehicleStalled: Bo
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 Muted("마지막 운행", Type.body)
                 PurposeChip(last.purpose)
-                Txt("${mdhm(last.startEpochMs)} · ${km1(TripLogbook.round1(last.distanceKm))} km", Type.body)
+                Txt("${mdhm(last.startEpochMs)} · ${km1(TripLogbook.printedKm(last))} km", Type.body)
             }
         }
     }
@@ -233,7 +233,7 @@ private fun PendingCard(core: AutoBriefCore, pending: List<TripRecord>, onOpen: 
         pending.take(3).forEach { t ->
             Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Txt("${mdhm(t.startEpochMs)} · ${km1(TripLogbook.round1(t.distanceKm))} km", Type.bodyBold)
+                    Txt("${mdhm(t.startEpochMs)} · ${km1(TripLogbook.printedKm(t))} km", Type.bodyBold)
                     Muted("계기판 ${km1(t.startOdometerKm)} → ${km1(t.endOdometerKm)}")
                 }
                 PurposeButtons(outlined = true, height = 76.dp) { purpose -> core.classifyTrip(t.id, purpose, user, t.memo, ClassifiedBy.SCREEN) }
