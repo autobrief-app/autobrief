@@ -9,9 +9,11 @@ import hashlib
 import json
 import os
 import re
+import struct
 import sys
 import threading
 from collections import deque
+from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote, unquote
@@ -31,6 +33,7 @@ GENESIS, WEEKDAYS = "0" * 64, "월화수목금토일"
 KST = timezone(timedelta(hours=9))
 OK, GAP, TAMPER = "정상", "누락 있음", "변조 의심"
 RANK = {OK: 0, GAP: 1, TAMPER: 2}
+LEVEL = {None: "info", GAP: "warn", TAMPER: "bad"}      # alert level the page colours by
 KINDS = ("TRIP", "GAP", "CLASSIFY", "AMEND")
 PURPOSES = ("COMMUTE", "BUSINESS", "PERSONAL")
 LABELS = {"COMMUTE": "출퇴근", "BUSINESS": "일반 업무", "PERSONAL": "비업무",
@@ -42,6 +45,54 @@ ARCHIVE_PUBLIC = ("fileName", "periodStart", "periodEnd", "verificationCode", "r
 UNSAFE = re.compile(r"[^0-9A-Za-z가-힣ㄱ-ㅣ_.\-]")
 HERE = os.path.dirname(os.path.abspath(__file__))
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+# the app's bundled Pretendard (SIL OFL 1.1), so the console reads like the car screen; only these names resolve
+FONT_DIR = os.path.normpath(os.path.join(HERE, "..", "..", "app", "src", "main", "res", "font"))
+FONTS = {"Pretendard-Regular.ttf": "pretendard_regular.ttf", "Pretendard-Bold.ttf": "pretendard_bold.ttf"}
+
+def _sfnt_checksum(buf, off, length):
+    padded = bytes(buf[off:off + length]) + b"\0" * (-length % 4)
+    return sum(struct.unpack(">%dL" % (len(padded) // 4), padded)) & 0xFFFFFFFF
+
+def web_safe_ttf(data):
+    """The TTF with bit 6 (OVERLAP_SIMPLE) cleared in every simple glyph's flags.
+
+    Browsers sanitize web fonts with OTS, which rejects that bit ("glyf: Bad glyph flag, bit 6 must be set to zero"),
+    so the app's Pretendard as bundled never loads in a page. Clearing it moves no outline point; the glyf checksum
+    and head.checkSumAdjustment are recomputed."""
+    buf = bytearray(data)
+    tables = {}
+    for i in range(struct.unpack_from(">H", buf, 4)[0]):
+        rec = 12 + 16 * i
+        tables[bytes(buf[rec:rec + 4])] = (rec,) + struct.unpack_from(">LL", buf, rec + 8)    # record, offset, length
+    head, glyf, loca = tables[b"head"][1], tables[b"glyf"][1], tables[b"loca"][1]
+    count = struct.unpack_from(">H", buf, tables[b"maxp"][1] + 4)[0]
+    if struct.unpack_from(">h", buf, head + 50)[0]:                                           # indexToLocFormat 1: long
+        offsets = struct.unpack_from(">%dL" % (count + 1), buf, loca)
+    else:
+        offsets = [o * 2 for o in struct.unpack_from(">%dH" % (count + 1), buf, loca)]
+    for g in range(count):
+        start = glyf + offsets[g]
+        contours = struct.unpack_from(">h", buf, start)[0] if offsets[g + 1] > offsets[g] else 0
+        if contours <= 0:                                                                     # empty or composite
+            continue
+        points = struct.unpack_from(">H", buf, start + 10 + 2 * (contours - 1))[0] + 1
+        p = start + 10 + 2 * contours
+        p += 2 + struct.unpack_from(">H", buf, p)[0]                                          # skip the instructions
+        n = 0
+        while n < points:
+            flag = buf[p]
+            buf[p] = flag & 0xBF
+            n, p = (n + 1 + buf[p + 1], p + 2) if flag & 0x08 else (n + 1, p + 1)              # 0x08 = repeat count follows
+    rec, off, length = tables[b"glyf"]
+    struct.pack_into(">L", buf, rec + 4, _sfnt_checksum(buf, off, length))
+    struct.pack_into(">L", buf, head + 8, 0)
+    struct.pack_into(">L", buf, head + 8, (0xB1B0AFBA - _sfnt_checksum(buf, 0, len(buf))) & 0xFFFFFFFF)
+    return bytes(buf)
+
+@lru_cache(maxsize=len(FONTS))      # declared cap: the two fixed font files, about 5 MB together
+def web_font(name):
+    with open(os.path.join(FONT_DIR, FONTS[name]), "rb") as f:
+        return web_safe_ttf(f.read())
 
 def entry_hash(prev_hash, seq, epoch_ms, kind, trip_id, body):
     raw = "%s|%d|%d|%s|%s|%s" % (prev_hash, seq, epoch_ms, kind, trip_id, body)
@@ -103,8 +154,9 @@ class Car:
     def update_meta(self, car):
         self.meta.update({k: v for k, v in car.items() if k in self.meta and isinstance(v, str) and v})
 
-    def alert(self, msg, status=None):
-        self.alerts.insert(0, msg)
+    def alert(self, msg, status=None, seq=None, trip=None):
+        """Newest first. [trip] names the row a rejected change targeted, so the page can mark that row."""
+        self.alerts.insert(0, {"text": msg, "level": LEVEL[status], "seq": seq, "tripId": trip})
         del self.alerts[MAX_ALERTS:]
         if status and RANK[status] > RANK[self.status]:
             self.status = status
@@ -114,6 +166,10 @@ class Car:
             self.idem_s.discard(self.idem_q.popleft())
         self.idem_q.append(idem)
         self.idem_s.add(idem)
+
+    def trip_of(self, e):
+        """The trip row an entry belongs to: its tripId, or for CLASSIFY/AMEND the body's id (as project() resolves it)."""
+        return e["tripId"] if e["tripId"] in self.trip_ids else txt((e.get("bodyObj") or {}).get("id")) or e["tripId"]
 
     def is_dup(self, e):
         old = self.by_seq.get(e["seq"])
@@ -131,20 +187,20 @@ class Car:
             e["status"] = "hash_mismatch"
         elif e["bodyObj"] is None:
             e["status"] = "bad_body"
-        if seq in self.by_seq:                   # same seq, different hash (same hash is is_dup)
-            self.alert("같은 번호의 다른 기록이 도착했습니다 (seq %d)" % seq, TAMPER)
+        if seq in self.by_seq:                   # same seq, different hash (same hash is is_dup): rejected, the first copy stays
+            self.alert("이미 받은 순번에 다른 기록이 도착했습니다 (순번 %d)" % seq, TAMPER, seq, self.trip_of(self.by_seq[seq]))
             return
         if seq <= self.last_seq:                 # late arrival into an earlier gap
-            self.alert("늦게 도착한 기록 (seq %d)" % seq)
+            self.alert("늦게 도착한 기록 (순번 %d)" % seq, seq=seq)
         else:
             expect = self.last_seq + 1
             if seq > expect or (self.last_seq == 0 and e["prevHash"] != GENESIS):   # first record must be genesis
-                self.alert("중간 기록 누락 (seq %d~%d)" % (expect, max(seq - 1, expect)), GAP)
+                self.alert("중간 기록 누락 (순번 %d~%d)" % (expect, max(seq - 1, expect)), GAP, seq)
             elif e["prevHash"] != self.last_hash and e["status"] == "ok":
                 e["status"] = "chain_break"
             self.last_seq, self.last_hash = seq, e["hash"]
         if e["status"] in BAD_ENTRY:
-            self.alert("기록 변조 의심 (seq %d): %s" % (seq, BAD_ENTRY[e["status"]]), TAMPER)
+            self.alert("기록 변조 의심 (순번 %d): %s" % (seq, BAD_ENTRY[e["status"]]), TAMPER, seq)
         if e["kind"] in ("TRIP", "GAP"):
             self.trip_ids.add(e["tripId"])
         elif not {e["tripId"], txt((e["bodyObj"] or {}).get("id"))} & self.trip_ids:
@@ -396,6 +452,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, store.state())
         if path == "/healthz":
             return self._send(200, b"ok", "text/plain; charset=utf-8")
+        if path.startswith("/fonts/"):                  # fixed names only: no traversal
+            name = path[len("/fonts/"):]
+            if name not in FONTS:
+                return self._send(404, {"ok": False, "error": "없는 파일입니다"})
+            return self._send(200, web_font(name), "font/ttf")
         if path.startswith("/archives/"):               # only registered names resolve: no traversal
             name = unquote(path[len("/archives/"):])
             fallback = re.sub(r'[^\x21-\x7e]|["\\]', "_", name)

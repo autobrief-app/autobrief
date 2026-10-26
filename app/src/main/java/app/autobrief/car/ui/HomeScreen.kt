@@ -17,16 +17,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import app.autobrief.car.domain.AutoBriefCore
+import app.autobrief.car.domain.TaxBenefit
 import app.autobrief.car.domain.TaxPeriods
 import app.autobrief.car.domain.TripLogbook
 import app.autobrief.car.model.CarUser
 import app.autobrief.car.model.ClassifiedBy
+import app.autobrief.car.model.Gear
 import app.autobrief.car.model.TripPurpose
 import app.autobrief.car.model.TripRecord
 import java.time.YearMonth
 
+/** [vehicleStalled]: no gear or odometer from the car for [VEHICLE_WAIT_MS] (see [rememberVehicleStalled]). */
 @Composable
-fun HomeScreen(core: AutoBriefCore, wide: Boolean, onOpen: (Tab) -> Unit) {
+fun HomeScreen(core: AutoBriefCore, wide: Boolean, vehicleStalled: Boolean, onOpen: (Tab) -> Unit) {
     val trips by core.trips.collectAsState()
     val open by core.openTrip.collectAsState()
     val lastId by core.lastClosedId.collectAsState()
@@ -46,7 +49,7 @@ fun HomeScreen(core: AutoBriefCore, wide: Boolean, onOpen: (Tab) -> Unit) {
             open != null -> InProgressCard(core)
             last != null && last.purpose == TripPurpose.UNCLASSIFIED -> AskPurposeCard(core, last)
             last != null -> AutoConfirmCard(core, last)
-            else -> ReadyCard(core, trips.lastOrNull { it.purpose != TripPurpose.UNLOGGED_GAP })
+            else -> ReadyCard(core, trips.lastOrNull { it.purpose != TripPurpose.UNLOGGED_GAP }, vehicleStalled)
         }
         if (pending.isNotEmpty()) PendingCard(core, pending, onOpen)
         if (todays.isNotEmpty()) TodayCard(todays)
@@ -150,36 +153,23 @@ private fun AskPurposeCard(core: AutoBriefCore, trip: TripRecord) {
         Txt("이번 운행의 목적을 골라 주세요", Type.heading)
         PurposeButtons { purpose -> core.classifyTrip(trip.id, purpose, settings.users.getOrNull(userIndex), memo, ClassifiedBy.SCREEN) }
         if (settings.users.isNotEmpty()) {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Muted("④ 사용자", Type.body)
+            ChipRow(lead = "④ 사용자") {
                 settings.users.forEachIndexed { i, u -> Choice("${u.name}(${u.department})", i == userIndex) { userIndex = i } }
             }
         }
         Field("비고 (거래처, 용무)", memo, Modifier.fillMaxWidth()) { memo = it }
-        Muted("음성으로도 됩니다: “오토브리프, 방금 운행 업무로 기록해”")
+        Muted("음성으로도 됩니다: “오토브리프, 방금 운행 업무로 기록해 줘”")
     }
 }
-
-@Composable
-fun PurposeButtons(onPick: (TripPurpose) -> Unit) {
-    val p = LocalPalette.current
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        BigButton("출퇴근", Modifier.weight(1f), color = p.commute, onColor = p.bg, sub = "⑧ 출·퇴근용") { onPick(TripPurpose.COMMUTE) }
-        BigButton("업무", Modifier.weight(1f), color = p.business, onColor = p.bg, sub = "⑨ 일반 업무용") { onPick(TripPurpose.BUSINESS) }
-        BigButton("개인", Modifier.weight(1f), color = p.personal, onColor = p.bg, sub = "비업무") { onPick(TripPurpose.PERSONAL) }
-    }
-}
-
-private val REASONS = listOf("경유지가 있었어요", "개인 용무를 겸했어요", "사용자가 달라요", "기타 정정")
 
 @Composable
 private fun AutoConfirmCard(core: AutoBriefCore, trip: TripRecord) {
     val p = LocalPalette.current
     var changing by remember(trip.id) { mutableStateOf(false) }
-    var reason by remember(trip.id) { mutableStateOf(REASONS.first()) }
+    var reason by remember(trip.id) { mutableStateOf<String?>(null) }
     val auto = trip.classifiedBy == ClassifiedBy.AUTO
     Panel(border = p.purpose(trip.purpose)) {
-        StatusPill(if (auto) "자동 기록" else "기록 완료", p.purpose(trip.purpose), filled = true)
+        StatusPill(if (auto) "자동 분류" else "기록 완료", p.purpose(trip.purpose), filled = true)
         Txt("${withRo(trip.purpose.label)} 기록했습니다", Type.title)
         Txt(
             listOfNotNull(
@@ -197,20 +187,26 @@ private fun AutoConfirmCard(core: AutoBriefCore, trip: TripRecord) {
             }
         } else {
             Txt("고치는 이유", Type.bodyBold)
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { REASONS.forEach { r -> Choice(r, r == reason) { reason = r } } }
-            PurposeButtons { purpose -> core.classifyTrip(trip.id, purpose, trip.user, trip.memo, ClassifiedBy.SCREEN, reason) }
-            Muted("고친 내역은 지우지 않고 기록 원장에 '목적 수정'으로 남습니다.")
+            ReasonChips(reason) { reason = it }
+            PurposeButtons(enabled = reason != null) { purpose ->
+                reason?.let { why -> core.classifyTrip(trip.id, purpose, trip.user, trip.memo, ClassifiedBy.SCREEN, why) }
+            }
+            Muted(if (reason == null) "이유를 먼저 고르면 목적 버튼이 켜집니다." else "고친 내역은 지우지 않고 기록 원장에 '목적 수정'으로 남습니다.")
         }
     }
 }
 
 @Composable
-private fun ReadyCard(core: AutoBriefCore, last: TripRecord?) {
+private fun ReadyCard(core: AutoBriefCore, last: TripRecord?, vehicleStalled: Boolean) {
     val p = LocalPalette.current
     val v by core.vehicle.collectAsState()
+    val ready = v.sdkConnected && v.gear != Gear.UNKNOWN && v.odometerKm != null
     Panel {
-        StatusPill(if (v.sdkConnected) "기록 준비 완료" else "차량 연결을 기다리는 중", if (v.sdkConnected) p.ok else p.pending, filled = true)
-        Txt("시동을 걸고 기어를 D로 바꾸면 기록이 시작됩니다", Type.title)
+        StatusPill(if (ready) "기록 준비 완료" else "차량 연결을 기다리는 중", if (ready) p.ok else p.pending, filled = true)
+        Txt(
+            if (vehicleStalled) "차량 정보를 기다리고 있습니다. 1분이 넘으면 앱을 다시 열어 주세요" else "시동을 걸고 기어를 D로 바꾸면 기록이 시작됩니다",
+            Type.title,
+        )
         Muted("휴대폰도 GPS 기록도 없이 계기판 누적거리만 씁니다. 위치는 집, 회사, 거래처를 알아보는 데만 쓰고 저장하지 않습니다.", Type.body)
         if (last != null) {
             Gap(4.dp)
@@ -225,7 +221,6 @@ private fun ReadyCard(core: AutoBriefCore, last: TripRecord?) {
 
 @Composable
 private fun PendingCard(core: AutoBriefCore, pending: List<TripRecord>, onOpen: (Tab) -> Unit) {
-    val p = LocalPalette.current
     val settings by core.settings.collectAsState()
     Panel {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -234,18 +229,14 @@ private fun PendingCard(core: AutoBriefCore, pending: List<TripRecord>, onOpen: 
             Choice("전체 보기", false) { onOpen(Tab.TRIPS) }
         }
         Muted("미분류는 업무로 계산하지 않습니다.")
+        val user: CarUser? = settings.users.getOrNull(settings.defaultUserIndex)
         pending.take(3).forEach { t ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Column(Modifier.weight(1f)) {
+            Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     Txt("${mdhm(t.startEpochMs)} · ${km1(TripLogbook.round1(t.distanceKm))} km", Type.bodyBold)
                     Muted("계기판 ${km1(t.startOdometerKm)} → ${km1(t.endOdometerKm)}")
                 }
-                val user: CarUser? = settings.users.getOrNull(settings.defaultUserIndex)
-                listOf(TripPurpose.COMMUTE, TripPurpose.BUSINESS, TripPurpose.PERSONAL).forEach { purpose ->
-                    BigButton(purpose.label, color = p.purpose(purpose), outlined = true, height = 76.dp) {
-                        core.classifyTrip(t.id, purpose, user, t.memo, ClassifiedBy.SCREEN)
-                    }
-                }
+                PurposeButtons(outlined = true, height = 76.dp) { purpose -> core.classifyTrip(t.id, purpose, user, t.memo, ClassifiedBy.SCREEN) }
             }
         }
     }
@@ -258,11 +249,11 @@ private fun MonthCard(core: AutoBriefCore) {
     val month = YearMonth.from(core.today())
     val s = core.summary(TaxPeriods.month(month))
     Panel {
-        Muted("${month.monthValue}월 업무사용비율 (⑫/⑪)", Type.body)
-        Txt(pct(s.businessUseRatio), Type.hero, p.accent)
+        Muted("${month.monthValue}월 업무사용비율", Type.body)
         if (s.rowCount > 0) {
+            Txt(pct(s.businessUseRatio), Type.hero, p.accent)
             PurposeBar(s)
-            Txt("총 ${km1(s.totalKm)} km · ${s.rowCount}건 · 업무용 ${km1(s.businessUseKm)} km", Type.body)
+            Txt("총 ${km1(s.totalKm)} km · ${s.rowCount}건 · 업무용(출퇴근 포함) ${km1(s.businessUseKm)} km", Type.body)
             Muted("자동 분류 ${s.autoCount}건 · 음성 ${s.voiceCount}건 · 미분류 ${s.unclassifiedCount}건" + if (s.gapRowCount > 0) " · 미기록 구간 ${s.gapRowCount}건" else "")
         } else {
             Muted("이번 달 운행이 아직 없습니다.", Type.body)
@@ -291,13 +282,22 @@ private fun TaxCard(core: AutoBriefCore, onOpen: (Tab) -> Unit) {
             Muted("세율 ${"%.1f".format(r.ratePct)}%(지방소득세 포함) 가정", Type.small)
         } else {
             Txt("기록부 없이도 비용 인정이 같거나 큰 구간", Type.heading)
-            Muted("연간 차량비용이 1,500만원 이하이면 운행기록부가 없어도 업무사용비율 100%로 봅니다. 기록은 세무서 요구에 대비한 증빙으로 남깁니다.")
+            val cap = manwon(TaxBenefit.NO_LOGBOOK_CAP_KRW)
+            Muted(
+                when {
+                    settings.annualCarCostKrw <= TaxBenefit.NO_LOGBOOK_CAP_KRW ->
+                        "연간 차량비용이 $cap 이하이면 운행기록부가 없어도 업무사용비율 100%로 봅니다. 기록은 세무서 요구에 대비한 증빙으로 남깁니다."
+                    r.withLogbook.ratio <= r.withoutLogbook.ratio -> "업무사용비율이 $cap ÷ 차량비용보다 낮아 기록부 효과가 없습니다."
+                    else -> "업무용 감가상각비 연 ${manwon(TaxBenefit.DEPRECIATION_CAP_KRW)} 한도에 걸려 기록부로 더 인정되는 금액이 없습니다."
+                },
+            )
         }
         KeyValue("운행기록부 없이 인정", "${manwon(r.withoutLogbook.deductibleKrw)} (비율 ${pct(r.withoutLogbook.ratio)})")
         KeyValue("운행기록부로 인정", "${manwon(r.withLogbook.deductibleKrw)} (비율 ${pct(r.withLogbook.ratio)})", p.accent)
         Muted(
             "연간 차량비용 ${manwon(settings.annualCarCostKrw)}, 감가상각비 ${manwon(settings.annualDepreciationKrw)} 기준. " +
-                "업무용 감가상각비의 연 800만원 초과분은 다음 해로 넘어갑니다. 최종 판단은 세무 대리인과 확인하세요.",
+                "업무용 감가상각비의 연 ${manwon(TaxBenefit.DEPRECIATION_CAP_KRW)} 초과분은 다음 해로 넘어갑니다. 최종 판단은 세무 대리인과 확인하세요.",
         )
+        Muted("일반 법인 기준(임대업 중심 법인 500만/400만 규정, 연중 취득 차량 제외)")
     }
 }

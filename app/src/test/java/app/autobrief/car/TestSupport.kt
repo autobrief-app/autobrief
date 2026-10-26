@@ -1,5 +1,6 @@
 package app.autobrief.car
 
+import android.os.Looper
 import app.autobrief.car.domain.AutoBriefCore
 import app.autobrief.car.domain.AutoBriefCore.Space
 import app.autobrief.car.domain.KST
@@ -14,6 +15,9 @@ import app.autobrief.car.model.GeoPoint
 import app.autobrief.car.model.OutboxItem
 import app.autobrief.car.model.PlaceKind
 import app.autobrief.car.model.TripRecord
+import org.junit.rules.ExternalResource
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import java.time.LocalDate
 import java.time.ZonedDateTime
 
@@ -75,5 +79,31 @@ class Harness(
     companion object {
         fun at(d: LocalDate, h: Int, m: Int): Long =
             ZonedDateTime.of(d.year, d.monthValue, d.dayOfMonth, h, m, 0, 0, KST).toInstant().toEpochMilli()
+    }
+}
+
+/**
+ * ServiceSmokeTest leaves the Pleos Vehicle SDK retrying its service bind on a background thread for about 15 s of real
+ * time (the SDK's connectService retries 30 times, 500 ms apart, and release() does not stop it). A retry that lands in a
+ * later Robolectric test gets Robolectric's default bind result, a null ComponentName, and the SDK's Kotlin callback
+ * throws on the main looper. Put this rule before the compose rule: it refuses those binds and drops a callback that a
+ * bind just before it already queued (the SDK throws at its parameter check, before doing anything).
+ */
+class RefuseStalePleosBinds : ExternalResource() {
+    override fun before() {
+        val app = shadowOf(RuntimeEnvironment.getApplication())
+        PLEOS_BIND_ACTIONS.forEach { app.declareActionUnbindable(it) }
+        repeat(10) {
+            try {
+                shadowOf(Looper.getMainLooper()).idle()
+                return
+            } catch (e: NullPointerException) {
+                if (e.stackTrace.none { it.className.startsWith("ai.pleos.playground.") }) throw e
+            }
+        }
+    }
+
+    companion object {
+        val PLEOS_BIND_ACTIONS = listOf("ai.pleos.playground.vehicle.VEHICLE_START", "ai.pleos.playground.intent.action.NAVI_START")
     }
 }

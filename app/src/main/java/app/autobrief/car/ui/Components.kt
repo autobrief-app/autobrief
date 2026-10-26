@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -18,18 +20,26 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardOptions
@@ -82,9 +92,22 @@ fun Panel(
     )
 }
 
+/**
+ * Korean wraps between words, never between the syllables of one ("다/음 해로"): an invisible U+2060 WORD JOINER,
+ * which the Unicode line-break rules never split, glues every Hangul character to its non-space neighbours. (Phrase line
+ * breaking, LineBreak.WordBreak.Phrase, does not change Korean wrapping on API 34.) A word longer than the line still breaks.
+ */
+private val INSIDE_A_WORD = Regex("(?<=[가-힣])(?=\\S)|(?<=\\S)(?=[가-힣])")
+
+fun keepWords(text: String): String = INSIDE_A_WORD.replace(text, "\u2060")
+
 @Composable
-fun Txt(text: String, style: TextStyle = Type.body, color: Color = LocalPalette.current.text, modifier: Modifier = Modifier) =
-    Text(text, style = style, color = color, modifier = modifier)
+fun Txt(text: String, style: TextStyle = Type.body, color: Color = LocalPalette.current.text, modifier: Modifier = Modifier) {
+    // the semantics carry the plain text, so TalkBack and tests read the words without the joiners
+    Box(modifier.clearAndSetSemantics { this.text = AnnotatedString(text) }) {
+        Text(remember(text) { keepWords(text) }, style = style, color = color)
+    }
+}
 
 @Composable
 fun Muted(text: String, style: TextStyle = Type.small) = Txt(text, style, LocalPalette.current.muted)
@@ -96,7 +119,7 @@ fun StatusPill(label: String, color: Color, filled: Boolean = false) {
     Row(
         Modifier
             .clip(RoundedCornerShape(50))
-            .background(if (filled) color.copy(alpha = 0.18f) else p.panelHigh)
+            .background(if (filled) color.copy(alpha = p.tint) else p.panelHigh)
             .padding(horizontal = 18.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -108,11 +131,12 @@ fun StatusPill(label: String, color: Color, filled: Boolean = false) {
 
 @Composable
 fun PurposeChip(purpose: TripPurpose) {
-    val c = LocalPalette.current.purpose(purpose)
+    val p = LocalPalette.current
+    val c = p.purpose(purpose)
     Box(
         Modifier
             .clip(RoundedCornerShape(12.dp))
-            .background(c.copy(alpha = 0.18f))
+            .background(c.copy(alpha = p.tint))
             .padding(horizontal = 14.dp, vertical = 6.dp),
     ) { Txt(purpose.label, Type.label, c) }
 }
@@ -153,8 +177,8 @@ fun BigButton(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Txt(label, Type.heading, fg)
-        if (sub != null) Txt(sub, Type.small, fg.copy(alpha = 0.85f))
+        Txt(label, Type.heading.copy(textAlign = TextAlign.Center), fg)
+        if (sub != null) Txt(sub, Type.small.copy(textAlign = TextAlign.Center), fg)
     }
 }
 
@@ -165,9 +189,9 @@ fun Choice(label: String, selected: Boolean, onClick: () -> Unit) {
     val shape = RoundedCornerShape(16.dp)
     Box(
         Modifier
-            .heightIn(min = 64.dp)
+            .heightIn(min = 76.dp)
             .clip(shape)
-            .background(if (selected) p.accent.copy(alpha = 0.2f) else p.panelHigh)
+            .background(if (selected) p.accent.copy(alpha = p.tint) else p.panelHigh)
             .border(2.dp, if (selected) p.accent else Color.Transparent, shape)
             .clickable(role = Role.RadioButton, onClick = onClick)
             .padding(horizontal = 22.dp, vertical = 12.dp),
@@ -189,7 +213,7 @@ fun Field(label: String, value: String, modifier: Modifier = Modifier, numeric: 
             focusedBorderColor = p.accent, unfocusedBorderColor = p.line,
             focusedLabelColor = p.accent, unfocusedLabelColor = p.muted, cursorColor = p.accent,
         ),
-        modifier = modifier,
+        modifier = modifier.heightIn(min = 76.dp),
     )
 }
 
@@ -203,6 +227,7 @@ fun KeyValue(key: String, value: String, valueColor: Color = LocalPalette.curren
 }
 
 /** Stacked bar of the period's distance by purpose, with a legend underneath. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PurposeBar(s: LogbookSummary, height: Dp = 26.dp) {
     val p = LocalPalette.current
@@ -219,15 +244,84 @@ fun PurposeBar(s: LogbookSummary, height: Dp = 26.dp) {
             Box(Modifier.weight((km / total).toFloat().coerceAtLeast(0.004f)).fillMaxHeight().background(p.purpose(purpose)))
         }
     }
-    Row(horizontalArrangement = Arrangement.spacedBy(22.dp)) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(22.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         parts.forEach { (purpose, km) ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(14.dp).clip(CircleShape).background(p.purpose(purpose)))
                 Spacer(Modifier.width(8.dp))
-                Txt("${purpose.label} ${km1(km)}", Type.small, p.muted)
+                Txt("${purpose.label} ${km1(km)} km", Type.small, p.muted)
             }
         }
     }
+}
+
+/** Choice chips that wrap onto the next line instead of running off a narrow screen; [lead] is a muted caption. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun ChipRow(lead: String? = null, content: @Composable () -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (lead != null) Box(Modifier.heightIn(min = 76.dp), contentAlignment = Alignment.CenterStart) { Muted(lead, Type.body) }
+        content()
+    }
+}
+
+/** A switch whose whole 76dp row is the touch target; the Switch itself only shows the state. */
+@Composable
+fun ToggleRow(label: String, checked: Boolean, trackColor: Color = LocalPalette.current.accent, onChange: (Boolean) -> Unit) {
+    val p = LocalPalette.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 76.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(p.panelHigh)
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onChange)
+            .padding(horizontal = 20.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Txt(label, Type.heading, modifier = Modifier.weight(1f))
+        Spacer(Modifier.width(16.dp))
+        Switch(checked = checked, onCheckedChange = null, colors = SwitchDefaults.colors(checkedTrackColor = trackColor))
+    }
+}
+
+/** The purposes a person can pick, in the order of the NTS form. */
+val PICKABLE_PURPOSES = listOf(TripPurpose.COMMUTE, TripPurpose.BUSINESS, TripPurpose.PERSONAL)
+
+/** The line under a purpose on its button: the NTS form column it fills (personal use has none). */
+fun purposeSub(purpose: TripPurpose): String? = when (purpose) {
+    TripPurpose.COMMUTE -> "⑧ 출·퇴근용"
+    TripPurpose.BUSINESS -> "⑨ 일반 업무용"
+    TripPurpose.PERSONAL -> "개인 용무"
+    TripPurpose.UNCLASSIFIED, TripPurpose.UNLOGGED_GAP -> null
+}
+
+/** The three purposes as large buttons: the same words, sub-labels and colours wherever a purpose is picked. */
+@Composable
+fun PurposeButtons(
+    modifier: Modifier = Modifier,
+    outlined: Boolean = false,
+    enabled: Boolean = true,
+    height: Dp = 96.dp,
+    onPick: (TripPurpose) -> Unit,
+) {
+    val p = LocalPalette.current
+    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        PICKABLE_PURPOSES.forEach { purpose ->
+            BigButton(
+                purpose.label, Modifier.weight(1f), color = p.purpose(purpose), onColor = p.bg, sub = purposeSub(purpose),
+                outlined = outlined, enabled = enabled, height = height,
+            ) { onPick(purpose) }
+        }
+    }
+}
+
+/** Why a recorded purpose changes: the same reasons on the home card and in the trip detail; none is preselected. */
+val CORRECTION_REASONS = listOf("경유지가 있었어요", "개인 용무를 겸했어요", "사용자가 달라요", "기타 정정")
+
+@Composable
+fun ReasonChips(selected: String?, onSelect: (String) -> Unit) {
+    ChipRow { CORRECTION_REASONS.forEach { r -> Choice(r, r == selected) { onSelect(r) } } }
 }
 
 @Composable

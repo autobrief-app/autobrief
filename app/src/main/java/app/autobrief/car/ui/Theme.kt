@@ -42,6 +42,8 @@ data class Palette(
     val ok: Color,
     val danger: Color,
     val onAccent: Color,
+    /** Alpha of a colour's tint behind its own text (chips, pills, the selected tab); lower by day so the text keeps 4.5:1. */
+    val tint: Float,
 ) {
     fun purpose(p: TripPurpose): Color = when (p) {
         TripPurpose.COMMUTE -> commute
@@ -52,20 +54,21 @@ data class Palette(
     }
 }
 
+// Every text colour below keeps WCAG 4.5:1 (AA) on bg, panel, panelHigh and on its own tint.
 val NightPalette = Palette(
     bg = Color(0xFF0B0F17), panel = Color(0xFF151B26), panelHigh = Color(0xFF1D2533), line = Color(0xFF2A3445),
     text = Color(0xFFE8EDF5), muted = Color(0xFF9AA6B8), accent = Color(0xFF4FD1C5),
-    commute = Color(0xFF6FB7FF), business = Color(0xFF4FD1C5), personal = Color(0xFFA0A8B8),
-    pending = Color(0xFFFFB547), gap = Color(0xFF8E7FB0), ok = Color(0xFF5BD68A), danger = Color(0xFFFF6B6B),
-    onAccent = Color(0xFF06231F),
+    commute = Color(0xFF6FB7FF), business = Color(0xFF4FD1C5), personal = Color(0xFFE59AC0),
+    pending = Color(0xFFFFB547), gap = Color(0xFFA99BD6), ok = Color(0xFF5BD68A), danger = Color(0xFFFF6B6B),
+    onAccent = Color(0xFF06231F), tint = 0.18f,
 )
 
 val DayPalette = Palette(
     bg = Color(0xFFF3F5F9), panel = Color(0xFFFFFFFF), panelHigh = Color(0xFFEDF1F7), line = Color(0xFFD5DCE6),
-    text = Color(0xFF111827), muted = Color(0xFF5B6576), accent = Color(0xFF0E9F94),
-    commute = Color(0xFF2F7FD8), business = Color(0xFF0E9F94), personal = Color(0xFF6B7385),
-    pending = Color(0xFFC77700), gap = Color(0xFF6E5C9A), ok = Color(0xFF1E9E55), danger = Color(0xFFD64545),
-    onAccent = Color(0xFFFFFFFF),
+    text = Color(0xFF111827), muted = Color(0xFF5B6576), accent = Color(0xFF0A7369),
+    commute = Color(0xFF1F66C1), business = Color(0xFF0A7369), personal = Color(0xFFA8336A),
+    pending = Color(0xFF8F5200), gap = Color(0xFF6E5C9A), ok = Color(0xFF137036), danger = Color(0xFFB3261E),
+    onAccent = Color(0xFFFFFFFF), tint = 0.10f,
 )
 
 val LocalPalette = staticCompositionLocalOf { NightPalette }
@@ -77,8 +80,8 @@ object Type {
     val heading = TextStyle(fontFamily = Pretendard, fontWeight = FontWeight.Bold, fontSize = 28.sp, lineHeight = 36.sp)
     val body = TextStyle(fontFamily = Pretendard, fontWeight = FontWeight.Normal, fontSize = 24.sp, lineHeight = 32.sp)
     val bodyBold = body.copy(fontWeight = FontWeight.Bold)
-    val small = TextStyle(fontFamily = Pretendard, fontWeight = FontWeight.Normal, fontSize = 20.sp, lineHeight = 27.sp)
-    val label = TextStyle(fontFamily = Pretendard, fontWeight = FontWeight.Bold, fontSize = 22.sp, lineHeight = 28.sp)
+    val small = TextStyle(fontFamily = Pretendard, fontWeight = FontWeight.Normal, fontSize = 24.sp, lineHeight = 32.sp)
+    val label = TextStyle(fontFamily = Pretendard, fontWeight = FontWeight.Bold, fontSize = 24.sp, lineHeight = 30.sp)
 }
 
 @Composable

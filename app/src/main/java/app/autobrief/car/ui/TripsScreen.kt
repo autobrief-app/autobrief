@@ -3,6 +3,7 @@ package app.autobrief.car.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -91,13 +92,18 @@ private fun TripRow(t: TripRecord, onClick: () -> Unit) {
             Muted(listOfNotNull(t.startPlace, t.endPlace).joinToString(" → ").ifBlank { "장소 미등록" })
         }
         Txt("${km1(TripLogbook.round1(t.distanceKm))} km", Type.heading, modifier = Modifier.width(170.dp))
-        PurposeChip(t.purpose)
+        // a fixed box, so the user column starts at the same x whatever the chip says
+        Box(Modifier.width(PURPOSE_COLUMN)) { PurposeChip(t.purpose) }
         Column(Modifier.weight(1f)) {
-            Txt(t.user?.let { "${it.name}(${it.department})" } ?: "-", Type.body)
-            Muted(marks(t).ifBlank { t.memo })
+            if (t.purpose == TripPurpose.UNCLASSIFIED) Txt("목적 정하기 ›", Type.bodyBold, p.accent)
+            else Txt(t.user?.let { "${it.name}(${it.department})" } ?: "-", Type.body)
+            marks(t).ifBlank { t.memo }.takeIf { it.isNotBlank() }?.let { Muted(it) }
         }
     }
 }
+
+/** Wide enough for the longest purpose chip ("미기록 구간") at the label size. */
+private val PURPOSE_COLUMN = 170.dp
 
 private fun marks(t: TripRecord): String = buildList {
     when {
@@ -115,7 +121,9 @@ private fun TripDialog(core: AutoBriefCore, t: TripRecord, onClose: () -> Unit) 
     val settings by core.settings.collectAsState()
     var purpose by remember(t.id) { mutableStateOf(t.purpose.takeIf { it.isUserPurpose }) }
     var memo by remember(t.id) { mutableStateOf(t.memo) }
-    var reason by remember(t.id) { mutableStateOf("") }
+    // a correction needs one of the reasons the home card offers; nothing is preselected, the memo is optional
+    var reason by remember(t.id) { mutableStateOf<String?>(null) }
+    var reasonMemo by remember(t.id) { mutableStateOf("") }
     var userIndex by remember(t.id) { mutableStateOf(settings.users.indexOf(t.user).takeIf { it >= 0 } ?: settings.defaultUserIndex) }
     var message by remember(t.id) { mutableStateOf<String?>(null) }
     val correcting = t.purpose.isUserPurpose
@@ -137,22 +145,24 @@ private fun TripDialog(core: AutoBriefCore, t: TripRecord, onClose: () -> Unit) 
             } else {
                 Gap(6.dp)
                 Txt(if (correcting) "목적 고치기" else "목적 정하기", Type.heading)
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    listOf(TripPurpose.COMMUTE, TripPurpose.BUSINESS, TripPurpose.PERSONAL).forEach { c -> Choice(c.label, purpose == c) { purpose = c } }
-                }
+                ChipRow { PICKABLE_PURPOSES.forEach { c -> Choice(c.label, purpose == c) { purpose = c } } }
                 if (settings.users.isNotEmpty()) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Muted("④ 사용자", Type.body)
+                    ChipRow(lead = "④ 사용자") {
                         settings.users.forEachIndexed { i, u -> Choice("${u.name}(${u.department})", i == userIndex) { userIndex = i } }
                     }
                 }
                 Field("비고", memo, Modifier.fillMaxWidth()) { memo = it }
-                if (correcting) Field("고치는 이유 (필수, 기록 원장에 남습니다)", reason, Modifier.fillMaxWidth()) { reason = it }
-                BigButton("저장", enabled = purpose != null && (!correcting || reason.isNotBlank())) {
-                    val result = core.classifyTrip(t.id, purpose!!, settings.users.getOrNull(userIndex), memo, ClassifiedBy.SCREEN, reason.takeIf { correcting })
+                if (correcting) {
+                    Txt("고치는 이유 (기록 원장에 남습니다)", Type.bodyBold)
+                    ReasonChips(reason) { reason = it }
+                    Field("정정 메모 (선택)", reasonMemo, Modifier.fillMaxWidth()) { reasonMemo = it }
+                }
+                BigButton("저장", Modifier.fillMaxWidth(0.3f), enabled = purpose != null && (!correcting || reason != null)) {
+                    val why = if (correcting) listOfNotNull(reason, reasonMemo.trim().ifBlank { null }).joinToString(" · ") else null
+                    val result = core.classifyTrip(t.id, purpose!!, settings.users.getOrNull(userIndex), memo, ClassifiedBy.SCREEN, why)
                     message = when (result) {
                         AutoBriefCore.ClassifyResult.OK -> "저장했습니다."
-                        AutoBriefCore.ClassifyResult.REASON_REQUIRED -> "고치는 이유를 적어 주세요."
+                        AutoBriefCore.ClassifyResult.REASON_REQUIRED -> "고치는 이유를 골라 주세요."
                         AutoBriefCore.ClassifyResult.NOT_FOUND -> "이 운행을 찾지 못했습니다."
                     }
                     if (result == AutoBriefCore.ClassifyResult.OK) onClose()

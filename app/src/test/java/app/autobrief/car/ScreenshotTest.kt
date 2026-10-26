@@ -11,6 +11,7 @@ import app.autobrief.car.model.Gear
 import app.autobrief.car.model.GeoPoint
 import app.autobrief.car.ui.AutoBriefScreen
 import app.autobrief.car.ui.Tab
+import app.autobrief.car.ui.VEHICLE_WAIT_MS
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.Rule
 import org.junit.Test
@@ -29,7 +30,8 @@ import java.time.LocalDate
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [34], qualifiers = "w2560dp-h1440dp-xlarge-land-mdpi")
 class ScreenshotTest {
-    @get:Rule val compose = createComposeRule()
+    @get:Rule(order = 0) val stalePleosBinds = RefuseStalePleosBinds()
+    @get:Rule(order = 1) val compose = createComposeRule()
 
     private val ptDay = LocalDate.of(2026, 12, 3)
 
@@ -47,17 +49,23 @@ class ScreenshotTest {
         return h
     }
 
-    private fun shoot(core: AutoBriefCore, tab: Tab, name: String, night: Boolean = true) {
+    /** [waitMs]: screen time to let pass before the shot (the test clock, so on-screen timers fire). */
+    private fun shoot(core: AutoBriefCore, tab: Tab, name: String, night: Boolean = true, waitMs: Long = 0) {
         compose.setContent { AutoBriefScreen(core, mutableStateOf(tab), onFlush = {}, night = night) }
         compose.waitForIdle()
+        if (waitMs > 0) {
+            compose.mainClock.advanceTimeBy(waitMs)
+            compose.waitForIdle()
+        }
         compose.onRoot().captureRoboImage("build/outputs/roborazzi/$name.png")
     }
 
     @Test fun homeReady() = shoot(demoHarness().core, Tab.HOME, "01_home_ready")
 
+    /** Just shifted into D, still standing (no UX restrictions yet): the screen is already the driving view. */
     @Test fun homeDriving() {
         val h = demoHarness()
-        h.advance(60_000); h.gear(Gear.DRIVE); h.advance(12 * 60_000); h.odo(45_212.0)
+        h.advance(60_000); h.gear(Gear.DRIVE)
         shoot(h.core, Tab.HOME, "02_home_trip_in_progress")
     }
 
@@ -95,18 +103,22 @@ class ScreenshotTest {
 
     @Test fun tripsList() = shoot(unknownPlace().core, Tab.TRIPS, "08_trips")
 
-    /** The report on the documents' sample day (DocsSample, 2026-10-23 23:06), so it shows the totals and code the text quotes. */
+    /**
+     * The report on the documents' sample day (DocsSample, 2026-10-23 23:06), so it shows the totals and code the text quotes,
+     * with the company address set and every queued entry delivered, as the fleet console screenshots show it received.
+     */
     @Test fun report() {
-        val h = DocsSample.build()
+        val h = DocsSample.build(webhook = "https://fleet.example.com/hook")
         h.core.onVehicle(VehicleEvent.Connection(true))
         h.core.onNavi(NaviEvent.Ready(true))
+        h.core.markDeliveries(h.core.outbox.value.map { AutoBriefCore.Delivery(it.key, delivered = true, error = null) })
         shoot(h.core, Tab.REPORT, "09_report")
     }
 
     @Test fun settings() = shoot(commuted().core, Tab.SETTINGS, "10_settings")
 
     @Test fun liveFirstRun() {
-        // a fresh install on a real car: no history, no settings, waiting for the vehicle service
-        shoot(Harness(startAt = Harness.at(ptDay, 8, 0)).core, Tab.HOME, "11_live_first_run")
+        // a fresh install on a real car: no history, no settings, and a minute without gear or odometer from the vehicle service
+        shoot(Harness(startAt = Harness.at(ptDay, 8, 0)).core, Tab.HOME, "11_live_first_run", waitMs = VEHICLE_WAIT_MS + 1_000)
     }
 }

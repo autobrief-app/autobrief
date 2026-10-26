@@ -5,8 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>오토브리프 관리자 화면</title>
 <style>
+/* Pretendard (SIL OFL 1.1) from the app's own bundle, served by fleet_console.py */
+@font-face{font-family:Pretendard;src:url(/fonts/Pretendard-Regular.ttf) format('truetype');font-weight:100 500;font-display:swap}
+@font-face{font-family:Pretendard;src:url(/fonts/Pretendard-Bold.ttf) format('truetype');font-weight:600 900;font-display:swap}
+/* purpose colours = the app's night palette (ui/Theme.kt) */
 :root{--bg:#0B0F17;--panel:#151B26;--text:#E8EDF5;--muted:#9AA6B8;--commute:#6FB7FF;--business:#4FD1C5;
-  --personal:#A0A8B8;--pending:#FFB547;--gap:#8E7FB0;--ok:#5BD68A;--danger:#FF6B6B;--line:#243044;--inset:#10151F}
+  --personal:#E59AC0;--pending:#FFB547;--gap:#A99BD6;--ok:#5BD68A;--danger:#FF6B6B;--line:#243044;--inset:#10151F}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 Pretendard,'Apple SD Gothic Neo','Malgun Gothic',sans-serif}
 header{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:10px;padding:28px 40px 8px}
@@ -23,8 +27,9 @@ main{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,860px),1
 .meta{color:var(--muted)}
 .chain{display:flex;align-items:center;gap:10px}
 .code{color:var(--muted);font-variant-numeric:tabular-nums}
-.badge{display:inline-block;padding:4px 14px;border-radius:999px;font-size:15px;font-weight:700;color:#0B0F17}
-.badge.small{padding:1px 10px;font-size:13px}
+.badge{display:inline-block;padding:4px 14px;border-radius:999px;font-size:17px;font-weight:700;color:#0B0F17}
+.badge.small{padding:2px 10px;font-size:16px}
+.badge+.badge{margin-left:6px}
 .badge.ok{background:var(--ok)}.badge.warn{background:var(--pending)}.badge.bad{background:var(--danger)}
 .band{display:flex;flex-wrap:wrap;align-items:center;gap:24px;margin:18px 0 6px}
 .ratio .big{font-size:64px;font-weight:800;line-height:1.1;color:var(--business);font-variant-numeric:tabular-nums}
@@ -40,19 +45,30 @@ tr:last-child td{border-bottom:0}
 .multi table{min-width:760px;font-size:14px}.multi th,.multi td{padding:9px 10px}   /* two cars side by side at 1920 */
 th{background:var(--inset);color:var(--muted);font-weight:600}
 td.num{text-align:right;font-variant-numeric:tabular-nums}
-.chip{display:inline-block;padding:2px 10px;border-radius:8px;font-size:13px;font-weight:700;color:#0B0F17}
+.chip{display:inline-block;padding:2px 10px;border-radius:8px;font-size:16px;font-weight:700;color:#0B0F17}
 .chip.commute{background:var(--commute)}.chip.business{background:var(--business)}
 .chip.personal{background:var(--personal)}.chip.pending{background:var(--pending)}.chip.gap{background:var(--gap)}
-.tag{margin-left:6px;padding:0 6px;border:1px solid var(--pending);border-radius:6px;color:var(--pending);font-size:12px}
+.tag{margin-left:6px;padding:0 6px;border:1px solid var(--pending);border-radius:6px;color:var(--pending);font-size:16px}
 small{margin-left:6px;color:var(--muted)}
 .none{padding:18px;color:var(--muted)}
 .files{display:flex;flex-direction:column;gap:6px}
 .files a{color:var(--commute);text-decoration:none}.files a:hover{text-decoration:underline}
-.alerts{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
-.alerts li{padding:6px 12px;background:var(--inset);border-left:4px solid var(--muted);border-radius:6px}
-.alerts li.warn{border-color:var(--pending)}.alerts li.bad{border-color:var(--danger)}
+/* alerts: a banner above the numbers, red when anything was tampered with */
+.banner{margin:18px 0 4px;padding:14px 20px;border-radius:12px;border:2px solid var(--line);background:var(--inset);font-size:22px;line-height:1.45}
+.banner.warn{border-color:var(--pending);background:#2A2110}
+.banner.bad{border-color:var(--danger);background:#3A1419}
+.banner .title{font-size:24px;font-weight:800}
+.banner.warn .title{color:var(--pending)}.banner.bad .title{color:#FF8A8A}
+.banner ul{margin:6px 0 0;padding:0;list-style:none}
+.banner li{padding:2px 0}
+.banner li.bad::before{content:'● ';color:var(--danger)}.banner li.warn::before{content:'● ';color:var(--pending)}
+.banner li.info::before{content:'● ';color:var(--muted)}
+tr.tampered td{background:rgba(255,107,107,.14)}
+tr.tampered td:first-child{box-shadow:inset 5px 0 0 var(--danger)}
 @keyframes flash{from{background:rgba(255,181,71,.5)}to{background:transparent}}
+@keyframes flashbad{from{background:rgba(255,107,107,.6)}to{background:rgba(255,107,107,.14)}}
 tr.flash td{animation:flash 4s ease-out var(--d,0s) both}
+tr.tampered.flash td{animation-name:flashbad}   /* the fade ends on the tamper tint, not transparent */
 @media (max-width:700px){
   header{padding:18px 14px 4px}h1{font-size:24px}
   main{padding:12px 14px 32px;gap:16px}
@@ -90,13 +106,22 @@ tr.flash td{animation:flash 4s ease-out var(--d,0s) both}
   function km(n) { return n === null || n === undefined ? '-' : Number(n).toLocaleString('ko-KR', {maximumFractionDigits: 1}); }
   function pct(n) { return n === null || n === undefined ? '-' : n + '%'; }
 
-  function tripRow(car, t, now, known) {
-    var sig = [car.key, t.id, t.purpose, t.amended, t.status].join('|');
+  // rows a rejected change targeted: the server names them on the alert (tripId)
+  function tamperedTrips(car) {
+    var out = {};
+    car.alerts.forEach(function (a) { if (a.level === 'bad' && a.tripId) out[a.tripId] = true; });
+    return out;
+  }
+
+  function tripRow(car, t, now, known, tampered) {
+    var hit = !!tampered[t.id];
+    var sig = [car.key, t.id, t.purpose, t.amended, t.status, hit].join('|');
     known[sig] = true;
     if (!firstRender && !seen[sig] && !born[sig]) born[sig] = now;   // absent from the previous render: new or changed
     var tr = el('tr'), age = now - (born[sig] || 0);
+    if (hit) tr.className = 'tampered';
     if (born[sig] && age < FLASH_MS) {
-      tr.className = 'flash';
+      tr.className = (tr.className + ' flash').trim();
       tr.style.setProperty('--d', '-' + age + 'ms');            // resume the 4 s fade where it was
     }
     var cells = [t.date, t.time, km(t.startOdometerKm) + ' → ' + km(t.endOdometerKm), km(t.distanceKm) + ' km'];
@@ -115,8 +140,26 @@ tr.flash td{animation:flash 4s ease-out var(--d,0s) both}
     tr.appendChild(how);
     var status = el('td');
     status.appendChild(el('span', 'badge small ' + (BADGE[t.status] || 'warn'), t.status));
+    if (hit) status.appendChild(el('span', 'badge small bad', '변조 시도'));
     tr.appendChild(status);
     return tr;
+  }
+
+  function banner(car) {
+    var level = car.alerts.some(function (a) { return a.level === 'bad'; }) ? 'bad'
+      : (car.alerts.some(function (a) { return a.level === 'warn'; }) ? 'warn' : 'info');
+    var box = el('div', 'banner ' + level), list = el('ul'), when = {};
+    car.recentTrips.forEach(function (t) { when[t.id] = t.date + ' ' + t.time; });
+    box.setAttribute('role', level === 'info' ? 'status' : 'alert');
+    var attempt = car.alerts.some(function (a) { return a.level === 'bad' && a.tripId; });
+    box.appendChild(el('div', 'title', level === 'bad'
+      ? (attempt ? '변조 시도를 막았습니다 · 회사 사본은 처음 받은 기록 그대로입니다' : '변조가 의심되는 기록이 있습니다')
+      : (level === 'warn' ? '받지 못한 기록이 있습니다' : '알림')));
+    car.alerts.forEach(function (a) {
+      list.appendChild(el('li', a.level, a.text + (a.tripId && when[a.tripId] ? ' · ' + when[a.tripId] + ' 운행' : '')));
+    });
+    box.appendChild(list);
+    return box;
   }
 
   function carView(car, now, known) {
@@ -129,6 +172,7 @@ tr.flash td{animation:flash 4s ease-out var(--d,0s) both}
     head.appendChild(id);
     head.appendChild(chain);
     sec.appendChild(head);
+    if (car.alerts.length) sec.appendChild(banner(car));
 
     var m = car.month, y = car.year, band = el('div', 'band'), ratio = el('div', 'ratio');
     ratio.appendChild(el('div', 'lbl', '이번 달 업무 사용 비율' + (m.ym ? ' (' + m.ym + ')' : '')));
@@ -153,9 +197,10 @@ tr.flash td{animation:flash 4s ease-out var(--d,0s) both}
       box.appendChild(el('div', 'none', '아직 운행 기록이 없습니다.'));
     } else {
       var table = el('table'), hr = el('tr'), body = el('tbody');
+      var tampered = tamperedTrips(car);
       HEAD.forEach(function (h) { hr.appendChild(el('th', '', h)); });
       table.appendChild(el('thead')).appendChild(hr);
-      car.recentTrips.forEach(function (t) { body.appendChild(tripRow(car, t, now, known)); });
+      car.recentTrips.forEach(function (t) { body.appendChild(tripRow(car, t, now, known, tampered)); });
       table.appendChild(body);
       box.appendChild(table);
     }
@@ -178,14 +223,6 @@ tr.flash td{animation:flash 4s ease-out var(--d,0s) both}
         files.appendChild(row);
       });
       sec.appendChild(files);
-    }
-    if (car.alerts.length) {
-      sec.appendChild(el('div', 'sect', '알림'));
-      var list = el('ul', 'alerts');
-      car.alerts.forEach(function (text) {
-        list.appendChild(el('li', text.indexOf('변조') >= 0 ? 'bad' : (text.indexOf('누락') >= 0 ? 'warn' : ''), text));
-      });
-      sec.appendChild(list);
     }
     return sec;
   }
