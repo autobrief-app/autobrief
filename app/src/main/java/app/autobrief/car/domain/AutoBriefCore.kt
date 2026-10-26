@@ -719,24 +719,43 @@ class AutoBriefCore(
         return ExportResult(name, savedTo, queued, sheet.rows.size)
     }
 
-    /** On the first event of a new month, the previous month's workbook is written (and sent) once. */
+    /** No month-close attempt before this time (epoch ms): set after a workbook could not be written. */
+    private var monthCloseRetryAt = Long.MIN_VALUE
+
+    /**
+     * Once a month is over its workbook is written (and sent) once: every month from the last one closed up to the
+     * previous month, in order. A month counts as closed only after its workbook was written; a failed write is tried
+     * again a minute later. Nothing closes while a trip, or the place rules of a trip that just ended, is still open:
+     * that row belongs in the month.
+     */
     private fun closeMonthIfDue() {
-        val current = YearMonth.from(Instant.ofEpochMilli(clock()).atZone(KST))
-        val previous = current.minusMonths(1)
-        val s = _settings.value
-        val done = s.lastMonthlyCloseYm.takeIf { it.isNotBlank() }?.let { runCatching { YearMonth.parse(it) }.getOrNull() }
-        if (done != null && !done.isBefore(previous)) return
-        if (logbook.records.isEmpty()) return
-        val rows = logbook.recordsIn(TaxPeriods.month(previous))
-        writeSettings(s.copy(lastMonthlyCloseYm = previous.toString()))
-        if (rows.isEmpty()) return
-        val result = exportWorkbook(TaxPeriods.month(previous), businessYear = false)
-        val sum = TripLogbook.summarize(rows)
-        _notice.value = Notice(
-            "${previous.monthValue}월 운행기록부를 만들었습니다: ${rows.size}건, 업무사용비율 ${sum.businessUseRatio?.let { "%.1f%%".format(it * 100) } ?: "-"}" +
-                if (result.queued) ", 보내기 주소로 전송 대기" else "",
-            result.fileName,
-        )
+        val now = clock()
+        if (logbook.openTrip != null || pendingAuto != null || now < monthCloseRetryAt) return
+        val first = logbook.records.firstOrNull() ?: return
+        val previous = YearMonth.from(Instant.ofEpochMilli(now).atZone(KST)).minusMonths(1)
+        val done = _settings.value.lastMonthlyCloseYm.takeIf { it.isNotBlank() }?.let { runCatching { YearMonth.parse(it) }.getOrNull() }
+        var month = done?.plusMonths(1) ?: TripLogbook.yearMonth(first.startEpochMs)
+        while (!month.isAfter(previous)) {
+            val rows = logbook.recordsIn(TaxPeriods.month(month))
+            if (rows.isNotEmpty()) {
+                val result = try {
+                    exportWorkbook(TaxPeriods.month(month), businessYear = false)
+                } catch (e: Exception) {
+                    // the file could not be written (storage full or gone): the month stays open for the retry
+                    monthCloseRetryAt = now + MONTH_CLOSE_RETRY_MS
+                    log("MONTH_CLOSE_FAILED ym=$month error=${e::class.java.simpleName}")
+                    return
+                }
+                val sum = TripLogbook.summarize(rows)
+                _notice.value = Notice(
+                    "${month.monthValue}월 운행기록부를 만들었습니다: ${rows.size}건, 업무사용비율 ${sum.businessUseRatio?.let { "%.1f%%".format(it * 100) } ?: "-"}" +
+                        if (result.queued) ", 보내기 주소로 전송 대기" else "",
+                    result.fileName,
+                )
+            }
+            writeSettings(_settings.value.copy(lastMonthlyCloseYm = month.toString()))
+            month = month.plusMonths(1)
+        }
     }
 
     // ---------------------------------------------------------------- Gleo function calls
@@ -834,6 +853,7 @@ class AutoBriefCore(
         const val OUTBOX_DELIVERED_KEEP = 200
         const val BACKFILL_MAX = 5_000
         const val SEND_COOLDOWN_MS = 60_000L
+        const val MONTH_CLOSE_RETRY_MS = 60_000L
         const val PIN_ATTEMPTS_BEFORE_LOCK = 5
         const val PIN_LOCK_MS = 5 * 60_000L
 
