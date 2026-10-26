@@ -135,6 +135,12 @@ class AutoBriefCore(
     private var openStartPoint: GeoPoint? = null
     private var connectedLogged = false
 
+    /** The running PIN lock's end on the [monotonic] clock; null = not locked. */
+    private var pinLockUntilMono: Long? = null
+
+    /** False until this process has turned the stored miss count into its lock (see [pinLockRemainingMs]). */
+    private var pinLockRestored = false
+
     /** A closed trip waiting a few seconds for the arrival position before the place rules run. */
     private data class PendingAuto(val tripId: String, val start: GeoPoint?, val deadline: Long, val askedAt: Long)
     private var pendingAuto: PendingAuto? = null
@@ -158,6 +164,7 @@ class AutoBriefCore(
         pendingAuto = null
         openStartPoint = null
         pinLockUntilMono = null
+        pinLockRestored = false
         refreshCheck()
         // the new logbook needs the car's current state to detect the next departure correctly
         _vehicle.value.odometerKm?.let { logbook.onOdometer(it) }
@@ -480,19 +487,24 @@ class AutoBriefCore(
 
     enum class SettingsResult { SAVED, PIN_REQUIRED, PIN_LOCKED, INVALID_URL, TRIP_IN_PROGRESS }
 
-    /** The running lock's end on the [monotonic] clock; null = none in this process (a restart reads the settings). */
-    private var pinLockUntilMono: Long? = null
+    /** The lock that follows [failures] misses in a row: 5 minutes from the fifth, doubling every five up to 80. */
+    private fun pinLockLengthMs(failures: Int): Long {
+        val rounds = failures / PIN_ATTEMPTS_BEFORE_LOCK
+        return if (rounds == 0) 0 else PIN_LOCK_MS * (1L shl (rounds - 1).coerceAtMost(4))
+    }
 
     /**
-     * How long PIN entry stays locked. A lock set in this process is measured on the monotonic clock. After a restart
-     * only the stored wall-clock end is known: it is taken over once, never longer than the longest lock, so a clock
-     * set back cannot stretch it and a clock set ahead while the app runs cannot end it.
+     * How long PIN entry stays locked, always measured on the monotonic clock. A restart cannot know how much of a lock
+     * already ran (the wall clock may have been moved), so while the stored miss count is at or past the threshold
+     * (only a correct PIN clears it) the first check after a restart locks again for that round's full length.
      */
     private fun pinLockRemainingMs(s: AppSettings): Long {
-        pinLockUntilMono?.let { return (it - monotonic()).coerceAtLeast(0) }
-        val remaining = (s.adminPinLockedUntilMs - clock()).coerceIn(0, PIN_LOCK_MAX_MS)
-        if (remaining > 0) pinLockUntilMono = monotonic() + remaining
-        return remaining
+        if (!pinLockRestored) {
+            pinLockRestored = true
+            val length = pinLockLengthMs(s.adminPinFailures)
+            if (length > 0) pinLockUntilMono = monotonic() + length
+        }
+        return pinLockUntilMono?.let { (it - monotonic()).coerceAtLeast(0) } ?: 0
     }
 
     /** Until when PIN entry is locked (epoch ms); 0 = not locked. */
@@ -520,8 +532,7 @@ class AutoBriefCore(
             return SettingsResult.SAVED
         }
         val failures = s.adminPinFailures + 1
-        val rounds = failures / PIN_ATTEMPTS_BEFORE_LOCK
-        val lockMs = if (failures % PIN_ATTEMPTS_BEFORE_LOCK == 0) PIN_LOCK_MS * (1L shl (rounds - 1).coerceAtMost(4)) else 0L
+        val lockMs = if (failures % PIN_ATTEMPTS_BEFORE_LOCK == 0) pinLockLengthMs(failures) else 0L
         if (lockMs > 0) pinLockUntilMono = monotonic() + lockMs
         writeSettings(s.copy(adminPinFailures = failures, adminPinLockedUntilMs = if (lockMs > 0) clock() + lockMs else s.adminPinLockedUntilMs))
         log("ADMIN_PIN_MISS count=$failures")
