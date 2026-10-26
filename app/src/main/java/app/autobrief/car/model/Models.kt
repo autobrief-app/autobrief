@@ -115,6 +115,8 @@ data class AppSettings(
     val adminPinLockedUntilMs: Long = 0,
     /** YYYY-MM of the last month whose workbook was closed automatically. */
     val lastMonthlyCloseYm: String = "",
+    /** The car's VIN as last read from the vehicle (ISO 3779), so a send before the SDK answers still names the car. */
+    val vin: String = "",
 )
 
 data class VehicleSnapshot(

@@ -90,7 +90,7 @@ class SampleScenarioTest {
         assertEquals(h.core.integrity.value.entryCount, items.count { it.kind == "ledger" })
         assertEquals(DocsSample.build().core.integrity.value.code, h.core.integrity.value.code)
         val dir = File("build/sample").apply { mkdirs() }
-        File(dir, "outbox_payloads.jsonl").writeText(items.joinToString("\n") { it.key + "\t" + it.payloadJson } + "\n")
+        File(dir, "outbox_payloads.jsonl").writeText(items.joinToString("\n") { it.key + "\t" + h.core.wireBody(it) } + "\n")
         val year = h.core.summary(TaxPeriods.businessYear(2026, 1))
         File(dir, "outbox_expected.json").writeText(
             buildJsonObject {

@@ -21,6 +21,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import java.net.URI
 import java.time.Instant
@@ -246,9 +247,26 @@ class AutoBriefCore(
                 if (logbook.openTrip != null && _open.value == null) openTripStarted()
             }
             is VehicleEvent.GearChanged -> onGear(e.gear, now)
-            is VehicleEvent.Vin -> _vehicle.value = s.copy(vin = e.vin)
+            is VehicleEvent.Vin -> onVin(e.vin)
         }
     }
+
+    /**
+     * The VIN as the SDK sends it (JSON-quoted; the emulator sends the placeholder "invalid"). A well-formed one is kept
+     * in the settings too, so payloads and trip bodies name the car before the SDK answers after a restart.
+     */
+    private fun onVin(raw: String?) {
+        val vin = Vins.normalize(raw)
+        if (vin == null) {
+            log("VIN_UNUSABLE")
+            return
+        }
+        _vehicle.value = _vehicle.value.copy(vin = vin)
+        if (_settings.value.vin != vin) writeSettings(_settings.value.copy(vin = vin))
+    }
+
+    /** The VIN read from the car now, else the one kept from before; null when the car never gave a usable one. */
+    private fun currentVin(): String? = _vehicle.value.vin ?: _settings.value.vin.ifBlank { null }
 
     fun onNavi(e: NaviEvent) {
         when (e) {
@@ -324,7 +342,7 @@ class AutoBriefCore(
     private fun recordRows(added: List<TripRecord>) {
         for (row in added) {
             if (row.purpose == TripPurpose.UNLOGGED_GAP) {
-                appendLedger(LedgerKind.GAP, row, Ledger.tripBody(row, _vehicle.value.vin))
+                appendLedger(LedgerKind.GAP, row, Ledger.tripBody(row, currentVin()))
                 log("GAP_RECORDED start=${row.startOdometerKm} end=${row.endOdometerKm}")
             } else {
                 tripClosed(row)
@@ -345,7 +363,7 @@ class AutoBriefCore(
         val arrival = freshLocation(now, ARRIVAL_LOCATION_MAX_AGE_MS)
         if (_settings.value.autoClassify && arrival == null && (start != null || _navi.value.ready)) {
             // the position at the moment of parking is not in yet: write the row now, run the place rules shortly
-            appendLedger(LedgerKind.TRIP, row, Ledger.tripBody(row, _vehicle.value.vin))
+            appendLedger(LedgerKind.TRIP, row, Ledger.tripBody(row, currentVin()))
             pendingAuto = PendingAuto(row.id, start, now + AUTO_WAIT_MS, now)
             naviControl?.requestLocation()
             logClosed(row)
@@ -366,7 +384,7 @@ class AutoBriefCore(
     private fun applyPlaces(row: TripRecord, start: GeoPoint?, end: GeoPoint?, writeTrip: Boolean) {
         val result = AutoClassifier.classify(start, end, allPlaces())
         val placed = logbook.setPlaces(row.id, result.startLabel, result.endLabel) ?: row
-        if (writeTrip) appendLedger(LedgerKind.TRIP, placed, Ledger.tripBody(placed, _vehicle.value.vin))
+        if (writeTrip) appendLedger(LedgerKind.TRIP, placed, Ledger.tripBody(placed, currentVin()))
         val purpose = result.purpose
         if (purpose != null && _settings.value.autoClassify && placed.purpose == TripPurpose.UNCLASSIFIED) {
             val (_, updated) = logbook.classify(placed.id, purpose, defaultUser(), result.memo, ClassifiedBy.AUTO, result.reason) ?: return
@@ -484,8 +502,9 @@ class AutoBriefCore(
     private fun ledgerKey(e: LedgerEntry): String =
         chainId?.let { "ledger-${space.dir}-$it-${e.seq}" } ?: "ledger-${space.dir}-${e.seq}"
 
+    /** The car block of every payload, built when the item is sent (see [wireBody]). */
     private fun carJson() = buildJsonObject {
-        put("vin", _vehicle.value.vin)
+        put("vin", currentVin())
         put("plate", _settings.value.plateNumber)
         put("model", _settings.value.vehicleModel)
         put("entity", _settings.value.entityName)
@@ -496,7 +515,6 @@ class AutoBriefCore(
         put("app", "autobrief")
         put("appVersion", APP_VERSION)
         chainId?.let { put("chainId", it) }
-        put("car", carJson())
         put("entry", buildJsonObject {
             put("seq", e.seq)
             put("epochMs", e.epochMs)
@@ -507,6 +525,12 @@ class AutoBriefCore(
             put("hash", e.hash)
         })
     }.toString()
+
+    /**
+     * The body sent for [item]: the stored payload with the car block as it is at sending time. Payloads are queued
+     * without it because the VIN can arrive after the first gear event; an older payload's own block is replaced.
+     */
+    fun wireBody(item: OutboxItem): String = withCar(item.payloadJson, carJson())
 
     private fun saveTrips() {
         _trips.value = logbook.records
@@ -631,6 +655,7 @@ class AutoBriefCore(
             adminPinFailures = current.adminPinFailures,
             adminPinLockedUntilMs = current.adminPinLockedUntilMs,
             lastMonthlyCloseYm = current.lastMonthlyCloseYm,
+            vin = current.vin,
             fiscalYearStartMonth = new.fiscalYearStartMonth.coerceIn(1, 12),
             defaultUserIndex = new.defaultUserIndex.coerceIn(0, (new.users.size - 1).coerceAtLeast(0)),
         )
@@ -727,7 +752,6 @@ class AutoBriefCore(
             val payload = buildJsonObject {
                 put("type", "logbook_archive")
                 chainId?.let { put("chainId", it) }
-                put("car", carJson())
                 put("fileName", name)
                 put("periodStart", period.start.toString())
                 put("periodEnd", period.endInclusive.toString())
@@ -885,6 +909,9 @@ class AutoBriefCore(
         const val GLEO_PACKAGE = "ai.umos.ambientai"
         const val GLEO_SENDER_PERMISSION = "ai.umos.gleo.permission.APP_ACTION"
         private const val MEMO_MAX = 80
+
+        fun withCar(payloadJson: String, car: JsonObject): String =
+            JsonObject(json.parseToJsonElement(payloadJson).jsonObject + ("car" to car)).toString()
 
         /** 64 random bits as 16 hex digits: a fresh chain id. */
         fun newChainId(): String = UUID.randomUUID().toString().replace("-", "").take(16)

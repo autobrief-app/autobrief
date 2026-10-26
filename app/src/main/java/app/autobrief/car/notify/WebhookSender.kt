@@ -39,7 +39,7 @@ class WebhookSender(private val core: AutoBriefCore) {
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
             conn.setRequestProperty("Idempotency-Key", item.key)
-            conn.outputStream.use { it.write(item.payloadJson.toByteArray(Charsets.UTF_8)) }
+            conn.outputStream.use { it.write(core.wireBody(item).toByteArray(Charsets.UTF_8)) }
             val code = conn.responseCode
             if (code in 200..299) true to null else false to "HTTP $code"
         } finally {
