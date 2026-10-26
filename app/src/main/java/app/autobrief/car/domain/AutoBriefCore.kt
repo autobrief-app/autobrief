@@ -502,7 +502,7 @@ class AutoBriefCore(
     private fun ledgerKey(e: LedgerEntry): String =
         chainId?.let { "ledger-${space.dir}-$it-${e.seq}" } ?: "ledger-${space.dir}-${e.seq}"
 
-    /** The car block of every payload, built when the item is sent (see [wireBody]). */
+    /** The car block of every payload, as the car is known when the item is queued (see [wireBody]). */
     private fun carJson() = buildJsonObject {
         put("vin", currentVin())
         put("plate", _settings.value.plateNumber)
@@ -517,6 +517,7 @@ class AutoBriefCore(
         chainId?.let { put("chainId", it) }
         // the receiver starts a new demo chain silently; a new live chain for a known car is a warning there
         put("space", space.dir)
+        put("car", carJson())
         put("entry", buildJsonObject {
             put("seq", e.seq)
             put("epochMs", e.epochMs)
@@ -529,10 +530,11 @@ class AutoBriefCore(
     }.toString()
 
     /**
-     * The body sent for [item]: the stored payload with the car block as it is at sending time. Payloads are queued
-     * without it because the VIN can arrive after the first gear event; an older payload's own block is replaced.
+     * The body sent for [item]: the payload as it was queued, car block included, so an entry keeps the plate, company
+     * and VIN it was recorded under. Only a VIN that block lacks (it can arrive after the first gear event) is filled
+     * in from the VIN the app has kept since.
      */
-    fun wireBody(item: OutboxItem): String = withCar(item.payloadJson, carJson())
+    fun wireBody(item: OutboxItem): String = fillMissingVin(item.payloadJson, currentVin())
 
     private fun saveTrips() {
         _trips.value = logbook.records
@@ -755,6 +757,7 @@ class AutoBriefCore(
                 put("type", "logbook_archive")
                 chainId?.let { put("chainId", it) }
                 put("space", space.dir)
+                put("car", carJson())
                 put("fileName", name)
                 put("periodStart", period.start.toString())
                 put("periodEnd", period.endInclusive.toString())
@@ -913,8 +916,14 @@ class AutoBriefCore(
         const val GLEO_SENDER_PERMISSION = "ai.umos.gleo.permission.APP_ACTION"
         private const val MEMO_MAX = 80
 
-        fun withCar(payloadJson: String, car: JsonObject): String =
-            JsonObject(json.parseToJsonElement(payloadJson).jsonObject + ("car" to car)).toString()
+        /** [payloadJson] with [vin] in its car block when the block has none; every other field stays as queued. */
+        fun fillMissingVin(payloadJson: String, vin: String?): String {
+            if (vin == null) return payloadJson
+            val payload = json.parseToJsonElement(payloadJson).jsonObject
+            val car = payload["car"] as? JsonObject ?: return payloadJson
+            if ((car["vin"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.isNotBlank() == true) return payloadJson
+            return JsonObject(payload + ("car" to JsonObject(car + ("vin" to JsonPrimitive(vin))))).toString()
+        }
 
         /** 64 random bits as 16 hex digits: a fresh chain id. */
         fun newChainId(): String = UUID.randomUUID().toString().replace("-", "").take(16)

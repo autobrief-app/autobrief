@@ -10,7 +10,6 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -41,14 +40,31 @@ class VinTest {
         assertEquals("00가 0000", car.getValue("plate").jsonPrimitive.content)
     }
 
-    @Test fun aVinThatArrivesAfterTheFirstEntriesStillReachesThem() {
+    @Test fun anEntryQueuedBeforeTheVinArrivedGoesOutWithTheKeptVin() {
         val h = Harness(AppSettings(plateNumber = "00가 0000", archiveWebhookUrl = hook))
         h.drive(100.0, 12.0, null, null) // queued before the SDK delivered the VIN
         val item = h.core.outbox.value.first()
-        assertFalse("the stored payload holds no car block of its own", Json.parseToJsonElement(item.payloadJson).jsonObject.containsKey("car"))
+        assertEquals(JsonNull, car(item.payloadJson).getValue("vin"))
         h.core.onVehicle(VehicleEvent.Vin("\"$vin\""))
-        assertEquals(vin, car(h.core.wireBody(item)).getValue("vin").jsonPrimitive.content)
         assertEquals(vin, h.store.data.getValue(Space.LIVE).settings.vin)
+        val sent = car(h.core.wireBody(item))
+        assertEquals(vin, sent.getValue("vin").jsonPrimitive.content)
+        assertEquals("00가 0000", sent.getValue("plate").jsonPrimitive.content)
+    }
+
+    @Test fun anEntryKeepsTheIdentityItWasQueuedUnder() {
+        val h = Harness(AppSettings(plateNumber = "11가 1111", entityName = "가상예시 주식회사", archiveWebhookUrl = hook))
+        h.core.onVehicle(VehicleEvent.Vin("\"$vin\""))
+        h.drive(100.0, 12.0, null, null)
+        val item = h.core.outbox.value.first()
+        // plate, company and VIN change before the flush: the queued entry still goes out as it was recorded
+        h.core.saveSettings(h.core.settings.value.copy(plateNumber = "22나 2222", entityName = "다른 회사"), null, null)
+        h.core.onVehicle(VehicleEvent.Vin("\"KMHL341DBNA000002\""))
+        val sent = car(h.core.wireBody(item))
+        assertEquals("11가 1111", sent.getValue("plate").jsonPrimitive.content)
+        assertEquals("가상예시 주식회사", sent.getValue("entity").jsonPrimitive.content)
+        assertEquals(vin, sent.getValue("vin").jsonPrimitive.content)
+        assertEquals(item.payloadJson, h.core.wireBody(item))
     }
 
     @Test fun theVinSeenOnceIsKeptForTheNextStart() {
