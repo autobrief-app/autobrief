@@ -135,12 +135,15 @@ class Ledger(initial: List<LedgerEntry> = emptyList()) {
         }
 
         /** The rows the chain describes, rebuilt from the entries alone. */
-        fun replay(entries: List<LedgerEntry>): Map<String, TripRecord> {
-            val trips = linkedMapOf<String, TripRecord>()
+        fun replay(entries: List<LedgerEntry>): Map<String, TripRecord> = history(entries).mapValues { it.value.last() }
+
+        /** Every state the chain gave each row, oldest first (a row's last state is what [replay] returns). */
+        fun history(entries: List<LedgerEntry>): Map<String, List<TripRecord>> {
+            val states = linkedMapOf<String, MutableList<TripRecord>>()
             for (e in entries.sortedBy { it.seq }) {
                 val b = runCatching { json.parseToJsonElement(e.body) as JsonObject }.getOrNull() ?: continue
-                when (e.kind) {
-                    LedgerKind.TRIP, LedgerKind.GAP -> trips[e.tripId] = TripRecord(
+                val next: TripRecord = when (e.kind) {
+                    LedgerKind.TRIP, LedgerKind.GAP -> TripRecord(
                         id = e.tripId,
                         startEpochMs = b.long("startEpochMs") ?: 0,
                         endEpochMs = b.long("endEpochMs") ?: 0,
@@ -155,10 +158,10 @@ class Ledger(initial: List<LedgerEntry> = emptyList()) {
                         routeTollEstimateKrw = b.long("toll")?.toInt(),
                     )
                     LedgerKind.CLASSIFY, LedgerKind.AMEND -> {
-                        val t = trips[e.tripId] ?: continue
+                        val t = states[e.tripId]?.last() ?: continue
                         val purpose = runCatching { TripPurpose.valueOf(b.str("purpose") ?: "") }.getOrNull() ?: continue
                         val name = b.str("userName")
-                        trips[e.tripId] = t.copy(
+                        t.copy(
                             purpose = purpose,
                             user = name?.let { CarUser(it, b.str("userDept") ?: "") },
                             memo = b.str("memo") ?: "",
@@ -169,9 +172,45 @@ class Ledger(initial: List<LedgerEntry> = emptyList()) {
                             endPlace = b.str("endPlace") ?: t.endPlace,
                         )
                     }
+                    else -> continue
                 }
+                states.getOrPut(e.tripId) { mutableListOf() } += next
             }
-            return trips
+            return states
+        }
+
+        /**
+         * Every field that reaches the form (⑤⑥⑦, ⑧⑨ by purpose, ④, ⑩ remarks) matches the chain's state [t]; place
+         * labels are compared when the chain carries them (set after parking without a rule they are display-only).
+         */
+        private fun matches(t: TripRecord, r: TripRecord): Boolean =
+            t.startOdometerKm == r.startOdometerKm && t.endOdometerKm == r.endOdometerKm &&
+                t.startEpochMs == r.startEpochMs && t.endEpochMs == r.endEpochMs &&
+                t.purpose == r.purpose && t.user == r.user && t.memo == r.memo &&
+                t.classifiedBy == r.classifiedBy && t.amended == r.amended && t.autoReason == r.autoReason &&
+                t.source == r.source && t.routeTollEstimateKrw == r.routeTollEstimateKrw &&
+                (t.startPlace == null || t.startPlace == r.startPlace) && (t.endPlace == null || t.endPlace == r.endPlace)
+
+        /**
+         * The rows file is written after the ledger, so the app dying between the two leaves rows behind the chain: a
+         * trip missing, or a purpose older than its last CLASSIFY/AMEND. Such rows are rebuilt from the chain, which is
+         * the source of truth. A row equal to no state the chain ever gave it was edited, not left behind: it stays as
+         * stored, and [check] reports it. Returns the rows and how many were rebuilt.
+         */
+        fun repair(rows: List<TripRecord>, entries: List<LedgerEntry>): Pair<List<TripRecord>, Int> {
+            if (entries.isEmpty()) return rows to 0
+            val history = history(entries)
+            var rebuilt = 0
+            val out = rows.mapTo(mutableListOf()) { r ->
+                val states = history[r.id] ?: return@mapTo r
+                val last = states.last()
+                if (matches(last, r) || states.dropLast(1).none { matches(it, r) }) return@mapTo r
+                rebuilt++
+                last.copy(startPlace = last.startPlace ?: r.startPlace, endPlace = last.endPlace ?: r.endPlace)
+            }
+            val shown = rows.mapTo(HashSet()) { it.id }
+            history.filterKeys { it !in shown }.values.forEach { out += it.last(); rebuilt++ }
+            return (if (rebuilt == 0) rows else out.sortedBy { it.startEpochMs }) to rebuilt
         }
 
         /** Re-hashes the whole chain and compares its replay with the rows that are shown and exported. */
@@ -193,15 +232,7 @@ class Ledger(initial: List<LedgerEntry> = emptyList()) {
                     problems += "${dateLabel(r.startEpochMs)} 운행이 기록 원장에 없습니다."
                     continue
                 }
-                // every field that reaches the form (⑤⑥⑦, ⑧⑨ by purpose, ④, ⑩ remarks) must match the replay;
-                // place labels are compared when the ledger carries them (set after parking without a rule they are display-only)
-                val same = t.startOdometerKm == r.startOdometerKm && t.endOdometerKm == r.endOdometerKm &&
-                    t.startEpochMs == r.startEpochMs && t.endEpochMs == r.endEpochMs &&
-                    t.purpose == r.purpose && t.user == r.user && t.memo == r.memo &&
-                    t.classifiedBy == r.classifiedBy && t.amended == r.amended && t.autoReason == r.autoReason &&
-                    t.source == r.source && t.routeTollEstimateKrw == r.routeTollEstimateKrw &&
-                    (t.startPlace == null || t.startPlace == r.startPlace) && (t.endPlace == null || t.endPlace == r.endPlace)
-                if (!same) problems += "${dateLabel(r.startEpochMs)} 운행이 원장과 다릅니다(계기판, 목적, 사용자, 비고 또는 분류 방식)."
+                if (!matches(t, r)) problems += "${dateLabel(r.startEpochMs)} 운행이 원장과 다릅니다(계기판, 목적, 사용자, 비고 또는 분류 방식)."
             }
             val shown = rows.map { it.id }.toSet()
             replayed.keys.filter { it !in shown }.forEach { problems += "원장에 있는 운행($it)이 목록에서 사라졌습니다." }

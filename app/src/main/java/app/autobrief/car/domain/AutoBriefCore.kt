@@ -160,7 +160,13 @@ class AutoBriefCore(
     private fun loadSpace(s: Space) {
         val d = store.load(s)
         space = s
-        logbook = TripLogbook(d.trips)
+        // the ledger is written before the trips file: rows the app died before storing come back from the chain
+        val (rows, rebuilt) = Ledger.repair(d.trips, d.ledger)
+        if (rebuilt > 0) {
+            store.saveTrips(s, rows)
+            log("TRIPS_REBUILT rows=$rebuilt")
+        }
+        logbook = TripLogbook(rows)
         ledger = Ledger(d.ledger)
         _space.value = s
         _settings.value = d.settings
