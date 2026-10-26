@@ -102,4 +102,14 @@ class LogbookFormTest {
         assertFalse(year.headerLines.any { it.startsWith("발췌 기간") })
         assertFalse("발췌" in year.note)
     }
+
+    @Test fun aGapWithinOneDayIsPlainAndTheNoteCountsContinuityBreaks() {
+        val first = trip("T1", march2, 8, 100.0, 110.0, TripPurpose.COMMUTE)
+        val gap = TripRecord("G1", first.endEpochMs, Harness.at(march2, 12, 0), 110.0, 110.3, TripPurpose.UNLOGGED_GAP, null, TripLogbook.GAP_MEMO)
+        val second = trip("T2", march2, 12, 110.3, 120.0, TripPurpose.BUSINESS)
+        val third = trip("T3", march2, 15, 120.4, 130.0, TripPurpose.BUSINESS) // 0.4 km missing before it: a break
+        val sheet = LogbookExport.build(listOf(first, gap, second, third), settings, year2026, "CODE")
+        assertEquals("미기록 구간", sheet.rows[1][8])
+        assertTrue(sheet.note, "계기판 연속성 끊김 1곳" in sheet.note)
+    }
 }

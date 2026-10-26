@@ -108,11 +108,12 @@ object LogbookExport {
         }
         val totals = Totals(unit, summary.totalKm, summary.businessUseKm, summary.businessUseRatio)
         val note = buildString {
-            append("작성: 오토브리프. ⑤⑥은 차량 계기판 누적거리(Pleos Vehicle SDK) 값이며 기록 뒤에는 바꿀 수 없고, 목적을 고친 내역은 '검증 기록' 시트에 남습니다. ")
+            append("작성: 오토브리프. ⑤⑥은 차량 계기판 누적거리(Pleos Vehicle SDK)를 0.1㎞ 단위로 반올림한 값이며 기록 뒤에는 바꿀 수 없고, 목적을 고친 내역은 '검증 기록' 시트에 남습니다. ")
             append("검증 코드 $verificationCode. ")
             append("근거 서식: 국세청 「업무용승용차 운행기록 방법에 관한 고시」 별지 서식.")
             if (summary.unclassifiedCount > 0) append(" 미분류 ${summary.unclassifiedCount}건은 업무용으로 계산하지 않았습니다.")
             if (summary.gapRowCount > 0) append(" 미기록 구간 ${summary.gapRowCount}건은 비업무로 계산했습니다.")
+            append(" 계기판 연속성 끊김 ${summary.continuityBreaks}곳(앞 행의 ⑥과 다음 행의 ⑤가 0.05㎞ 넘게 다른 곳).")
             if (!businessYear) append(" 이 파일은 사업연도 중 일부 기간의 발췌본입니다. 세무 신고에 쓰는 ⑬업무사용비율은 이 발췌 기간이 아니라 사업연도 전체의 ⑫/⑪입니다.")
         }
         return Sheet(if (businessYear) TITLE else "$TITLE (기간 발췌)", header, COLUMNS, rows, totals, note)
@@ -122,7 +123,7 @@ object LogbookExport {
         when (r.purpose) {
             TripPurpose.PERSONAL -> add("비업무")
             TripPurpose.UNCLASSIFIED -> add("미분류")
-            TripPurpose.UNLOGGED_GAP -> add("미기록 구간")
+            TripPurpose.UNLOGGED_GAP -> add(gapLabel(r))
             else -> {}
         }
         when {
@@ -130,14 +131,20 @@ object LogbookExport {
             r.classifiedBy == ClassifiedBy.VOICE -> add("음성 지정")
         }
         if (r.amended) add("수정됨")
-        r.routeTollEstimateKrw?.takeIf { it > 0 }?.let { add("내비 예상 통행료 ${"%,d".format(it)}원") }
         if (r.memo.isNotBlank() && r.purpose != TripPurpose.UNLOGGED_GAP) add(r.memo)
     }.joinToString(", ")
+
+    /** A gap row is dated by its start in ③; when the unlogged stretch runs over days, ⑩ gives the whole range. */
+    private fun gapLabel(r: TripRecord): String {
+        val from = TripLogbook.localDate(r.startEpochMs)
+        val to = TripLogbook.localDate(r.endEpochMs)
+        return if (to == from) "미기록 구간" else "미기록 구간 ${dateWithWeekday(from)} ~ ${dateWithWeekday(to)}"
+    }
 
     fun dateWithWeekday(d: LocalDate): String =
         "$d(${d.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.KOREAN)})"
 
-    /** The ledger entries that touch the period's trips, oldest first. */
+    /** The ledger entries that touch the period's trips, oldest first; a trip's entry also shows the navigation's toll estimate. */
     fun ledgerTable(entries: List<LedgerEntry>, records: List<TripRecord>, period: ClosedRange<LocalDate>, headCode: String): Table {
         val ids = records.filter { TripLogbook.localDate(it.startEpochMs) in period }.map { it.id }.toSet()
         val rows = entries.filter { it.tripId in ids }.sortedBy { it.seq }.map { e ->
@@ -177,7 +184,8 @@ object LogbookExport {
         val user = s("userName")?.let { n -> " · $n" + (s("userDept")?.takeIf { it.isNotBlank() }?.let { "($it)" } ?: "") } ?: ""
         return when (e.kind) {
             LedgerKind.TRIP, LedgerKind.GAP -> "계기판 ${"%,.1f".format(d("startOdometerKm") ?: 0.0)} → ${"%,.1f".format(d("endOdometerKm") ?: 0.0)} km" +
-                (s("source")?.takeIf { it != TripSource.SDK }?.let { " · $it" } ?: "")
+                (s("source")?.takeIf { it != TripSource.SDK }?.let { " · $it" } ?: "") +
+                (d("toll")?.takeIf { it > 0 }?.let { " · 내비 예상 통행료 ${"%,d".format(it.toLong())}원" } ?: "")
             LedgerKind.CLASSIFY -> purpose("purpose") + user + " · ${s("by") ?: "-"}" + (s("autoReason")?.let { "($it)" } ?: "")
             LedgerKind.AMEND -> "${purpose("previousPurpose")} → ${purpose("purpose")}$user · ${s("by") ?: "-"} · 사유: ${s("reason") ?: "-"}"
             else -> e.body
