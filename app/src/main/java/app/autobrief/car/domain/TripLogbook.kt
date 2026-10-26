@@ -39,10 +39,31 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
     val openTrip: OpenTrip? get() = open
     val tripInProgress: Boolean get() = open != null
 
-    /** Gear left P before the first odometer value arrived (cold start): the trip opens at that first value. */
+    /** Gear left P before an odometer value was taken (cold start, value in doubt): the trip opens at the next one. */
     private var pendingStart: OpenTrip? = null
 
-    fun onOdometer(km: Double): List<TripRecord> {
+    /** The last odometer value the logbook took; null until one is taken (see [onOdometer]). */
+    val odometerKm: Double? get() = latestOdometerKm
+
+    /** Which readings are taken: never a NaN, a start-up 0 or a step back or jump that the next reading does not confirm. */
+    private val screen = OdometerScreen()
+
+    private fun references(): List<Double> =
+        screen.references(latestOdometerKm, listOfNotNull(rows.lastOrNull()?.endOdometerKm, open?.startOdometerKm))
+
+    /** The dashboard odometer, screened by [OdometerScreen]; while a value is in doubt a departure waits for the next one. */
+    fun onOdometer(km: Double): List<TripRecord> = screen.screen(km, latestOdometerKm, references()).flatMap(::takeOdometer)
+
+    /**
+     * The car's current value when this logbook takes over (switching data space): taken as it is, as the other
+     * logbook already checked it, unless it cannot be a reading at all.
+     */
+    fun seedOdometer(km: Double) {
+        if (!screen.impossible(km, references())) latestOdometerKm = km
+    }
+
+    private fun takeOdometer(km: Double): List<TripRecord> {
+        screen.taken()
         latestOdometerKm = km
         val pending = pendingStart ?: return emptyList()
         pendingStart = null
@@ -78,10 +99,12 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
         val previous = lastGear
         lastGear = gear
         if (gear == Gear.UNKNOWN) return emptyList()
+        if (gear == Gear.PARK) pendingStart = null
         val odo = latestOdometerKm
-        if (odo == null) {
-            // remember the departure; the trip opens when the first odometer value arrives
-            pendingStart = if (gear != Gear.PARK) OpenTrip(nowEpochMs, 0.0, routeTollEstimateKrw) else null
+        val departing = gear != Gear.PARK && open == null && previous != gear
+        if (odo == null || (departing && screen.inDoubt)) {
+            // remember the departure; the trip opens at the next odometer value taken
+            if (gear != Gear.PARK && open == null) pendingStart = pendingStart ?: OpenTrip(nowEpochMs, 0.0, routeTollEstimateKrw)
             return emptyList()
         }
         val added = mutableListOf<TripRecord>()

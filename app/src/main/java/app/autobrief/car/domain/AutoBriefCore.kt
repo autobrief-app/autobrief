@@ -167,7 +167,7 @@ class AutoBriefCore(
         pinLockRestored = false
         refreshCheck()
         // the new logbook needs the car's current state to detect the next departure correctly
-        _vehicle.value.odometerKm?.let { logbook.onOdometer(it) }
+        _vehicle.value.odometerKm?.let { logbook.seedOdometer(it) }
         logbook.onGear(_vehicle.value.gear, clock())
     }
 
@@ -189,8 +189,9 @@ class AutoBriefCore(
                 }
             }
             is VehicleEvent.Odometer -> {
-                _vehicle.value = s.copy(odometerKm = e.km)
                 val added = logbook.onOdometer(e.km)
+                // the screen shows the value the logbook took, never a NaN or a start-up 0
+                _vehicle.value = s.copy(odometerKm = logbook.odometerKm)
                 if (added.isNotEmpty()) recordRows(added)
                 if (logbook.openTrip != null && _open.value == null) openTripStarted()
             }
