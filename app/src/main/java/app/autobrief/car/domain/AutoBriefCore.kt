@@ -46,6 +46,11 @@ class AutoBriefCore(
      * names in logcat.
      */
     private val detailLogs: Boolean = false,
+    /**
+     * Milliseconds that only move forward (SystemClock.elapsedRealtime on the car): the PIN lockout runs on it, so
+     * setting the car's clock ahead does not end a lock. Tests that do not care pass nothing and share [clock].
+     */
+    private val monotonic: () -> Long = clock,
 ) {
     enum class Space(val dir: String) { LIVE("live"), DEMO("demo") }
 
@@ -153,6 +158,7 @@ class AutoBriefCore(
         _notice.value = null
         pendingAuto = null
         openStartPoint = null
+        pinLockUntilMono = null
         refreshCheck()
         // the new logbook needs the car's current state to detect the next departure correctly
         _vehicle.value.odometerKm?.let { logbook.onOdometer(it) }
@@ -477,33 +483,54 @@ class AutoBriefCore(
 
     val adminPinSet: Boolean get() = _settings.value.adminPinHash.isNotEmpty()
 
-    private fun pinMatches(pin: String?, s: AppSettings = _settings.value): Boolean =
-        s.adminPinHash.isNotEmpty() && pin != null && Ledger.sha256(s.adminPinSalt + pin) == s.adminPinHash
-
     enum class SettingsResult { SAVED, PIN_REQUIRED, PIN_LOCKED, INVALID_URL, TRIP_IN_PROGRESS }
 
-    /** Until when PIN entry is locked (epoch ms); 0 = not locked. */
-    val pinLockedUntil: Long get() = _settings.value.adminPinLockedUntilMs.takeIf { it > clock() } ?: 0
+    /** The running lock's end on the [monotonic] clock; null = none in this process (a restart reads the settings). */
+    private var pinLockUntilMono: Long? = null
 
     /**
-     * The one place an admin PIN is checked. Every fifth wrong PIN in a row locks entry for 5 minutes, doubling up
-     * to 80 minutes; the counters live in the settings file so a restart does not reset them.
+     * How long PIN entry stays locked. A lock set in this process is measured on the monotonic clock. After a restart
+     * only the stored wall-clock end is known: it is taken over once, never longer than the longest lock, so a clock
+     * set back cannot stretch it and a clock set ahead while the app runs cannot end it.
+     */
+    private fun pinLockRemainingMs(s: AppSettings): Long {
+        pinLockUntilMono?.let { return (it - monotonic()).coerceAtLeast(0) }
+        val remaining = (s.adminPinLockedUntilMs - clock()).coerceIn(0, PIN_LOCK_MAX_MS)
+        if (remaining > 0) pinLockUntilMono = monotonic() + remaining
+        return remaining
+    }
+
+    /** Until when PIN entry is locked (epoch ms); 0 = not locked. */
+    val pinLockedUntil: Long get() = pinLockRemainingMs(_settings.value).takeIf { it > 0 }?.let { clock() + it } ?: 0
+
+    /**
+     * The one place an admin PIN is checked. No PIN at all is a request for one, not a wrong guess. Every fifth wrong
+     * PIN in a row locks entry for 5 minutes, doubling up to 80 minutes; the counters live in the settings file so a
+     * restart does not reset them. A PIN stored by an older version is re-hashed on its next correct entry.
      */
     private fun checkAdminPin(pin: String?): SettingsResult {
         val s = _settings.value
         if (s.adminPinHash.isEmpty()) return SettingsResult.SAVED
-        val now = clock()
-        if (now < s.adminPinLockedUntilMs) return SettingsResult.PIN_LOCKED
-        if (pinMatches(pin, s)) {
-            if (s.adminPinFailures != 0) writeSettings(s.copy(adminPinFailures = 0, adminPinLockedUntilMs = 0))
+        if (pinLockRemainingMs(s) > 0) return SettingsResult.PIN_LOCKED
+        if (pin.isNullOrBlank()) return SettingsResult.PIN_REQUIRED
+        if (AdminPin.matches(pin, s.adminPinSalt, s.adminPinHash)) {
+            var next = s.copy(adminPinFailures = 0, adminPinLockedUntilMs = 0)
+            if (AdminPin.isLegacy(s.adminPinHash)) {
+                val salt = AdminPin.newSalt()
+                next = next.copy(adminPinSalt = salt, adminPinHash = AdminPin.hash(pin, salt))
+                log("ADMIN_PIN_REHASHED")
+            }
+            if (next != s) writeSettings(next)
+            pinLockUntilMono = null
             return SettingsResult.SAVED
         }
         val failures = s.adminPinFailures + 1
         val rounds = failures / PIN_ATTEMPTS_BEFORE_LOCK
-        val lockedUntil = if (failures % PIN_ATTEMPTS_BEFORE_LOCK == 0) now + PIN_LOCK_MS * (1L shl (rounds - 1).coerceAtMost(4)) else s.adminPinLockedUntilMs
-        writeSettings(s.copy(adminPinFailures = failures, adminPinLockedUntilMs = lockedUntil))
+        val lockMs = if (failures % PIN_ATTEMPTS_BEFORE_LOCK == 0) PIN_LOCK_MS * (1L shl (rounds - 1).coerceAtMost(4)) else 0L
+        if (lockMs > 0) pinLockUntilMono = monotonic() + lockMs
+        writeSettings(s.copy(adminPinFailures = failures, adminPinLockedUntilMs = if (lockMs > 0) clock() + lockMs else s.adminPinLockedUntilMs))
         log("ADMIN_PIN_MISS count=$failures")
-        return if (now < lockedUntil) SettingsResult.PIN_LOCKED else SettingsResult.PIN_REQUIRED
+        return if (lockMs > 0) SettingsResult.PIN_LOCKED else SettingsResult.PIN_REQUIRED
     }
 
     /**
@@ -530,8 +557,8 @@ class AutoBriefCore(
         )
         if (newPin != null) {
             require(newPin.length in 4..8 && newPin.all(Char::isDigit)) { "PIN must be 4-8 digits" }
-            val salt = clock().toString(16)
-            next = next.copy(adminPinSalt = salt, adminPinHash = Ledger.sha256(salt + newPin))
+            val salt = AdminPin.newSalt()
+            next = next.copy(adminPinSalt = salt, adminPinHash = AdminPin.hash(newPin, salt))
         }
         writeSettings(next)
         if (old.archiveWebhookUrl.isBlank() && url.isNotBlank()) backfillLedger()
@@ -750,6 +777,9 @@ class AutoBriefCore(
         const val SEND_COOLDOWN_MS = 60_000L
         const val PIN_ATTEMPTS_BEFORE_LOCK = 5
         const val PIN_LOCK_MS = 5 * 60_000L
+
+        /** The longest lock: 5 minutes doubled four times. */
+        const val PIN_LOCK_MAX_MS = PIN_LOCK_MS * 16
 
         /** The Gleo voice assistant of Pleos Connect v2.1 (AmbientAiApp); it defines the signature permission below. */
         const val GLEO_PACKAGE = "ai.umos.ambientai"
