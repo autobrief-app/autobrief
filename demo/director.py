@@ -52,6 +52,7 @@ from setup_emulator import (  # noqa: E402  (shared helpers live next to this sc
     parse_current_user,
     parse_front_activity,
     resumed_lines,
+    resumed_records,
     say,
     start_app,
     wait_for_app_in_front,
@@ -87,8 +88,13 @@ EXIT_APP = 4
 
 # The app asks navigation for the position every 60 s while parked and every 6 s while driving
 # (and at every P/D shift); the director holds the car at a place until the app has seen it there.
-POSITION_WAIT_PARKED_S = 75.0
-POSITION_WAIT_DRIVING_S = 15.0
+POSITION_WAIT_PARKED_S = 100.0
+POSITION_WAIT_DRIVING_S = 30.0
+# On Pleos Connect NaviHelper's position comes from the navigation app, and that app reads the GPS
+# only while it is on screen (it shares the home's one driver slot with AutoBrief). The director
+# shows the map while the app has a position to learn and AutoBrief when the trip opens and closes.
+NAV_PACKAGE = "ai.umos.maps.android.navigation.app"
+NAV_SHOW_WAIT_S = 30.0
 POSITION_RESEND_S = 1.0  # a GPS receiver reports once a second
 
 FRONT_STABLE_S = 2.0  # before a scenario the app must hold the front this long
@@ -243,6 +249,16 @@ class Pause:
 
 
 @dataclass(frozen=True)
+class ShowApp:
+    """AutoBrief in front (its own screen shows the trip opening and closing)."""
+
+
+@dataclass(frozen=True)
+class ShowNavigation:
+    """The navigation map in front: on Pleos it only follows the GPS while it is on screen."""
+
+
+@dataclass(frozen=True)
 class AwaitPosition:
     """Hold the car at `place` (the fix re-sent every second) until the app logs that it is there.
 
@@ -303,12 +319,13 @@ def plan_beats(
     speeds = jitter_speeds(scenario.key, scenario.km)
 
     ready = (
-        GeoFix(origin.lat, origin.lon),  # before P: the app asks for the position at every P
+        GeoFix(origin.lat, origin.lon),
         ParkVehicle(),
         SetSeat("driver", True),
         SetOdometer(scenario.odometer_start),
         Pause(SETTLE_S * scale),
         AwaitPosition(origin, POSITION_WAIT_PARKED_S),
+        ShowApp(),
     )
 
     depart = [SetGear("Drive")]
@@ -318,7 +335,7 @@ def plan_beats(
             Pause(RAMP_UP_S / RAMP_STEPS * scale),
         ]
 
-    drive = []
+    drive = [ShowNavigation()]
     for tick in range(1, scenario.km + 1):
         # strictly between origin and destination: the arrival fix is the beat's own step
         lat, lon = lerp_point(origin, dest, tick / (scenario.km + 1))
@@ -337,7 +354,7 @@ def plan_beats(
         ]
     arrive.append(AwaitPosition(dest, POSITION_WAIT_DRIVING_S))
 
-    park = (ParkVehicle(), Pause(SETTLE_S * scale))
+    park = (ParkVehicle(), ShowApp(), Pause(SETTLE_S * scale))
 
     bodies = (
         ("ready", ready, False),
@@ -725,6 +742,13 @@ def write_preflight(out_dir: Optional[str], lines: Sequence[str]) -> Optional[st
     return path
 
 
+def nav_resumed(dumpsys: str, user: Optional[int]) -> bool:
+    return any(
+        a.package == NAV_PACKAGE and (user is None or a.user == user)
+        for _, a in resumed_records(dumpsys)
+    )
+
+
 def ensure_app_in_front(
     adb,
     stable: Optional[float] = None,
@@ -822,6 +846,10 @@ class Director:
             self.geo_fix(step)
         elif isinstance(step, AwaitPosition):
             self.await_position(step)
+        elif isinstance(step, ShowApp):
+            ensure_app_in_front(self.adb, now=self.clock, sleep=self.sleep, say_fn=self.say)
+        elif isinstance(step, ShowNavigation):
+            self.show_navigation()
         elif isinstance(step, ParkVehicle):
             self.park()
         else:
@@ -870,11 +898,39 @@ class Director:
                 self._nmea_warned = True
                 self.say("  (경고) 내비게이션 위치(NMEA) 전송을 건너뜁니다: %s" % exc)
 
+    def show_navigation(self) -> bool:
+        """Start the navigation app (its launcher activity) in the current user and wait until it is
+        resumed. A refusal is a warning: the trip still runs, only the place rules may miss."""
+        user = parse_current_user(self.adb.shell("am", "get-current-user"))
+        if user is not None and nav_resumed(self.adb.activities(), user):
+            return True
+        self.say("  (지도 화면으로 바꿉니다)")
+        reply = self.adb.shell(
+            "am", "start", "-W", "--user", str(user if user is not None else 0),
+            "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER",
+            "-p", NAV_PACKAGE,
+            timeout=60,
+        )
+        if re.search(r"\bError\b|Exception", reply):
+            self.say("  (경고) 지도 앱을 띄우지 못했습니다: %s" % reply.strip()[:200])
+            return False
+        deadline = self.clock() + NAV_SHOW_WAIT_S
+        while not nav_resumed(self.adb.activities(), user):
+            if self.clock() >= deadline:
+                self.say("  (경고) %.0f초 안에 지도 화면이 뜨지 않았습니다." % NAV_SHOW_WAIT_S)
+                return False
+            self.sleep(1.0)
+        return True
+
     def await_position(self, step: AwaitPosition) -> None:
         want = step.place.app_label
         deadline = self.clock() + step.timeout
+        shown = False
         while True:
             seen = last_position_label(self.adb.logcat_dump())
+            if seen != want and not shown:
+                shown = True  # the map has to be on screen to follow the GPS
+                self.show_navigation()
             if seen == want:
                 self.say("  - 앱이 위치를 확인했습니다: %s" % step.place.name)
                 return

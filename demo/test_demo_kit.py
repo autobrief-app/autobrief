@@ -1715,8 +1715,13 @@ def place_label_at(lat, lon):
 
 
 class FakeAdb:
-    """The emulator side of Director: geo fixes, NMEA, screenshots, and the app's POSITION log
-    (the place of the latest fix, unless `app_silent`)."""
+    """The emulator side of Director: geo fixes, NMEA, screenshots, the screen (which app is in
+    front) and the app's POSITION log. Like Pleos Connect, the navigation engine follows the NMEA
+    only while the map is in front, and the app reports the engine's position (unless
+    `app_silent`)."""
+
+    APP = "app.autobrief.car/.ui.MainActivity"
+    NAV = "ai.umos.maps.android.navigation.app/.MainActivity"
 
     def __init__(self, png=PNG):
         self.geo = []
@@ -1726,8 +1731,25 @@ class FakeAdb:
         self.nmea_error = None
         self.shot_error = None
         self.app_silent = False
-        self.position = None  # (lat, lon) the emulated GPS reports now
+        self.position = None  # (lat, lon) the navigation engine holds
+        self.front = self.APP
+        self.nav_follows_gps = True  # False: the map never takes the GPS (an image without it)
+        self.shells = []
         self.dumps = 0
+
+    def shell(self, *args, timeout=None):
+        line = " ".join(args)
+        self.shells.append(line)
+        if line == "am get-current-user":
+            return "10\n"
+        if line.startswith("am start") and "-p ai.umos.maps.android.navigation.app" in line:
+            self.front = self.NAV
+        elif line.startswith("am start") and "-n app.autobrief.car/.ui.MainActivity" in line:
+            self.front = self.APP
+        return "Status: ok\n"
+
+    def activities(self):
+        return "  topResumedActivity=ActivityRecord{1 u10 %s t1}\n" % self.front
 
     def logcat_dump(self, *args, **kwargs):
         self.dumps += 1
@@ -1745,7 +1767,8 @@ class FakeAdb:
             raise self.nmea_error
         self.nmea.append(sentence)
         fields = sentence.split(",")
-        if fields[0] == "$GPGGA":  # the navigation app reads the position from the NMEA stream
+        on_screen = self.front == self.NAV and self.nav_follows_gps
+        if fields[0] == "$GPGGA" and on_screen:  # the map reads the NMEA only while it is in front
             self.position = (
                 int(fields[2][:2]) + float(fields[2][2:]) / 60,
                 int(fields[4][:3]) + float(fields[4][3:]) / 60,
@@ -1788,17 +1811,70 @@ class DirectorExecutorTests(unittest.TestCase):
 
     def test_departure_and_parking_wait_until_the_app_has_seen_the_place(self):
         steps = director.plan_beats(director.SCENARIOS[1], 0.3)
-        ready, arrive = steps[0].steps, steps[3].steps
-        self.assertIsInstance(ready[0], director.GeoFix, "the fix comes before P (P asks for it)")
+        ready, drive, arrive, park = (steps[i].steps for i in (0, 2, 3, 4))
+        self.assertIsInstance(ready[0], director.GeoFix)
         self.assertIsInstance(ready[1], director.ParkVehicle)
         self.assertEqual(
-            ready[-1], director.AwaitPosition(director.OFFICE, director.POSITION_WAIT_PARKED_S)
+            ready[-2:],
+            (
+                director.AwaitPosition(director.OFFICE, director.POSITION_WAIT_PARKED_S),
+                director.ShowApp(),
+            ),
+            "the app has seen the origin, then its screen is shown for the departure",
         )
+        self.assertEqual(drive[0], director.ShowNavigation(), "the map follows the drive")
         self.assertEqual(
             arrive[-1], director.AwaitPosition(director.CLIENT, director.POSITION_WAIT_DRIVING_S)
         )
+        self.assertEqual(park[:2], (director.ParkVehicle(), director.ShowApp()))
         self.assertEqual(director.UNREGISTERED.app_label, "-")
         self.assertEqual(director.CLIENT.app_label, "가상상사")
+
+    def test_the_map_learns_the_position_and_the_app_shows_the_trip(self):
+        runner = self.make()
+        screens = []
+        real_shell = self.adb.shell
+
+        def shell(*args, **kwargs):
+            reply = real_shell(*args, **kwargs)
+            screens.append(self.adb.front)
+            return reply
+
+        self.adb.shell = shell
+        runner.run_scenario(director.SCENARIOS[0])
+        starts = [s for s in self.adb.shells if s.startswith("am start")]
+        nav = "-p ai.umos.maps.android.navigation.app"
+        # ready: the app has not seen 집 -> map; then the app; drive: map; park: the app
+        self.assertEqual(
+            ["nav" if nav in s else "app" for s in starts], ["nav", "app", "nav", "app"]
+        )
+        self.assertEqual(self.adb.front, FakeAdb.APP, "the closed trip is on screen")
+        self.assertIn("  - 앱이 위치를 확인했습니다: 집", self.said)
+        self.assertIn("  - 앱이 위치를 확인했습니다: 회사", self.said)
+        self.assertFalse(any("확인하지 못했습니다" in m for m in self.said))
+
+    def test_a_map_that_never_takes_the_gps_costs_a_warning_not_the_demo(self):
+        runner = self.make()
+        self.adb.nav_follows_gps = False
+        runner.run_scenario(director.SCENARIOS[1])
+        self.assertEqual(sum("확인하지 못했습니다" in m for m in self.said), 2)
+        self.assertEqual(self.console.calls[-1], ("gear", "Park"))
+
+    def test_a_map_that_does_not_start_is_reported_at_once(self):
+        runner = self.make()
+        self.adb.shell = lambda *a, **k: (
+            "10\n" if a[:2] == ("am", "get-current-user")
+            else "Error: Activity not started, unable to resolve Intent\n"
+        )
+        self.assertFalse(runner.show_navigation())
+        self.assertEqual(self.sleeps, [], "no waiting for a map that was never started")
+        self.assertTrue(any("unable to resolve" in m for m in self.said))
+
+    def test_map_already_in_front_is_not_started_again(self):
+        runner = self.make()
+        self.adb.front = FakeAdb.NAV
+        self.assertTrue(runner.show_navigation())
+        self.assertFalse(any(s.startswith("am start") for s in self.adb.shells))
 
     def test_position_wait_resends_the_fix_until_the_app_reports_it(self):
         runner = self.make()
@@ -2807,6 +2883,8 @@ elif cmd == "shell":
             "  UserInfo{10:Driver:412} running\n    State: RUNNING_UNLOCKED\n")
     elif line.startswith("am start") and "android.intent.category.HOME" in line:
         set_front(HOME)
+    elif line.startswith("am start") and "-p ai.umos.maps.android.navigation.app" in line:
+        set_front(NAV)
     elif line.startswith("am start") and flag("start_fails"):
         out("Error type 3\nError: Activity class {app.autobrief.car/app.autobrief.car.ui.MainActivity} does not exist.\n")
     elif line.startswith("am start"):
@@ -3479,14 +3557,22 @@ class DirectorRehearsalTests(unittest.TestCase):
         self.assertIn("state=RUNNING_UNLOCKED", preflight)
         self.assertIn("front: u10 ai.umos.homescreen/.HomeActivity", preflight)
         self.assertIn('"bridge_ready": true', preflight)
-        # the home was in front: the app is started once, before the first scenario, then stays
-        self.assertEqual(text.count("다시 띄웁니다"), 1)
+        # per scenario: the map for the drive, the app again when the car parks
         calls = self.device.adb_calls()
-        starts = [c for c in calls if "shell" in c and c[c.index("shell") + 1].startswith("am start")]
-        self.assertEqual(
-            [c[c.index("shell") + 1] for c in starts],
-            ["am start -W --user 10 -n app.autobrief.car/.ui.MainActivity"],
+        starts = [
+            c[c.index("shell") + 1]
+            for c in calls
+            if "shell" in c and c[c.index("shell") + 1].startswith("am start")
+        ]
+        app = "am start -W --user 10 -n app.autobrief.car/.ui.MainActivity"
+        nav = (
+            "am start -W --user 10 -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "
+            "-p ai.umos.maps.android.navigation.app"
         )
+        self.assertEqual(starts.count(nav), 3)
+        self.assertEqual(starts[0], app, "the home was in front: the app comes first")
+        self.assertEqual(starts.count(app), 4)
+        self.assertEqual(text.count("지도 화면으로 바꿉니다"), 3)
         self.assertEqual(
             sum(c[2:4] == ["logcat", "-c"] for c in calls),
             1,
