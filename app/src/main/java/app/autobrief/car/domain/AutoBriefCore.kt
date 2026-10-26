@@ -132,7 +132,6 @@ class AutoBriefCore(
     val demoMode: Boolean get() = space == Space.DEMO
 
     private var routeToll: Int? = null
-    private var routeName: String? = null
     private var openStartPoint: GeoPoint? = null
     private var connectedLogged = false
 
@@ -196,21 +195,17 @@ class AutoBriefCore(
     fun onNavi(e: NaviEvent) {
         when (e) {
             is NaviEvent.Ready -> _navi.update { it.copy(ready = e.ready) }
+            // only the toll estimate is kept; the destination's name (where the driver goes) is not stored anywhere
             is NaviEvent.RouteStarted -> {
-                routeName = e.destinationName
                 routeToll = e.tollFareKrw
-                logbook.updateOpenRoute(routeToll, routeName)
+                logbook.updateOpenRoute(routeToll)
             }
             is NaviEvent.Destination -> {
-                routeName = e.name ?: routeName
                 if (e.tollFareKrw != null) routeToll = e.tollFareKrw
-                logbook.updateOpenRoute(routeToll, routeName)
+                logbook.updateOpenRoute(routeToll)
             }
             is NaviEvent.Arrived -> Unit
-            NaviEvent.RouteEnded -> {
-                routeName = null
-                routeToll = null
-            }
+            NaviEvent.RouteEnded -> routeToll = null
             is NaviEvent.Location -> {
                 val now = clock()
                 _navi.update { it.copy(ready = true, location = e.point, locationEpochMs = now) }
@@ -236,7 +231,7 @@ class AutoBriefCore(
     private fun onGear(gear: Gear, now: Long) {
         _vehicle.value = _vehicle.value.copy(gear = gear)
         val wasOpen = logbook.openTrip != null
-        val added = logbook.onGear(gear, now, routeToll, routeName)
+        val added = logbook.onGear(gear, now, routeToll)
         if (added.isNotEmpty()) recordRows(added)
         if (!wasOpen && logbook.openTrip != null) openTripStarted()
         // P again without moving (a gear shuffle) writes no row: nothing is being recorded any more

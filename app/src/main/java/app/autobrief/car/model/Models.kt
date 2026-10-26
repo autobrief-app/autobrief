@@ -49,9 +49,11 @@ data class TripRecord(
     val purpose: TripPurpose,
     val user: CarUser?,
     val memo: String,
-    /** NaviHelper DestinationInfo.tollFare at departure: the navigation's toll estimate for the route, not a charge. */
+    /**
+     * NaviHelper DestinationInfo.tollFare at departure: the navigation's toll estimate for the route, not a charge.
+     * The destination's name is not kept (a field of that name in older files is ignored on reading).
+     */
     val routeTollEstimateKrw: Int? = null,
-    val destinationName: String? = null,
     /** [ClassifiedBy] once classified; null while unclassified. */
     val classifiedBy: String? = null,
     /** Place labels matched at departure and arrival ("집", "회사", a client name); coordinates are never stored. */

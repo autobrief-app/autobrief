@@ -33,7 +33,6 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
         val startEpochMs: Long,
         val startOdometerKm: Double,
         val tollEstimateKrw: Int?,
-        val destinationName: String?,
     )
 
     val records: List<TripRecord> get() = rows.toList()
@@ -75,7 +74,6 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
         gear: Gear,
         nowEpochMs: Long,
         routeTollEstimateKrw: Int? = null,
-        destinationName: String? = null,
     ): List<TripRecord> {
         val previous = lastGear
         lastGear = gear
@@ -83,13 +81,13 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
         val odo = latestOdometerKm
         if (odo == null) {
             // remember the departure; the trip opens when the first odometer value arrives
-            pendingStart = if (gear != Gear.PARK) OpenTrip(nowEpochMs, 0.0, routeTollEstimateKrw, destinationName) else null
+            pendingStart = if (gear != Gear.PARK) OpenTrip(nowEpochMs, 0.0, routeTollEstimateKrw) else null
             return emptyList()
         }
         val added = mutableListOf<TripRecord>()
         if (gear != Gear.PARK && open == null && previous != gear) {
             added += gapRowIfMoved(odo, nowEpochMs)
-            open = OpenTrip(nowEpochMs, odo, routeTollEstimateKrw, destinationName)
+            open = OpenTrip(nowEpochMs, odo, routeTollEstimateKrw)
         } else if (gear == Gear.PARK) {
             val trip = open ?: return added
             open = null
@@ -105,7 +103,6 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
                 user = null,
                 memo = "",
                 routeTollEstimateKrw = trip.tollEstimateKrw,
-                destinationName = trip.destinationName,
             )
             rows += row
             added += row
@@ -113,10 +110,10 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
         return added
     }
 
-    /** Destination info that arrives after departure (navigation started late) still belongs to the open trip. */
-    fun updateOpenRoute(tollEstimateKrw: Int?, destinationName: String?) {
+    /** A toll estimate that arrives after departure (navigation started late) still belongs to the open trip. */
+    fun updateOpenRoute(tollEstimateKrw: Int?) {
         val o = open ?: return
-        open = o.copy(tollEstimateKrw = tollEstimateKrw ?: o.tollEstimateKrw, destinationName = destinationName ?: o.destinationName)
+        open = o.copy(tollEstimateKrw = tollEstimateKrw ?: o.tollEstimateKrw)
     }
 
     fun latestUnclassified(): TripRecord? = rows.lastOrNull { it.purpose == TripPurpose.UNCLASSIFIED }
