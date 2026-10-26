@@ -19,11 +19,15 @@ class WebhookSender(private val core: AutoBriefCore) {
         val url = core.settings.value.archiveWebhookUrl
         if (url.isBlank() || !AutoBriefCore.isAllowedEndpoint(url)) return
         val pending = core.outbox.value.filter { it.deliveredEpochMs == null && it.attempts < MAX_ATTEMPTS }.sortedBy { it.createdEpochMs }
+        val results = ArrayList<AutoBriefCore.Delivery>()
         for (item in pending.take(MAX_PER_FLUSH)) {
             val (ok, error) = post(url, item)
-            core.markDelivery(item.key, ok, error)
+            results += AutoBriefCore.Delivery(item.key, ok, error)
+            // results are written in batches: a crash re-sends at most one batch, which the receiver drops by key
+            if (results.size >= MARK_EVERY) { core.markDeliveries(results.toList()); results.clear() }
             if (!ok) break
         }
+        core.markDeliveries(results)
     }
 
     private fun post(url: String, item: OutboxItem): Pair<Boolean, String?> = runCatching {
@@ -46,5 +50,6 @@ class WebhookSender(private val core: AutoBriefCore) {
     companion object {
         const val MAX_ATTEMPTS = 50
         const val MAX_PER_FLUSH = 2_000
+        const val MARK_EVERY = 50
     }
 }

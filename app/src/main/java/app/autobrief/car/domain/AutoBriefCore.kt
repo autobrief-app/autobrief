@@ -416,10 +416,15 @@ class AutoBriefCore(
         _check.value = Ledger.check(ledger.all, logbook.records)
     }
 
-    private fun enqueue(key: String, kind: String, payload: String) {
+    private fun enqueue(key: String, kind: String, payload: String) = enqueueAll(listOf(Triple(key, kind, payload)))
+
+    /** One update and ONE write for a whole batch: the outbox file is rewritten whole, so a write per item is quadratic. */
+    private fun enqueueAll(items: List<Triple<String, String, String>>) {
+        if (items.isEmpty()) return
         _outbox.update { list ->
-            if (list.any { it.key == key }) list
-            else prune(list + OutboxItem(key, kind, payload, clock()))
+            val known = list.mapTo(HashSet()) { it.key }
+            val fresh = items.filter { known.add(it.first) }.map { (key, kind, payload) -> OutboxItem(key, kind, payload, clock()) }
+            if (fresh.isEmpty()) list else prune(list + fresh)
         }
         store.saveOutbox(space, _outbox.value)
     }
@@ -431,12 +436,17 @@ class AutoBriefCore(
         return (delivered + pending).sortedBy { it.createdEpochMs }
     }
 
-    /** Called from the sender's I/O thread; update{} keeps a concurrent enqueue from being lost. */
-    fun markDelivery(key: String, delivered: Boolean, error: String?) {
+    /** One send result for an outbox item. */
+    data class Delivery(val key: String, val delivered: Boolean, val error: String?)
+
+    /** Called from the sender's I/O thread with a batch of results (one write); update{} keeps a concurrent enqueue. */
+    fun markDeliveries(results: List<Delivery>) {
+        if (results.isEmpty()) return
+        val byKey = results.associateBy { it.key }
         _outbox.update { list ->
-            prune(list.map {
-                if (it.key != key) it
-                else it.copy(attempts = it.attempts + 1, deliveredEpochMs = if (delivered) clock() else null, lastError = error)
+            prune(list.map { item ->
+                val d = byKey[item.key] ?: return@map item
+                item.copy(attempts = item.attempts + 1, deliveredEpochMs = if (d.delivered) clock() else null, lastError = d.error)
             })
         }
         store.saveOutbox(space, _outbox.value)
@@ -508,9 +518,7 @@ class AutoBriefCore(
     }
 
     private fun backfillLedger() {
-        ledger.all.takeLast(BACKFILL_MAX).forEach { e ->
-            enqueue("ledger-${space.dir}-${e.seq}", "ledger", ledgerPayload(e))
-        }
+        enqueueAll(ledger.all.takeLast(BACKFILL_MAX).map { e -> Triple("ledger-${space.dir}-${e.seq}", "ledger", ledgerPayload(e)) })
     }
 
     /**

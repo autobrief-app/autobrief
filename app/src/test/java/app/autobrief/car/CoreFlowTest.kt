@@ -244,4 +244,29 @@ class CoreFlowTest {
         assertEquals(listOf("가상상사"), h.core.settings.value.places.map { it.label })
         assertTrue(h.core.allPlaces().any { it.label == "가상상사" })
     }
+
+    /** The demo backfill queues ~1,000 ledger entries: one outbox write, not one per entry (that took minutes on the emulator). */
+    @Test fun backfillWritesTheOutboxOnce() {
+        val h = Harness()
+        check(h.core.setDemoMode(true, null) == AutoBriefCore.SettingsResult.SAVED)
+        val before = h.store.outboxSaves
+        h.core.loadSampleHistory("http://10.0.2.2:8787/hook")
+        assertEquals(h.core.integrity.value.entryCount, h.core.outbox.value.size)
+        assertTrue("outbox written ${h.store.outboxSaves - before} times", h.store.outboxSaves - before <= 1)
+    }
+
+    @Test fun deliveryResultsAreAppliedWithOneWritePerBatch() {
+        val h = Harness()
+        h.core.setDemoMode(true, null)
+        h.core.loadSampleHistory("http://10.0.2.2:8787/hook")
+        val keys = h.core.outbox.value.map { it.key }
+        val before = h.store.outboxSaves
+        h.core.markDeliveries(keys.take(50).map { AutoBriefCore.Delivery(it, true, null) } + AutoBriefCore.Delivery(keys[50], false, "HTTP 503"))
+        assertEquals(1, h.store.outboxSaves - before)
+        val byKey = h.core.outbox.value.associateBy { it.key }
+        assertTrue(keys.take(50).all { byKey.getValue(it).deliveredEpochMs != null })
+        assertNull(byKey.getValue(keys[50]).deliveredEpochMs)
+        assertEquals("HTTP 503", byKey.getValue(keys[50]).lastError)
+        assertEquals(1, byKey.getValue(keys[50]).attempts)
+    }
 }
