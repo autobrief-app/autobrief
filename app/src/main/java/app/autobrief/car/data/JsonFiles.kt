@@ -18,10 +18,17 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonTransformingSerializer
 import java.io.File
+import java.io.FileOutputStream
 
 /**
- * Small JSON files in the app's private storage, one folder per data space (live/, demo/); each save
- * writes a temp file and renames it. Which space is active is kept in app_state.json.
+ * Small JSON files in the app's private storage, one folder per data space (live/, demo/). Which space is
+ * active is kept in app_state.json.
+ *
+ * A save writes `<name>.tmp` and syncs it to the disk, moves the current file to `<name>.bak` (the last good
+ * version), then moves the new one into place: at any moment one complete version exists under one of the
+ * three names, and nothing is ever deleted. Reading takes the file, else the temp file (the app died between
+ * the two moves), else the backup; a damaged file is set aside, never replaced by defaults while a good copy
+ * exists.
  */
 class JsonFiles(private val root: File) : AutoBriefCore.Store {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -71,29 +78,50 @@ class JsonFiles(private val root: File) : AutoBriefCore.Store {
         dir(space).deleteRecursively()
     }
 
-    /** A damaged file is set aside (renamed) instead of crashing every start of the app. */
+    private fun tmpOf(file: File) = File(file.parentFile, file.name + ".tmp")
+    private fun backupOf(file: File) = File(file.parentFile, file.name + ".bak")
+
+    /**
+     * The file, else the temp file of a save the app died in, else the last good version. A damaged file is set aside
+     * (renamed, for a look) instead of crashing every start of the app; null only when no copy is readable.
+     */
+    @Synchronized
     private fun <T> read(file: File, serializer: KSerializer<T>): T? {
-        if (!file.exists()) return null
-        return runCatching { json.decodeFromString(serializer, file.readText()) }.getOrElse {
-            val aside = File(file.parentFile, "${file.name}.broken-${System.currentTimeMillis()}")
-            Log.w("AutoBriefFiles", "${file.name} unreadable (${it.message}); kept as ${aside.name}")
-            file.renameTo(aside)
-            null
+        for (candidate in listOf(file, tmpOf(file), backupOf(file))) {
+            if (!candidate.exists()) continue
+            val value = runCatching { json.decodeFromString(serializer, candidate.readText()) }
+            if (value.isSuccess) {
+                if (candidate != file) Log.w(TAG, "${file.name} read from ${candidate.name}")
+                return value.getOrThrow()
+            }
+            if (candidate == file) {
+                val aside = File(file.parentFile, "${file.name}.broken-${System.currentTimeMillis()}")
+                Log.w(TAG, "${file.name} unreadable (${value.exceptionOrNull()?.message}); kept as ${aside.name}")
+                file.renameTo(aside)
+            }
         }
+        return null
     }
 
     @Synchronized
     private fun <T> write(file: File, serializer: KSerializer<T>, value: T) {
+        val text = json.encodeToString(serializer, value) // a value that cannot be written fails here, before any file
         file.parentFile?.mkdirs()
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.writeText(json.encodeToString(serializer, value))
+        val tmp = tmpOf(file)
+        FileOutputStream(tmp).use { out ->
+            out.write(text.toByteArray(Charsets.UTF_8))
+            out.fd.sync() // on the disk before any name points at it
+        }
+        val backup = backupOf(file)
+        if (file.exists()) check(file.renameTo(backup)) { "could not keep ${file.name} as ${backup.name}" }
         if (!tmp.renameTo(file)) {
-            file.delete()
-            check(tmp.renameTo(file)) { "could not save ${file.name}" }
+            backup.renameTo(file) // the good version goes back in place; the new one stays in .tmp
+            error("could not save ${file.name}")
         }
     }
 
     companion object {
+        private const val TAG = "AutoBriefFiles"
         private const val SETTINGS = "settings.json"
         private const val TRIPS = "trips.json"
         private const val LEDGER = "ledger.json"
