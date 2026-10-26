@@ -55,6 +55,8 @@ object LogbookExport {
         "⑧출·퇴근용(㎞)", "⑨일반 업무용(㎞)", "⑩비고",
     )
 
+    const val TITLE = "업무용승용차 운행기록부"
+
     private val json = Json { ignoreUnknownKeys = true }
     private val STAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
@@ -75,10 +77,11 @@ object LogbookExport {
         val asOf = exportDate ?: records.maxOfOrNull { it.endEpochMs }?.let(TripLogbook::localDate)
         val running = if (businessYear && asOf != null && period.endInclusive.isAfter(asOf)) "$asOf 현재 누계(사업연도 진행 중)" else null
         val unit = when {
-            !businessYear -> "기간"
+            !businessYear -> "발췌 기간"
             running != null -> running
             else -> "사업연도"
         }
+        val year = if (businessYear) period else TaxPeriods.businessYearOf(period.start, settings.fiscalYearStartMonth)
         val inPeriod = records.filter { TripLogbook.localDate(it.startEpochMs) in period }.sortedBy { it.startEpochMs }
         val summary = TripLogbook.summarize(inPeriod)
         val rows = inPeriod.map { r ->
@@ -98,8 +101,8 @@ object LogbookExport {
         val sample = inPeriod.any { it.source == TripSource.SAMPLE }
         val header = buildList {
             if (sample) add("※ 가상 예시 데이터입니다. 실제 차량, 법인, 인물이 아닙니다.")
-            val periodLabel = if (businessYear) "사업연도" else "기간"
-            add("$periodLabel: ${period.start} ~ ${period.endInclusive}${running?.let { ", $it" } ?: ""}    법인명(상호): ${settings.entityName}    사업자등록번호: ${settings.businessNumber}")
+            add("사업연도: ${year.start} ~ ${year.endInclusive}${running?.let { ", $it" } ?: ""}    법인명(상호): ${settings.entityName}    사업자등록번호: ${settings.businessNumber}")
+            if (!businessYear) add("발췌 기간: ${period.start} ~ ${period.endInclusive}")
             add("1. 기본정보    ①차종: ${settings.vehicleModel}    ②자동차등록번호: ${settings.plateNumber}")
             add("2. 업무용 사용비율 계산")
         }
@@ -110,8 +113,9 @@ object LogbookExport {
             append("근거 서식: 국세청 「업무용승용차 운행기록 방법에 관한 고시」 별지 서식.")
             if (summary.unclassifiedCount > 0) append(" 미분류 ${summary.unclassifiedCount}건은 업무용으로 계산하지 않았습니다.")
             if (summary.gapRowCount > 0) append(" 미기록 구간 ${summary.gapRowCount}건은 비업무로 계산했습니다.")
+            if (!businessYear) append(" 이 파일은 사업연도 중 일부 기간의 발췌본입니다. 세무 신고에 쓰는 ⑬업무사용비율은 이 발췌 기간이 아니라 사업연도 전체의 ⑫/⑪입니다.")
         }
-        return Sheet("업무용승용차 운행기록부", header, COLUMNS, rows, totals, note)
+        return Sheet(if (businessYear) TITLE else "$TITLE (기간 발췌)", header, COLUMNS, rows, totals, note)
     }
 
     private fun remarks(r: TripRecord): String = buildList {

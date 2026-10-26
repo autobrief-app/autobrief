@@ -84,4 +84,22 @@ class LogbookFormTest {
         assertFalse(byRecords.headerLines.any { "진행 중" in it })
         assertEquals(3, byRecords.rows.size)
     }
+
+    @Test fun aPeriodExtractSaysSoAndPointsTheTaxRatioAtTheBusinessYear() {
+        val march = TaxPeriods.month(2026, 3)
+        val sheet = LogbookExport.build(chainOf1004(), settings, march, "CODE", businessYear = false)
+        assertEquals("업무용승용차 운행기록부 (기간 발췌)", sheet.title)
+        assertTrue(sheet.headerLines.toString(), sheet.headerLines.any { it.startsWith("사업연도: 2026-01-01 ~ 2026-12-31    법인명(상호): 가상예시 주식회사") })
+        assertTrue(sheet.headerLines.toString(), "발췌 기간: 2026-03-01 ~ 2026-03-31" in sheet.headerLines)
+        assertEquals("⑪발췌 기간 총주행 거리(㎞)", sheet.totals.totalLabel)
+        assertTrue(sheet.note, "세무 신고에 쓰는 ⑬업무사용비율은 이 발췌 기간이 아니라 사업연도 전체의 ⑫/⑪입니다." in sheet.note)
+        // a business year that starts in July: the extract names that year
+        val july = LogbookExport.build(chainOf1004(), settings.copy(fiscalYearStartMonth = 7), march, "CODE", businessYear = false)
+        assertTrue(july.headerLines.toString(), july.headerLines.any { it.startsWith("사업연도: 2025-07-01 ~ 2026-06-30    법인명") })
+        // the business-year file keeps the plain title and has no extract line or note
+        val year = LogbookExport.build(chainOf1004(), settings, year2026, "CODE", exportDate = LocalDate.of(2027, 1, 5))
+        assertEquals("업무용승용차 운행기록부", year.title)
+        assertFalse(year.headerLines.any { it.startsWith("발췌 기간") })
+        assertFalse("발췌" in year.note)
+    }
 }
