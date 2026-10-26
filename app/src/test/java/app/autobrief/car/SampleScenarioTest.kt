@@ -131,6 +131,7 @@ class SampleScenarioTest {
         assertEquals(TripPurpose.UNCLASSIFIED, today[1].purpose)
         val tax = core.taxBenefit()!! // the clock is still 2026-10-23: business year 2026
         assertEquals(19_000_000, h.core.settings.value.annualCarCostKrw)
+        assertEquals(22.0, tax.ratePct, 0.0) // a business year starting 2026-01-01 takes the 2026 table
 
         val dir = File("build/sample").apply { mkdirs() }
         val yearBook = core.exportWorkbook(year, businessYear = true, send = false)

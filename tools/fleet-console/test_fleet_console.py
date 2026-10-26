@@ -65,6 +65,9 @@ class Base(unittest.TestCase):
     def car(self, key=VIN):
         return {c["key"]: c for c in self.store.state()["cars"]}[key]
 
+    def texts(self, key=VIN):
+        return [a["text"] for a in self.car(key)["alerts"]]
+
 class ChainTests(Base):
     def test_valid_chain_projection(self):
         ch = Chain()
@@ -89,17 +92,17 @@ class ChainTests(Base):
         car = self.car()
         self.assertEqual((car["chainStatus"], car["recentTrips"][0]["status"], self.store.cars[VIN].by_seq[2]["status"]),
                          ("변조 의심", "변조 의심", "hash_mismatch"))
-        self.assertTrue(any("변조 의심" in a for a in car["alerts"]))
+        self.assertEqual(car["alerts"][0], {"text": "기록 변조 의심 (순번 2): 해시 불일치", "level": "bad", "seq": 2, "tripId": None})
 
     def test_seq_gap_flags_missing_then_accepts_late_arrival(self):
         p = Chain().run(5)
         self.feed(p[0], p[1], p[4])                                  # seq 1, 2, 5
         car = self.car()
         self.assertEqual((car["chainStatus"], car["lastSeq"]), ("누락 있음", 5))
-        self.assertIn("중간 기록 누락 (seq 3~4)", car["alerts"])
+        self.assertIn({"text": "중간 기록 누락 (순번 3~4)", "level": "warn", "seq": 5, "tripId": None}, car["alerts"])
         self.feed(p[2])                                              # seq 3 arrives late: stored, status stays
         car = self.car()
-        self.assertEqual((car["entries"], car["chainStatus"], "늦게 도착한 기록 (seq 3)" in car["alerts"]), (4, "누락 있음", True))
+        self.assertEqual((car["entries"], car["chainStatus"], "늦게 도착한 기록 (순번 3)" in self.texts()), (4, "누락 있음", True))
 
     def test_same_seq_same_hash_is_duplicate_other_hash_is_suspect(self):
         a, b = Chain().trip(1, T, 1000.0, 1010.0), Chain().trip(1, T, 1000.0, 1099.0)    # both seq 1, different hash
@@ -109,12 +112,38 @@ class ChainTests(Base):
         self.feed(b)
         car = self.car()
         self.assertEqual((car["entries"], car["chainStatus"], car["recentTrips"][0]["distanceKm"]), (1, "변조 의심", 10.0))
+        self.assertEqual(car["alerts"][0], {"text": "이미 받은 순번에 다른 기록이 도착했습니다 (순번 1)", "level": "bad", "seq": 1, "tripId": "TRIP-1"})
+
+    def test_forged_resend_is_rejected_and_names_the_row_it_targeted(self):
+        ch = Chain()
+        trip, label = ch.trip(1, T, 1000.0, 1026.0), ch.classify(1, "PERSONAL")
+        self.feed(trip, label, ch.trip(2, T + H, 1026.0, 1030.0))
+        forged = json.loads(json.dumps(label))                       # forge_demo.py: PERSONAL -> BUSINESS, hash recomputed
+        e, body = forged["entry"], json.loads(label["entry"]["body"])
+        body["purpose"] = "BUSINESS"
+        e["body"] = json.dumps(body, ensure_ascii=False)
+        e["hash"] = sha(e["prevHash"], e["seq"], e["epochMs"], e["kind"], e["tripId"], e["body"])
+        self.assertEqual(self.store.ingest(forged), (200, {"ok": True}))
+        car = self.car()
+        row = {t["id"]: t for t in car["recentTrips"]}["TRIP-1"]
+        self.assertEqual((car["entries"], row["purpose"], row["status"], car["chainStatus"]), (3, "PERSONAL", "정상", "변조 의심"))    # the first copy stays
+        self.assertEqual(car["alerts"][0], {"text": "이미 받은 순번에 다른 기록이 도착했습니다 (순번 2)", "level": "bad", "seq": 2, "tripId": "TRIP-1"})
+
+    def test_alert_texts_say_sunbeon_not_seq(self):
+        p = Chain().run(6)
+        bad = json.loads(json.dumps(p[5]))
+        bad["entry"]["body"] = bad["entry"]["body"].replace("1065.0", "1061.0")                  # edited after hashing
+        other = Chain().trip(1, T, 1000.0, 1099.0)                                                # seq 1 again, other content
+        self.feed(p[0], p[2], p[1], bad, other)                       # gap (2), late (2), hash mismatch (6, gap 4~5), conflict (1)
+        texts = self.texts()
+        self.assertEqual(len(texts), 5)
+        self.assertTrue(all("순번" in t and "seq" not in t for t in texts), texts)
 
     def test_unknown_trip_keeps_entry_and_alerts(self):
         self.feed(Chain().classify(99, "BUSINESS"))
         car = self.car()
         self.assertEqual((car["entries"], car["recentTrips"], car["chainStatus"]), (1, [], "정상"))
-        self.assertTrue(any("원장에 없는 운행" in a for a in car["alerts"]))
+        self.assertTrue(any("원장에 없는 운행" in a for a in self.texts()))
 
     def test_amend_changes_purpose_and_sets_amended(self):
         ch = Chain()
@@ -133,7 +162,7 @@ class ChainTests(Base):
         self.feed(Chain(vin=None).run(2)[1])                         # no vin -> plate key; seq 1 was never seen
         car = self.car(key="12가 3456")
         self.assertEqual((car["vin"], car["plate"], car["chainStatus"]), (None, "12가 3456", "누락 있음"))
-        self.assertIn("중간 기록 누락 (seq 1~1)", car["alerts"])
+        self.assertIn("중간 기록 누락 (순번 1~1)", self.texts(key="12가 3456"))
         self.assertTrue(os.path.isfile(os.path.join(self.tmp, "12가_3456.jsonl")))
 
 class LimitTests(Base):
@@ -155,7 +184,7 @@ class LimitTests(Base):
         self.feed(*p)
         car = self.car()
         self.assertEqual((car["entries"], car["lastSeq"], car["chainStatus"]), (3, 5, "정상"))
-        self.assertTrue(any("오래된 기록" in a for a in car["alerts"]))
+        self.assertTrue(any("오래된 기록" in a for a in self.texts()))
         self.assertEqual(self.store.ingest(p[0]), (200, {"ok": True, "duplicate": True}))    # a trimmed seq is not re-added
 
     @mock.patch.object(fc, "MAX_CARS", 1)
@@ -286,6 +315,24 @@ class HttpTests(Base):
         open(os.path.join(self.tmp, "canary.txt"), "w").close()      # a real file just above archives/: a traversal would serve it
         for bad in ("/archives/../fleet_console.py", "/archives/../canary.txt", "/archives/%2e%2e/canary.txt", "/archives/..%2Fcanary.txt", "/archives/missing.xlsx"):
             self.assertEqual(self.req("GET", bad)[0], 404, bad)
+
+    def test_pretendard_is_served_from_the_app_bundle_and_used_by_the_page(self):
+        for name, src in fc.FONTS.items():
+            status, headers, body = self.req("GET", "/fonts/" + name)
+            with open(os.path.join(fc.FONT_DIR, src), "rb") as f:
+                original = f.read()
+            self.assertEqual((status, headers["content-type"], len(body)), (200, "font/ttf", len(original)), name)
+            # only bit 6 of glyph flags changes (the bundled font sets it on most glyphs), plus the two checksums
+            flips = sum(1 for a, b in zip(original, body) if a ^ b == 0x40)
+            other = sum(1 for a, b in zip(original, body) if a ^ b not in (0, 0x40))
+            self.assertTrue(flips > 1000 and other <= 8, (name, flips, other))
+            self.assertEqual(fc._sfnt_checksum(body, 0, len(body)), 0xB1B0AFBA)        # whole-font checksum still valid
+            self.assertEqual(fc.web_safe_ttf(body), body)                                # nothing left to clear
+        for bad in ("/fonts/../fleet_console.py", "/fonts/pretendard_regular.ttf", "/fonts/", "/fonts/%2e%2e/fleet_console.py"):
+            self.assertEqual(self.req("GET", bad)[0], 404, bad)
+        page = self.req("GET", "/")[2].decode("utf-8")
+        for needle in ("@font-face", "/fonts/Pretendard-Regular.ttf", "/fonts/Pretendard-Bold.ttf", "--personal:#E59AC0", "변조 시도", "banner"):
+            self.assertIn(needle, page)
 
     def test_oversized_content_length_gets_413_before_any_body(self):
         status, _, data = self.req("POST", "/hook", None, {"Content-Length": str(fc.MAX_BODY_BYTES + 1)})    # headers only
