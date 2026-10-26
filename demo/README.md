@@ -9,7 +9,7 @@
 | `setup_emulator.py` | 이미지 내려받기(이어받기, 체크섬 확인), 설치, AVD 만들기, 콜드 부팅, APK 설치, 가상 콘솔 연결 |
 | `director.py` | 가상 콘솔 HTTP로 기어, 계기판, 속도, 좌석을 바꾸며 시나리오 재생. `--verify`로 앱 로그까지 확인 |
 | `test_demo_kit.py` | 장치 없이 도는 단위 시험 (`python3 -m unittest discover -s demo -v`) |
-| `../ci/github-emulator-e2e.yml` | 같은 흐름을 GitHub 서버(KVM)에서 화면 없이 자동 시험 (토큰에 workflow 권한이 생기면 `.github/workflows/`로 옮겨 켬) |
+| `../.github/workflows/emulator-e2e.yml` | 같은 흐름을 GitHub 서버(KVM)에서 화면 없이 자동 시험하고 화면을 녹화 |
 
 ## 1. 준비물
 
@@ -158,7 +158,7 @@ python3 demo/setup_emulator.py --demo-sample --no-browser
 
 ## 8. 자동 시험 (GitHub Actions)
 
-`ci/github-emulator-e2e.yml`을 `.github/workflows/emulator-e2e.yml`로 옮기면 `main`에 `app/**`, `demo/**` 또는 워크플로 파일이 바뀌어 올라갈 때와, Actions 탭의 `Run workflow`로 돕니다.
+`.github/workflows/emulator-e2e.yml`은 `main`에 `app/**`, `demo/**` 또는 워크플로 파일이 바뀌어 올라갈 때와, Actions 탭의 `Run workflow`로 돕니다.
 리눅스 서버에서 KVM으로 에뮬레이터를 화면 없이 켜고 디버그 APK를 설치한 뒤 `director.py --scenario all --fast --verify`까지 확인합니다.
 결과물(`e2e-out`): `e2e.mp4`(화면 녹화), `logcat.txt`, `fleet_state.json`, `emulator.log`, `fleet-console.log`, 장면별 스크린샷. 14일 보관됩니다.
 이미지(약 4 GB)는 캐시에 보관되어 두 번째부터 다시 받지 않습니다.
