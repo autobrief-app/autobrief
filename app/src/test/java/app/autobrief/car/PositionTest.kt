@@ -94,6 +94,19 @@ class PositionTest {
         assertEquals(TripPurpose.COMMUTE, h.core.trips.value.single().purpose)
     }
 
+    @Test fun withGnssOnlyAClientArrivalAfterParkingStillClassifies() {
+        val h = Harness(base.copy(places = listOf(SampleHistory.CLIENT)))
+        // no position at departure, no navigation at all; the GNSS has a fix, but the last one before P is 40 s old
+        h.odo(100.0); h.gear(Gear.PARK); h.advance(60_000); h.gear(Gear.DRIVE)
+        h.advance(20 * 60_000)
+        h.gps(near(SampleHistory.CLIENT.point))
+        h.advance(40_000); h.odo(111.0)
+        h.gear(Gear.PARK)
+        h.advance(4_000)
+        h.gps(SampleHistory.CLIENT.point) // the next fix: the place rules were waiting for it
+        assertEquals(TripPurpose.BUSINESS, h.core.trips.value.single().purpose)
+    }
+
     @Test fun aCoarseOrImpossibleFixIsNotAPosition() {
         val h = Harness(base)
         h.gps(SampleHistory.CLIENT.point, accuracyM = 900f) // a network-only estimate cannot tell places apart

@@ -438,7 +438,8 @@ class AutoBriefCore(
         openStartPoint = null
         openStartLabel = null
         val arrival = freshLocation(now, ARRIVAL_LOCATION_MAX_AGE_MS)
-        if (_settings.value.autoClassify && arrival == null && (start != null || _navi.value.ready)) {
+        // positions may come from navigation or from the car's own GNSS: either one can still deliver the arrival
+        if (_settings.value.autoClassify && arrival == null && (start != null || _navi.value.ready || gnssFix != null)) {
             // the position at the moment of parking is not in yet: write the row now, run the place rules shortly
             appendLedger(LedgerKind.TRIP, row, Ledger.tripBody(row, currentVin()))
             pendingAuto = PendingAuto(row.id, start, now + AUTO_WAIT_MS, now)
