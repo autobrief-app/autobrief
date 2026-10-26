@@ -4,15 +4,17 @@ import android.car.Car
 import android.car.drivingstate.CarUxRestrictionsManager
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 
 /**
  * Standard AAOS car service, used where Pleos follows AAOS: the driving UX restrictions an app that declares
- * distraction optimisation must honour (no lists or text entry while the car moves). While the car service cannot
- * be reached the state is reported as unknown (null; the core then counts the car as restricted outside P) and the
- * connection is tried again with a growing pause.
+ * distraction optimisation must honour (no lists or text entry while the car moves). Until the car service answers,
+ * and whenever it goes down, the state is reported as unknown (null): the core then fails closed (restricted unless a
+ * live vehicle link says the car is in P). On Android 11+ the Car object waits for the service and reconnects by
+ * itself (lifecycle listener); on older versions the connection is tried again with a growing pause.
  */
 class CarServices(private val context: Context, private val onRestricted: (Boolean?) -> Unit) {
 
@@ -24,34 +26,51 @@ class CarServices(private val context: Context, private val onRestricted: (Boole
     fun start() {
         if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE)) return
         stopped = false
-        connect(0)
+        onRestricted(null)
+        if (Build.VERSION.SDK_INT >= 30) {
+            car = Car.createCar(context, main, Car.CAR_WAIT_TIMEOUT_WAIT_FOREVER) { c, ready ->
+                if (stopped) return@createCar
+                if (ready) attach(c) else detach("car service went down")
+            }
+        } else {
+            connect(0)
+        }
     }
 
+    /** Android 9 and 10: the plain createCar, tried again while it returns nothing. */
     private fun connect(attempt: Int) {
         if (stopped) return
         val c = runCatching { Car.createCar(context) }.getOrNull()
         if (c == null) {
-            retry(attempt, "car service not ready")
+            detach("car service not ready")
+            main.postDelayed({ connect(attempt + 1) }, Backoff.delayMs(attempt))
             return
         }
         car = c
-        try {
-            val ux = c.getCarManager(Car.CAR_UX_RESTRICTION_SERVICE) as CarUxRestrictionsManager
-            uxManager = ux
-            onRestricted(ux.currentCarUxRestrictions?.isRequiresDistractionOptimization)
-            ux.registerListener { r -> onRestricted(r.isRequiresDistractionOptimization) }
-        } catch (e: Exception) {
+        if (!attach(c)) {
             runCatching { c.disconnect() }
             car = null
-            uxManager = null
-            retry(attempt, "ux restrictions: ${e.message}")
+            main.postDelayed({ connect(attempt + 1) }, Backoff.delayMs(attempt))
         }
     }
 
-    private fun retry(attempt: Int, why: String) {
+    private fun attach(c: Car): Boolean = try {
+        val ux = c.getCarManager(Car.CAR_UX_RESTRICTION_SERVICE) as CarUxRestrictionsManager
+        runCatching { uxManager?.unregisterListener() }
+        uxManager = ux
+        onRestricted(ux.currentCarUxRestrictions?.isRequiresDistractionOptimization)
+        ux.registerListener { r -> onRestricted(r.isRequiresDistractionOptimization) }
+        true
+    } catch (e: Exception) {
+        detach("ux restrictions: ${e.message}")
+        false
+    }
+
+    private fun detach(why: String) {
         Log.w(TAG, why)
+        runCatching { uxManager?.unregisterListener() }
+        uxManager = null
         onRestricted(null)
-        main.postDelayed({ connect(attempt + 1) }, Backoff.delayMs(attempt))
     }
 
     fun stop() {

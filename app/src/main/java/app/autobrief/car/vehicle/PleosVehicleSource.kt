@@ -122,6 +122,7 @@ class PleosVehicleSource(context: Context, private val emit: (VehicleEvent) -> U
         runCatching { vehicle.getGear().unregisterGearSelection(gearListener) }
         runCatching { vehicle.release() }
         registered = false
+        lastGear = Gear.UNKNOWN // the next gear comes from the next link
     }
 
     fun stop() {

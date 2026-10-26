@@ -46,7 +46,11 @@ class Harness(
     val files = linkedMapOf<String, ByteArray>()
     var locationRequests = 0
     val core = AutoBriefCore(store, { space, name, bytes -> files["${space.dir}/$name"] = bytes; name }, { now }, { logs += it }, detailLogs)
-        .also { it.naviControl = AutoBriefCore.NaviControl { locationRequests++ } }
+        .also {
+            it.naviControl = AutoBriefCore.NaviControl { locationRequests++ }
+            // a working car: CarUxRestrictions has answered "not required" (ReconnectTest covers the unknown state)
+            it.setRestricted(false)
+        }
 
     fun odo(km: Double) = core.onVehicle(VehicleEvent.Odometer(km))
     fun gear(g: Gear) = core.onVehicle(VehicleEvent.GearChanged(g))

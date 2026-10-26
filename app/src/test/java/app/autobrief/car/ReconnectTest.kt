@@ -1,5 +1,7 @@
 package app.autobrief.car
 
+import app.autobrief.car.domain.AutoBriefCore
+import app.autobrief.car.domain.VehicleEvent
 import app.autobrief.car.model.Gear
 import app.autobrief.car.vehicle.Backoff
 import app.autobrief.car.vehicle.QuietWatch
@@ -35,18 +37,48 @@ class ReconnectTest {
         assertFalse("a value arrived meanwhile", watch.reconnectDue(Gear.NEUTRAL))
     }
 
-    @Test fun anUnknownDrivingRestrictionStateCountsAsRestrictedOutsidePark() {
-        val h = Harness()
-        h.core.setRestricted(null) // the car service is not reachable (yet)
-        assertTrue("gear unknown: cannot tell the car is parked", h.core.restricted.value)
-        h.gear(Gear.PARK)
-        assertFalse(h.core.restricted.value)
-        h.gear(Gear.DRIVE)
-        assertTrue(h.core.restricted.value)
-        h.core.setRestricted(false) // the car service answered
-        assertFalse(h.core.restricted.value)
-        h.core.setRestricted(true)
-        h.gear(Gear.PARK)
-        assertTrue("a known state is taken as it is", h.core.restricted.value)
+    /** A core as the app starts it: neither the car service nor the vehicle SDK has answered yet. */
+    private fun starting() = AutoBriefCore(MemoryStore(), clock = { 0L })
+
+    @Test fun unknownRestrictionsAndAnUnknownGearAreRestricted() {
+        val c = starting()
+        assertTrue(c.restricted.value)
+        c.onVehicle(VehicleEvent.GearChanged(Gear.PARK)) // a gear without a live link proves nothing yet
+        assertTrue(c.restricted.value)
+    }
+
+    @Test fun unknownRestrictionsButALiveLinkInParkAreNotRestricted() {
+        val c = starting()
+        c.onVehicle(VehicleEvent.Connection(true))
+        assertTrue("connected, gear not known yet", c.restricted.value)
+        c.onVehicle(VehicleEvent.GearChanged(Gear.PARK))
+        assertFalse(c.restricted.value)
+        c.onVehicle(VehicleEvent.GearChanged(Gear.DRIVE))
+        assertTrue(c.restricted.value)
+    }
+
+    @Test fun unknownRestrictionsAndALinkLostAfterParkAreRestricted() {
+        val c = starting()
+        c.onVehicle(VehicleEvent.Connection(true))
+        c.onVehicle(VehicleEvent.GearChanged(Gear.PARK))
+        assertFalse(c.restricted.value)
+        c.onVehicle(VehicleEvent.Connection(false, "binder died")) // the last gear no longer says anything
+        assertEquals(Gear.UNKNOWN, c.vehicle.value.gear)
+        assertTrue(c.restricted.value)
+    }
+
+    @Test fun theCarServicesAnswerWinsOnceItIsKnown() {
+        val c = starting()
+        c.setRestricted(false) // CarUxRestrictions: not required
+        c.onVehicle(VehicleEvent.Connection(true))
+        c.onVehicle(VehicleEvent.GearChanged(Gear.DRIVE))
+        assertFalse("the platform value; the screen's own gear rule still shows the glance view in D", c.restricted.value)
+        c.setRestricted(true)
+        c.onVehicle(VehicleEvent.GearChanged(Gear.PARK))
+        assertTrue(c.restricted.value)
+        c.setRestricted(null) // the car service went down: back to the fallback
+        assertFalse("live link in P", c.restricted.value)
+        c.onVehicle(VehicleEvent.Connection(false))
+        assertTrue(c.restricted.value)
     }
 }

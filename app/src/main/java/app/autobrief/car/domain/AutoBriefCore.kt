@@ -170,8 +170,12 @@ class AutoBriefCore(
     private data class PendingAuto(val tripId: String, val start: GeoPoint?, val deadline: Long, val askedAt: Long)
     private var pendingAuto: PendingAuto? = null
 
+    /** What CarUxRestrictions last said; null = unknown (the car service has not answered, or went down). */
+    private var uxRestricted: Boolean? = null
+
     init {
         loadSpace(space)
+        updateRestricted()
     }
 
     private fun loadSpace(s: Space) {
@@ -230,12 +234,10 @@ class AutoBriefCore(
         saveOpenTrip(OpenTripRecord(o.startEpochMs, o.startOdometerKm, o.tollEstimateKrw, openStartLabel))
     }
 
-    /** What CarUxRestrictions last said; null = unknown (the car service cannot be reached, or has no state yet). */
-    private var uxRestricted: Boolean? = false
-
     /**
-     * The driving restrictions from the car service. While they are unknown the screen counts as restricted unless
-     * the car is known to be in P: the safe side for a driver.
+     * The driving restrictions from the car service (CarServices); null = unknown. Once the platform's state is known
+     * it wins. While it is unknown the screen fails closed: restricted unless a live vehicle link says the car is in P
+     * (a gear from a link that is gone says nothing).
      */
     fun setRestricted(value: Boolean?) {
         uxRestricted = value
@@ -243,7 +245,8 @@ class AutoBriefCore(
     }
 
     private fun updateRestricted() {
-        _restricted.value = uxRestricted ?: (_vehicle.value.gear != Gear.PARK)
+        val v = _vehicle.value
+        _restricted.value = uxRestricted ?: !(v.sdkConnected && v.gear == Gear.PARK)
     }
 
     // ---------------------------------------------------------------- vehicle and navigation input
@@ -253,7 +256,9 @@ class AutoBriefCore(
         val s = _vehicle.value
         when (e) {
             is VehicleEvent.Connection -> {
-                _vehicle.value = s.copy(sdkConnected = e.connected)
+                // a lost link leaves no gear behind: the next one comes from the SDK again
+                _vehicle.value = s.copy(sdkConnected = e.connected, gear = if (e.connected) s.gear else Gear.UNKNOWN)
+                updateRestricted()
                 if (e.connected && !connectedLogged) {
                     connectedLogged = true
                     log("VEHICLE_CONNECTED")

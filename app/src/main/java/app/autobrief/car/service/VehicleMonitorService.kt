@@ -13,6 +13,7 @@ import android.util.Log
 import app.autobrief.car.R
 import app.autobrief.car.core
 import app.autobrief.car.domain.AutoBriefCore
+import app.autobrief.car.domain.VehicleEvent
 import app.autobrief.car.model.Gear
 import app.autobrief.car.navi.PleosNaviSource
 import app.autobrief.car.notify.WebhookSender
@@ -120,6 +121,9 @@ class VehicleMonitorService : Service() {
         navi.stop()
         car.stop()
         gps.stop()
+        // the vehicle link is gone with the service: its last gear no longer tells the screen the car is parked
+        core.onVehicle(VehicleEvent.Connection(false, "monitor stopped"))
+        core.setRestricted(null)
         core.naviControl = null
         super.onDestroy()
     }
