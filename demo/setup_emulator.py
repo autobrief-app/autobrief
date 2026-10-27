@@ -82,6 +82,8 @@ APP_RELAUNCH_EVERY_S = 5.0
 VEHICLE_CONNECTED_WAIT_S = 120
 # the default logcat ring rotates out the setup lines within minutes
 LOGCAT_BUFFER_SIZE = "32M"
+LOGCAT_CLEAR_TRIES = 6  # logd refuses a clear while a reader lags behind; it catches up within seconds
+LOGCAT_CLEAR_RETRY_S = 2.0
 HSUM_PROP = "ro.fw.mu.headless_system_user"
 USER_UNLOCKED = "RUNNING_UNLOCKED"
 SETUP_WIZARD_MARK = "setupwizard"  # ai.umos.setupwizard on Pleos Connect
@@ -569,8 +571,20 @@ class Adb:
     def install(self, apk: str) -> str:
         return self.out("install", "-r", "-g", apk, timeout=300)
 
-    def logcat_clear(self) -> None:
-        self.run("logcat", "-c")
+    def logcat_clear(self, tries: int = LOGCAT_CLEAR_TRIES, sleep: Optional[Callable[[float], None]] = None) -> None:
+        """`logcat -c`. logd refuses to clear while a reader (the CI job's logcat captures, a dump in progress) still
+        holds entries it has not read: "failed to clear the 'main' log" (CI run 40452018157, right after the app's
+        vehicle link). The readers catch up within seconds, so that refusal is retried; any other failure, or the same
+        refusal `tries` times, raises."""
+        sleep = sleep or time.sleep
+        for attempt in range(1, tries + 1):
+            rc, out, err = self.run("logcat", "-c", check=False)
+            if rc == 0:
+                return
+            detail = decode(err or out).strip()
+            if "failed to clear" not in detail or attempt == tries:
+                raise AdbError("adb logcat -c 실패 (rc=%d, %d번 시도): %s" % (rc, attempt, detail[:500]))
+            sleep(LOGCAT_CLEAR_RETRY_S)
 
     def logcat_buffer_size(self, size: str) -> None:
         self.run("logcat", "-G", size)

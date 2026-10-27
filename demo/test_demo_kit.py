@@ -4318,8 +4318,9 @@ class RehearsalHelperTests(QuietTestCase):
     def test_device_epoch(self):
         self.assertEqual(rehearsal.parse_device_epoch("1793010211.250000000\n"), 1793010211.25)
         self.assertEqual(rehearsal.parse_device_epoch("1793010211"), 1793010211.0)
+        self.assertEqual(rehearsal.parse_device_epoch("1793010211.N\n"), 1793010211.0)  # a date without %N
         with self.assertRaises(ValueError):
-            rehearsal.parse_device_epoch("1793010211.N")
+            rehearsal.parse_device_epoch("date: bad format")
 
     def test_clock_sample(self):
         walls = iter([100.0, 100.2])
@@ -4566,3 +4567,39 @@ class RehearsalSceneTests(QuietTestCase):
                 rehearsal.build_parser().parse_args(["--out", "x"])
         args = rehearsal.build_parser().parse_args(["--out", "x", "--fleet-data", "d", "--chrome", "google-chrome"])
         self.assertEqual((args.fleet_url, args.km_interval), ("http://127.0.0.1:8787", director.DEFAULT_KM_INTERVAL))
+
+
+class LogcatClearTests(unittest.TestCase):
+    """logd refuses `logcat -c` while a reader lags (CI run 40452018157): that refusal is retried, nothing else is."""
+
+    BUSY = (1, b"", b"logcat: failed to clear the 'main' log.\n")
+
+    def adb_with(self, replies):
+        adb, calls = se.Adb("adb"), []
+
+        def run(*args, timeout=None, check=True, device=True):
+            calls.append((args, check))
+            return replies.pop(0)
+
+        adb.run = run
+        return adb, calls
+
+    def test_a_busy_logd_is_asked_again(self):
+        adb, calls = self.adb_with([self.BUSY, self.BUSY, (0, b"", b"")])
+        sleeps = []
+        adb.logcat_clear(sleep=sleeps.append)
+        self.assertEqual(calls, [(("logcat", "-c"), False)] * 3)
+        self.assertEqual(sleeps, [se.LOGCAT_CLEAR_RETRY_S] * 2)
+
+    def test_a_refusal_that_never_ends_fails_loudly(self):
+        adb, calls = self.adb_with([self.BUSY] * se.LOGCAT_CLEAR_TRIES)
+        with self.assertRaises(se.AdbError) as caught:
+            adb.logcat_clear(sleep=lambda s: None)
+        self.assertEqual(len(calls), se.LOGCAT_CLEAR_TRIES)
+        self.assertIn("failed to clear", str(caught.exception))
+
+    def test_other_failures_are_not_retried(self):
+        adb, calls = self.adb_with([(1, b"", b"error: device offline\n")])
+        with self.assertRaises(se.AdbError):
+            adb.logcat_clear(sleep=lambda s: None)
+        self.assertEqual(len(calls), 1)

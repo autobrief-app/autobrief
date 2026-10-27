@@ -67,7 +67,7 @@ DUMP_TRIES = (
     4  # `uiautomator dump` fails now and then while the screen is still changing
 )
 DUMP_RETRY_S = 1.0
-DUMP_TIMEOUT_S = 60.0
+DUMP_TIMEOUT_S = 30.0  # a dump takes seconds; a hung one is cut and retried
 UI_POLL_S = 1.0
 UI_WAIT_S = 30.0  # a screen state the app shows at once (a tap, a closed trip)
 MAX_SCROLLS = 4  # the dump lists only what is on screen: a missing element below the fold is scrolled to
@@ -484,8 +484,9 @@ def saved_workbook(nodes: Sequence[UiNode]) -> Optional[Tuple[str, int]]:
 
 
 def parse_device_epoch(text: str) -> float:
-    """`date +%s.%N` on the device -> epoch seconds (toybox prints nanoseconds; an image without %N prints seconds)."""
-    found = re.fullmatch(r"\s*(\d+)(?:\.(\d+))?\s*", text or "")
+    """`date +%s.%N` on the device -> epoch seconds. Toybox prints nanoseconds; a date without %N leaves the seconds
+    and something else after the dot, and then the seconds are the sample (one second of resolution)."""
+    found = re.match(r"\s*(\d{9,})(?:\.(\d+))?", text or "")
     if not found:
         raise ValueError("device time not understood: %r" % (text or "")[:80])
     return float("%s.%s" % (found.group(1), found.group(2) or "0"))
@@ -1703,7 +1704,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.out, director.preflight_lines(adb, console.state())
         )
         adb.logcat_clear()
-        timeline.clock(measure_clock(adb))
+        try:
+            timeline.clock(measure_clock(adb))
+        except (AdbError, ValueError) as exc:  # each scene samples the clock again; the video needs one sample
+            say("  (경고) 기기 시계를 읽지 못했습니다: %s" % exc)
         rehearsal = Rehearsal(adb, ui, fleet, camera, timeline, drive, user, args.out)
         try:
             rehearsal.prepare()

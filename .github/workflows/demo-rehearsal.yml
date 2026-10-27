@@ -130,6 +130,8 @@ jobs:
           exit 1
 
       - name: Rehearse the whole script
+        # cut before the job's own limit, so the collect and upload steps still run
+        timeout-minutes: 60
         run: >
           python3 demo/rehearsal.py --out "$OUT"
           --fleet-url http://127.0.0.1:8787 --fleet-data /tmp/fleet
