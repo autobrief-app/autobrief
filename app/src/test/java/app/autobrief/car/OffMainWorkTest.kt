@@ -4,8 +4,11 @@ import app.autobrief.car.domain.AutoBriefCore
 import app.autobrief.car.domain.AutoBriefCore.Space
 import app.autobrief.car.domain.AutoBriefCore.WorkbookRequest
 import app.autobrief.car.domain.GleoContract
+import app.autobrief.car.domain.Ledger
 import app.autobrief.car.domain.TaxPeriods
+import app.autobrief.car.model.ClassifiedBy
 import app.autobrief.car.model.OutboxItem
+import app.autobrief.car.model.TripPurpose
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -154,6 +157,28 @@ class OffMainWorkTest {
         waitFor("September closed") { onCore { h.core.settings.value.lastMonthlyCloseYm } == "2026-09" }
         assertEquals(listOf("wb-io", "wb-io"), writers.toList())
         assertTrue(onCore { h.core.notice.value }!!.text.startsWith("9월 운행기록부를 만들었습니다: 1건"))
+    }
+
+    @Test fun aPurposeTapChecksTheChainOffTheCoreThreadAndShowsTheNewCodeAtOnce() {
+        val h = harness(LocalDate.of(2026, 10, 23))
+        onCore { h.drive(1_000.0, 12.0, null, null) } // a trip without a purpose
+        workThread.submit {}.get(10, TimeUnit.SECONDS)
+        onCore { } // the drive's own checks have landed
+        val checkers: MutableList<String> = Collections.synchronizedList(mutableListOf())
+        onCore { h.core.verify = { e, r -> checkers += Thread.currentThread().name.substringBefore(" @"); Ledger.check(e, r) } }
+        val id = onCore { h.core.trips.value.single().id }
+        val gate = holdWork()
+        assertEquals(AutoBriefCore.ClassifyResult.OK, onCore { h.core.classifyTrip(id, TripPurpose.PERSONAL, null, "", ClassifiedBy.SCREEN) })
+        val head = onCore { h.core.ledgerEntries.last().hash }
+        assertEquals("the code follows the newest entry at once", Ledger.code(head), onCore { h.core.integrity.value.code })
+        assertTrue("checked on the core thread: $checkers", checkers.isEmpty())
+        gate.countDown()
+        waitFor("the full check") { checkers.isNotEmpty() }
+        workThread.submit {}.get(10, TimeUnit.SECONDS)
+        onCore { }
+        assertEquals(listOf("wb-work"), checkers.toList())
+        assertTrue(onCore { h.core.integrity.value.ok })
+        assertEquals(onCore { h.core.ledgerEntries.size }, onCore { h.core.integrity.value.entryCount })
     }
 
     @Test fun aGleoSendRepliesAfterItsWorkbookIsWrittenWhileTheCoreThreadStaysFree() {

@@ -212,6 +212,12 @@ class AutoBriefCore private constructor(
     private var entering: Space? = null
     private val carried = mutableListOf<(List<OutboxItem>) -> List<OutboxItem>>()
 
+    /** Counts the full checks started; one that finishes after a newer one started is dropped (core's thread only). */
+    private var checkRound = 0L
+
+    /** The full check of the chain against the rows (see [refreshCheck]); a test wraps it to see where it runs. */
+    internal var verify: (List<LedgerEntry>, List<TripRecord>) -> LedgerCheck = { entries, rows -> Ledger.check(entries, rows) }
+
     private val _space = MutableStateFlow(space)
     private val _settings = MutableStateFlow(AppSettings())
     private val _vehicle = MutableStateFlow(VehicleSnapshot())
@@ -347,6 +353,7 @@ class AutoBriefCore private constructor(
         pinLockUntilMono = null
         pinLockRestored = false
         d.openTrip?.let(::resumeOpenTrip)
+        checkRound++ // a check of the logbook left behind must not land on this one
         _check.value = o.check
         // the new logbook needs the car's current state to detect the next departure correctly
         _vehicle.value.odometerKm?.let { logbook.seedOdometer(it) }
@@ -775,9 +782,22 @@ class AutoBriefCore private constructor(
         refreshCheck()
     }
 
+    /**
+     * The verification code follows the newest entry at once. The full check (every hash computed again and the rows
+     * replayed from the chain) took seconds of the main thread after each purpose tap on a loaded head unit with a year of
+     * trips: it runs on [Background.work] and its verdict lands back here, unless a newer change or a switch came first.
+     */
     private fun refreshCheck() {
-        _check.value = Ledger.check(ledger.all, logbook.records)
+        val round = ++checkRound
+        val entries = ledger.all
+        val rows = logbook.records
+        _check.value = _check.value.copy(entryCount = entries.size, code = Ledger.code(entries.lastOrNull()?.hash))
+        background.scope.launch {
+            val checked = withContext(background.work) { verify(entries, rows) }
+            if (round == checkRound) _check.value = checked
+        }
     }
+
 
     private class Queued(val key: String, val kind: String, val payload: String, val seq: Long? = null)
 
