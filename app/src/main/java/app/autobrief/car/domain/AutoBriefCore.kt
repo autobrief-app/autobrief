@@ -12,10 +12,18 @@ import app.autobrief.car.model.PlaceKind
 import app.autobrief.car.model.TripPurpose
 import app.autobrief.car.model.TripRecord
 import app.autobrief.car.model.VehicleSnapshot
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -29,6 +37,7 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.util.Base64
 import java.util.UUID
+import kotlin.coroutines.CoroutineContext
 
 /**
  * The logbook on one vehicle state, free of Android types so every rule is unit-testable.
@@ -54,6 +63,8 @@ class AutoBriefCore(
      * setting the car's clock ahead does not end a lock. Tests that do not care pass nothing and share [clock].
      */
     private val monotonic: () -> Long = clock,
+    /** Where the work too slow for the core's own thread runs (see [Background]); the app passes [Background.android]. */
+    private val background: Background = Background.inline(),
 ) {
     enum class Space(val dir: String) { LIVE("live"), DEMO("demo") }
 
@@ -107,6 +118,33 @@ class AutoBriefCore(
 
     data class ExportResult(val fileName: String, val savedTo: String, val queued: Boolean, val rows: Int)
 
+    /**
+     * Where the work too slow for the core's own thread runs. The core's state belongs to the thread that calls it (the
+     * main thread on the car), and [scope] runs on that thread too: it starts the work the core begins by itself (the
+     * month close, a workbook the report screen asked for, the sending copies of a whole ledger). That work is built on
+     * [work] and written on [io] from a snapshot taken on the core's thread, and what follows it (a notice, the month
+     * marked closed) happens back there. A business-year workbook made on the main thread kept it busy for 5.8 s on a
+     * loaded two-core emulator: Android closed the app as not responding (5 s input limit).
+     */
+    class Background(val scope: CoroutineScope, val work: CoroutineContext, val io: CoroutineContext) {
+        companion object {
+            /** The car: the main thread, Dispatchers.Default to build, Dispatchers.IO to write. */
+            fun android() = Background(CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate), Dispatchers.Default, Dispatchers.IO)
+
+            /** Everything on the calling thread, in call order: for tests of what is written, not of where. */
+            fun inline() = Background(CoroutineScope(SupervisorJob() + Dispatchers.Unconfined), Dispatchers.Unconfined, Dispatchers.Unconfined)
+        }
+    }
+
+    /** The workbook the report screen asked for: being made, made, or failed. */
+    sealed interface WorkbookRequest {
+        val send: Boolean
+
+        data class Making(override val send: Boolean) : WorkbookRequest
+        data class Made(override val send: Boolean, val result: ExportResult) : WorkbookRequest
+        data class Failed(override val send: Boolean, val error: String) : WorkbookRequest
+    }
+
     var naviControl: NaviControl? = null
 
     private var space: Space = store.activeSpace()
@@ -125,6 +163,9 @@ class AutoBriefCore(
      */
     private val outboxLock = Any()
 
+    /** Spaces whose ledger entries the sender holds back while a backfill is being built (count per space; [outboxLock]). */
+    private val ledgerHolds = HashMap<Space, Int>()
+
     private val _space = MutableStateFlow(space)
     private val _settings = MutableStateFlow(AppSettings())
     private val _vehicle = MutableStateFlow(VehicleSnapshot())
@@ -137,6 +178,7 @@ class AutoBriefCore(
     private val _positionSource = MutableStateFlow<PositionSource?>(null)
     private val _notice = MutableStateFlow<Notice?>(null)
     private val _lastClosedId = MutableStateFlow<String?>(null)
+    private val _workbook = MutableStateFlow<WorkbookRequest?>(null)
 
     val activeSpace: StateFlow<Space> = _space.asStateFlow()
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
@@ -159,6 +201,9 @@ class AutoBriefCore(
 
     /** The trip that just closed (for the "what was this drive?" card); cleared once it is handled. */
     val lastClosedId: StateFlow<String?> = _lastClosedId.asStateFlow()
+
+    /** The report screen's workbook (see [requestWorkbook]); null = none asked for, or its message was cleared. */
+    val workbook: StateFlow<WorkbookRequest?> = _workbook.asStateFlow()
 
     val demoMode: Boolean get() = space == Space.DEMO
 
@@ -209,6 +254,8 @@ class AutoBriefCore(
         _open.value = null
         _lastClosedId.value = null
         _notice.value = null
+        // a workbook still being made finishes for the space it was asked in; a finished one's message goes
+        if (_workbook.value !is WorkbookRequest.Making) _workbook.value = null
         pendingAuto = null
         openStartPoint = null
         openStartLabel = null
@@ -588,13 +635,13 @@ class AutoBriefCore(
         store.saveLedger(space, chainId, ledger.all)
         log("LEDGER seq=${entry.seq} kind=$kind hash=${entry.hash.take(8)}")
         if (_settings.value.archiveWebhookUrl.isNotBlank()) {
-            enqueue(Queued(ledgerKey(entry), "ledger", ledgerPayload(entry), entry.seq))
+            enqueue(Queued(ledgerKey(entry), LEDGER_KIND, ledgerPayload(entry), entry.seq))
         }
         return entry
     }
 
     /** One delivery key per entry of one chain; a ledger from before chain ids keeps its old keys. */
-    private fun ledgerKey(e: LedgerEntry): String =
+    private fun ledgerKey(e: LedgerEntry, space: Space = this.space, chainId: String? = this.chainId): String =
         chainId?.let { "ledger-${space.dir}-$it-${e.seq}" } ?: "ledger-${space.dir}-${e.seq}"
 
     /** The car block of every payload, as the car is known when the item is queued (see [wireBody]). */
@@ -605,14 +652,20 @@ class AutoBriefCore(
         put("entity", _settings.value.entityName)
     }
 
-    private fun ledgerPayload(e: LedgerEntry): String = buildJsonObject {
+    /** The sending copy of [e]; the defaults read the core's state, so only its own thread may leave them out. */
+    private fun ledgerPayload(
+        e: LedgerEntry,
+        space: Space = this.space,
+        chainId: String? = this.chainId,
+        car: JsonObject = carJson(),
+    ): String = buildJsonObject {
         put("type", "ledger_entry")
         put("app", "autobrief")
         put("appVersion", APP_VERSION)
         chainId?.let { put("chainId", it) }
         // the receiver starts a new demo chain silently; a new live chain for a known car is a warning there
         put("space", space.dir)
-        put("car", carJson())
+        put("car", car)
         put("entry", buildJsonObject {
             put("seq", e.seq)
             put("epochMs", e.epochMs)
@@ -645,16 +698,23 @@ class AutoBriefCore(
 
     private fun enqueue(item: Queued) = enqueueAll(listOf(item))
 
-    /** One update and ONE write for a whole batch: the outbox file is rewritten whole, so a write per item is quadratic. */
-    private fun enqueueAll(items: List<Queued>) {
+    /**
+     * One update and ONE write for a whole batch: the outbox file is rewritten whole, so a write per item is quadratic.
+     * Safe on any thread. Items made for a space no longer in use (a workbook that finished after a switch) go to that
+     * space's stored queue.
+     */
+    private fun enqueueAll(items: List<Queued>, into: Space? = null) {
         if (items.isEmpty()) return
         synchronized(outboxLock) {
-            val list = _outbox.value
+            val target = into ?: space
+            val inUse = target == space
+            val list = if (inUse) _outbox.value else store.load(target).outbox
             val known = list.mapTo(HashSet()) { it.key }
             val fresh = items.filter { known.add(it.key) }.map { OutboxItem(it.key, it.kind, it.payload, clock(), seq = it.seq) }
             if (fresh.isEmpty()) return
-            _outbox.value = prune(list + fresh)
-            store.saveOutbox(space, _outbox.value)
+            val next = prune(list + fresh)
+            if (inUse) _outbox.value = next
+            store.saveOutbox(target, next)
         }
     }
 
@@ -679,7 +739,10 @@ class AutoBriefCore(
     }
 
     fun outboxSnapshot(): OutboxSnapshot = synchronized(outboxLock) {
-        OutboxSnapshot(space, _settings.value.archiveWebhookUrl, _outbox.value, currentVin())
+        // while a backfill is being built no ledger entry goes out: a newer one must not reach the receiver first
+        val held = (ledgerHolds[space] ?: 0) > 0
+        val items = if (held) _outbox.value.filter { it.kind != LEDGER_KIND } else _outbox.value
+        OutboxSnapshot(space, _settings.value.archiveWebhookUrl, items, currentVin())
     }
 
     /** The round's space and address are still the ones in use; a switch or a new address ends the round. */
@@ -708,7 +771,7 @@ class AutoBriefCore(
                     lastError = d.error,
                     lastAttemptEpochMs = now,
                 )
-                if (next.kind != "ledger" && next.deliveredEpochMs == null && next.attempts >= ARCHIVE_MAX_ATTEMPTS) {
+                if (next.kind != LEDGER_KIND && next.deliveredEpochMs == null && next.attempts >= ARCHIVE_MAX_ATTEMPTS) {
                     log("OUTBOX_GAVE_UP kind=${next.kind} attempts=${next.attempts}")
                     null
                 } else {
@@ -817,8 +880,33 @@ class AutoBriefCore(
         return SettingsResult.SAVED
     }
 
+    /**
+     * Queues the ledger (its newest [BACKFILL_MAX] entries) for an address set for the first time. Thousands of sending
+     * copies and a rewrite of the whole outbox: they are built on [Background.work] and queued on [Background.io], from
+     * the entries as they are now. Until they are in the outbox the sender holds back this space's ledger entries, so an
+     * entry recorded meanwhile (queued at once, as always) cannot reach the receiver before the older ones.
+     */
     private fun backfillLedger() {
-        enqueueAll(ledger.all.takeLast(BACKFILL_MAX).map { e -> Queued(ledgerKey(e), "ledger", ledgerPayload(e), e.seq) })
+        val into = space
+        val chain = chainId
+        val car = carJson()
+        val entries = ledger.all.takeLast(BACKFILL_MAX)
+        synchronized(outboxLock) { ledgerHolds[into] = (ledgerHolds[into] ?: 0) + 1 }
+        background.scope.launch {
+            try {
+                val items = withContext(background.work) {
+                    entries.map { e -> Queued(ledgerKey(e, into, chain), LEDGER_KIND, ledgerPayload(e, into, chain, car), e.seq) }
+                }
+                withContext(background.io) { enqueueAll(items, into) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // nothing was queued: the entries recorded from now on still go out, the older ones did not
+                log("BACKFILL_FAILED entries=${entries.size} error=${e::class.java.simpleName}")
+            } finally {
+                synchronized(outboxLock) { ledgerHolds[into] = (ledgerHolds[into] ?: 1) - 1 }
+            }
+        }
     }
 
     /**
@@ -888,60 +976,158 @@ class AutoBriefCore(
     fun exportSheet(period: ClosedRange<LocalDate>, businessYear: Boolean): LogbookExport.Sheet =
         LogbookExport.build(logbook.records, _settings.value, period, _check.value.code, businessYear, exportDate = today())
 
-    /** Writes the period workbook (form + ledger sheet) and queues it for the sending address when one is set. */
-    fun exportWorkbook(period: ClosedRange<LocalDate>, businessYear: Boolean, send: Boolean = true): ExportResult {
-        val sheet = exportSheet(period, businessYear)
-        val table = LogbookExport.ledgerTable(ledger.all, logbook.records, period, _check.value.code)
+    /** Workbooks are made one at a time: the report screen, the month close and Gleo share the export folder and the outbox. */
+    private val workbookLock = Mutex()
+
+    /** What a workbook is made of, taken at once on the core's thread: immutable values, so it can be built anywhere. */
+    private class WorkbookInput(
+        val space: Space,
+        val chainId: String?,
+        val settings: AppSettings,
+        val records: List<TripRecord>,
+        val entries: List<LedgerEntry>,
+        val code: String,
+        val car: JsonObject,
+        val today: LocalDate,
+        val ledgerSize: Int,
+    )
+
+    private fun workbookInput() =
+        WorkbookInput(space, chainId, _settings.value, logbook.records, ledger.all, _check.value.code, carJson(), today(), ledger.size)
+
+    private class MadeWorkbook(val name: String, val xlsx: ByteArray, val csv: ByteArray, val rows: Int, val archive: Queued?)
+
+    /**
+     * Writes the period workbook (form + ledger sheet) and queues it for the sending address when one is set. Call it on
+     * the core's thread: the logbook is read there, the workbook is built on [Background.work] and written and queued on
+     * [Background.io], so that thread stays free meanwhile.
+     */
+    suspend fun exportWorkbook(period: ClosedRange<LocalDate>, businessYear: Boolean, send: Boolean = true): ExportResult =
+        workbookLock.withLock { writeWorkbook(workbookInput(), period, businessYear, send) }
+
+    /** The month close's workbook for [forSpace]; null when another space is in use by the time it is [forSpace]'s turn. */
+    private suspend fun monthWorkbook(forSpace: Space, month: YearMonth): ExportResult? =
+        workbookLock.withLock { if (space != forSpace) null else writeWorkbook(workbookInput(), TaxPeriods.month(month), false, send = true) }
+
+    private suspend fun writeWorkbook(input: WorkbookInput, period: ClosedRange<LocalDate>, businessYear: Boolean, send: Boolean): ExportResult {
+        val made = withContext(background.work) { buildWorkbook(input, period, businessYear, send) }
+        return withContext(background.io) {
+            val savedTo = files.write(input.space, made.name, made.xlsx)
+            files.write(input.space, made.name.removeSuffix(".xlsx") + ".csv", made.csv)
+            made.archive?.let { enqueueAll(listOf(it), input.space) }
+            log("EXPORT file=${made.name} rows=${made.rows} queued=${made.archive != null}")
+            ExportResult(made.name, savedTo, made.archive != null, made.rows)
+        }
+    }
+
+    private fun buildWorkbook(i: WorkbookInput, period: ClosedRange<LocalDate>, businessYear: Boolean, send: Boolean): MadeWorkbook {
+        val sheet = LogbookExport.build(i.records, i.settings, period, i.code, businessYear, exportDate = i.today)
+        val table = LogbookExport.ledgerTable(i.entries, i.records, period, i.code)
         val xlsx = LogbookExport.toXlsx(sheet, listOf(table))
         val name = "운행기록부_${period.start}_${period.endInclusive}.xlsx"
-        val savedTo = files.write(space, name, xlsx)
-        files.write(space, name.removeSuffix(".xlsx") + ".csv", LogbookExport.toCsv(sheet))
-        val queued = send && _settings.value.archiveWebhookUrl.isNotBlank()
-        if (queued) {
+        val archive = if (send && i.settings.archiveWebhookUrl.isNotBlank()) {
             val payload = buildJsonObject {
                 put("type", "logbook_archive")
-                chainId?.let { put("chainId", it) }
-                put("space", space.dir)
-                put("car", carJson())
+                i.chainId?.let { put("chainId", it) }
+                put("space", i.space.dir)
+                put("car", i.car)
                 put("fileName", name)
                 put("periodStart", period.start.toString())
                 put("periodEnd", period.endInclusive.toString())
-                put("verificationCode", _check.value.code)
+                put("verificationCode", i.code)
                 put("xlsxBase64", Base64.getEncoder().encodeToString(xlsx))
             }
-            enqueue(Queued("archive-${space.dir}-${chainId?.let { "$it-" } ?: ""}$name-${ledger.size}", "archive", payload.toString()))
+            Queued("archive-${i.space.dir}-${i.chainId?.let { "$it-" } ?: ""}$name-${i.ledgerSize}", "archive", payload.toString())
+        } else {
+            null
         }
-        log("EXPORT file=$name rows=${sheet.rows.size} queued=$queued")
-        return ExportResult(name, savedTo, queued, sheet.rows.size)
+        return MadeWorkbook(name, xlsx, LogbookExport.toCsv(sheet), sheet.rows.size, archive)
+    }
+
+    /**
+     * 엑셀 만들기 / 지금 보내기 on the report screen: starts the workbook and returns at once; [workbook] says when it is
+     * made (or why not). False while the previous one is still being made.
+     */
+    fun requestWorkbook(period: ClosedRange<LocalDate>, businessYear: Boolean, send: Boolean): Boolean {
+        if (_workbook.value is WorkbookRequest.Making) return false
+        _workbook.value = WorkbookRequest.Making(send)
+        background.scope.launch {
+            _workbook.value = try {
+                WorkbookRequest.Made(send, exportWorkbook(period, businessYear, send))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // the file could not be written (storage full or gone): the screen says so and the buttons work again
+                log("EXPORT_FAILED error=${e::class.java.simpleName}")
+                WorkbookRequest.Failed(send, e::class.java.simpleName)
+            }
+        }
+        return true
+    }
+
+    /** The report screen leaves the period whose workbook it showed: its message goes (one still being made stays). */
+    fun dismissWorkbook() {
+        if (_workbook.value !is WorkbookRequest.Making) _workbook.value = null
     }
 
     /** No month-close attempt before this time (epoch ms): set after a workbook could not be written. */
     private var monthCloseRetryAt = Long.MIN_VALUE
 
+    /** A month close is running (its workbooks are made off the core's thread); set, read and cleared on that thread. */
+    private var monthClosing = false
+
     /**
      * Once a month is over its workbook is written (and sent) once: every month from the last one closed up to the
      * previous month, in order. A month counts as closed only after its workbook was written; a failed write is tried
      * again a minute later. Nothing closes while a trip, or the place rules of a trip that just ended, is still open:
-     * that row belongs in the month.
+     * that row belongs in the month. The workbooks are made off the core's thread, one close at a time.
      */
     private fun closeMonthIfDue() {
         val now = clock()
-        if (logbook.openTrip != null || pendingAuto != null || now < monthCloseRetryAt) return
+        if (monthClosing || logbook.openTrip != null || pendingAuto != null || now < monthCloseRetryAt) return
         val first = logbook.records.firstOrNull() ?: return
         val previous = YearMonth.from(Instant.ofEpochMilli(now).atZone(KST)).minusMonths(1)
         val done = _settings.value.lastMonthlyCloseYm.takeIf { it.isNotBlank() }?.let { runCatching { YearMonth.parse(it) }.getOrNull() }
-        var month = done?.plusMonths(1) ?: TripLogbook.yearMonth(first.startEpochMs)
-        while (!month.isAfter(previous)) {
+        val from = done?.plusMonths(1) ?: TripLogbook.yearMonth(first.startEpochMs)
+        if (from.isAfter(previous)) return
+        monthClosing = true
+        val forSpace = space
+        background.scope.launch {
+            try {
+                closeMonths(forSpace, from, previous)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                monthCloseRetryAt = clock() + MONTH_CLOSE_RETRY_MS
+                log("MONTH_CLOSE_FAILED error=${e::class.java.simpleName}")
+            } finally {
+                monthClosing = false
+            }
+        }
+    }
+
+    /**
+     * Closes [from]..[through] of [forSpace] in order, back on the core's thread after each workbook. It stops when
+     * another space is in use: a month whose workbook was already written is marked by that logbook's next close (the
+     * same file again, and the same delivery key while its ledger has not grown).
+     */
+    private suspend fun closeMonths(forSpace: Space, from: YearMonth, through: YearMonth) {
+        var month = from
+        while (!month.isAfter(through)) {
+            if (space != forSpace) return
             val rows = logbook.recordsIn(TaxPeriods.month(month))
             if (rows.isNotEmpty()) {
                 val result = try {
-                    exportWorkbook(TaxPeriods.month(month), businessYear = false)
+                    monthWorkbook(forSpace, month) ?: return
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     // the file could not be written (storage full or gone): the month stays open for the retry
-                    monthCloseRetryAt = now + MONTH_CLOSE_RETRY_MS
+                    monthCloseRetryAt = clock() + MONTH_CLOSE_RETRY_MS
                     log("MONTH_CLOSE_FAILED ym=$month error=${e::class.java.simpleName}")
                     return
                 }
+                if (space != forSpace) return
                 val sum = TripLogbook.summarize(rows)
                 _notice.value = Notice(
                     "${month.monthValue}월 운행기록부를 만들었습니다: ${rows.size}건, 업무사용비율 ${sum.businessUseRatio?.let { "%.1f%%".format(it * 100) } ?: "-"}" +
@@ -958,7 +1144,8 @@ class AutoBriefCore(
 
     data class GleoReply(val status: String, val message: String, val data: JsonArray? = null)
 
-    fun handleGleo(functionName: String, params: JsonObject): GleoReply = when (functionName) {
+    /** A Gleo function call, on the core's thread; SEND_LOGBOOK makes its workbook off it (see [exportWorkbook]). */
+    suspend fun handleGleo(functionName: String, params: JsonObject): GleoReply = when (functionName) {
         GleoContract.LOG_TRIP_PURPOSE -> gleoLogPurpose(params)
         GleoContract.GET_LOGBOOK_STATUS -> gleoStatus(params)
         GleoContract.SEND_LOGBOOK -> gleoSend(params)
@@ -1015,7 +1202,7 @@ class AutoBriefCore(
 
     private var lastVoiceSendMs = Long.MIN_VALUE / 2
 
-    private fun gleoSend(params: JsonObject): GleoReply {
+    private suspend fun gleoSend(params: JsonObject): GleoReply {
         val now = clock()
         if (now - lastVoiceSendMs < SEND_COOLDOWN_MS) return GleoReply("fail", "A logbook was just sent. Please try again in a minute.")
         lastVoiceSendMs = now
@@ -1026,7 +1213,14 @@ class AutoBriefCore(
             else -> TaxPeriods.month(YearMonth.from(today)) to false
         }
         if (logbook.recordsIn(period).isEmpty()) return GleoReply("fail", "There are no trips in that period.")
-        val result = exportWorkbook(period, businessYear)
+        val result = try {
+            exportWorkbook(period, businessYear)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log("EXPORT_FAILED error=${e::class.java.simpleName}")
+            return GleoReply("fail", "The logbook could not be saved in the car.")
+        }
         return GleoReply(
             "success",
             if (result.queued) "The logbook for ${period.start} to ${period.endInclusive} was saved in the car and is being sent to the registered address."
@@ -1061,6 +1255,7 @@ class AutoBriefCore(
         const val ARCHIVE_MAX_ATTEMPTS = 50
         const val BACKFILL_MAX = 5_000
         const val SEND_COOLDOWN_MS = 60_000L
+        private const val LEDGER_KIND = "ledger"
         const val MONTH_CLOSE_RETRY_MS = 60_000L
         const val PIN_ATTEMPTS_BEFORE_LOCK = 5
         const val PIN_LOCK_MS = 5 * 60_000L

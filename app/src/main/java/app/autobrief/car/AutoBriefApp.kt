@@ -12,6 +12,9 @@ class AutoBriefApp : Application() {
     lateinit var core: AutoBriefCore
         private set
 
+    /** The core's thread (main) and where its slow work runs; receivers start their work on its scope. */
+    val background = AutoBriefCore.Background.android()
+
     override fun onCreate() {
         super.onCreate()
         core = AutoBriefCore(
@@ -24,6 +27,7 @@ class AutoBriefApp : Application() {
             log = { line -> Log.i(LOG_TAG, line) },
             detailLogs = BuildConfig.DEBUG,
             monotonic = SystemClock::elapsedRealtime,
+            background = background,
         )
     }
 
@@ -35,3 +39,6 @@ class AutoBriefApp : Application() {
 
 val android.content.Context.core: AutoBriefCore
     get() = (applicationContext as AutoBriefApp).core
+
+val android.content.Context.background: AutoBriefCore.Background
+    get() = (applicationContext as AutoBriefApp).background

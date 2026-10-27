@@ -70,7 +70,7 @@ class DeliveryTest {
     @Test fun anArchiveThatKeepsFailingIsGivenUpSoTheWaitingCountMatchesWhatWillArrive() {
         val h = Harness(AppSettings(plateNumber = "00가 0000", archiveWebhookUrl = hook))
         h.drive(100.0, 10.0, null, null)
-        h.core.exportWorkbook(app.autobrief.car.domain.TaxPeriods.month(2026, 10), businessYear = false)
+        h.core.exportNow(app.autobrief.car.domain.TaxPeriods.month(2026, 10), businessYear = false)
         val endpoint = Endpoint { _, key -> !key.startsWith("archive-") } // the workbook is refused, entries pass
         val sender = WebhookSender(h.core, { h.now }, { h.now }, endpoint::post)
         repeat(WebhookSender.MAX_ARCHIVE_ATTEMPTS + 5) { sender.flush(); h.advance(WebhookSender.BACKOFF_MAX_MS) }
@@ -121,7 +121,7 @@ class DeliveryTest {
         val marker = thread {
             keys.chunked(10).forEach { batch -> h.core.markDeliveries(batch.map { AutoBriefCore.Delivery(it, true, null) }) }
         }
-        (1..10).forEach { m -> h.core.exportWorkbook(app.autobrief.car.domain.TaxPeriods.month(2026, m), businessYear = false) }
+        (1..10).forEach { m -> h.core.exportNow(app.autobrief.car.domain.TaxPeriods.month(2026, m), businessYear = false) }
         marker.join()
         assertEquals(h.core.outbox.value, h.store.data.getValue(Space.DEMO).outbox)
         assertFalse(h.core.outbox.value.isEmpty())

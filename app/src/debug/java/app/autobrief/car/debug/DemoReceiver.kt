@@ -5,9 +5,11 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import app.autobrief.car.AutoBriefApp
+import app.autobrief.car.background
 import app.autobrief.car.core
 import app.autobrief.car.domain.AutoBriefCore
 import app.autobrief.car.service.VehicleMonitorService
+import kotlinx.coroutines.launch
 
 /**
  * `adb shell am broadcast -a app.autobrief.car.debug.DEMO -p app.autobrief.car --es cmd load_sample
@@ -32,8 +34,17 @@ class DemoReceiver : BroadcastReceiver() {
             "gleo" -> {
                 // what Gleo would send: --es function LOG_TRIP_PURPOSE --es params '{"purpose":"BUSINESS"}'
                 val function = intent.getStringExtra("function") ?: return
-                val reply = core.handleGleo(function, app.autobrief.car.domain.GleoContract.parseParams(intent.getStringExtra("params") ?: "{}"))
-                Log.i(AutoBriefApp.LOG_TAG, "GLEO_REPLY function=$function status=${reply.status} message=${reply.message}")
+                val params = app.autobrief.car.domain.GleoContract.parseParams(intent.getStringExtra("params") ?: "{}")
+                // like GleoActionReceiver: SEND_LOGBOOK's workbook is made off the main thread before the reply
+                val pending: PendingResult? = goAsync()
+                context.background.scope.launch {
+                    try {
+                        val reply = core.handleGleo(function, params)
+                        Log.i(AutoBriefApp.LOG_TAG, "GLEO_REPLY function=$function status=${reply.status} message=${reply.message}")
+                    } finally {
+                        pending?.finish()
+                    }
+                }
             }
             "reset" -> if (core.demoMode) core.resetDemo()
             "live" -> core.setDemoMode(false, null)

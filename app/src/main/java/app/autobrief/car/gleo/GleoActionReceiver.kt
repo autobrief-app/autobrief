@@ -3,24 +3,44 @@ package app.autobrief.car.gleo
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.util.Log
+import app.autobrief.car.AutoBriefApp
+import app.autobrief.car.background
 import app.autobrief.car.core
 import app.autobrief.car.domain.AutoBriefCore
 import app.autobrief.car.domain.GleoContract
 import app.autobrief.car.service.VehicleMonitorService
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 
 /**
- * Gleo functions declared with `"component": "service"` arrive here via sendBroadcast. The reply goes
- * back as APP_ACTION_RESPONSE well inside Gleo's 7-second window (in-memory updates and one small
- * workbook write).
+ * Gleo functions declared with `"component": "service"` arrive here via sendBroadcast. The reply goes back as
+ * APP_ACTION_RESPONSE inside Gleo's 7-second window. SEND_LOGBOOK makes a workbook first: that runs off the main
+ * thread (the broadcast is kept open with goAsync until the reply is sent), so the screen keeps answering meanwhile.
  */
 class GleoActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val function = intent.action ?: return
         if (function !in GleoContract.FUNCTIONS) return
-        val reply = context.core.handleGleo(function, intentParams(intent))
-        sendGleoResponse(context, function, reply)
-        // a start Android refuses from the background is logged there, never thrown into Gleo's broadcast
-        if (function == GleoContract.SEND_LOGBOOK) VehicleMonitorService.start(context, VehicleMonitorService.ACTION_FLUSH)
+        val params = intentParams(intent)
+        val pending: PendingResult? = goAsync() // null when called directly (tests), not by a broadcast
+        context.background.scope.launch {
+            try {
+                val reply = try {
+                    context.core.handleGleo(function, params)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(AutoBriefApp.LOG_TAG, "GLEO_FAILED function=$function error=${e::class.java.simpleName}", e)
+                    AutoBriefCore.GleoReply("fail", "The request could not be completed.")
+                }
+                sendGleoResponse(context, function, reply)
+                // a start Android refuses from the background is logged there, never thrown into Gleo's broadcast
+                if (function == GleoContract.SEND_LOGBOOK) VehicleMonitorService.start(context, VehicleMonitorService.ACTION_FLUSH)
+            } finally {
+                pending?.finish()
+            }
+        }
     }
 }
 

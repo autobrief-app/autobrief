@@ -133,22 +133,22 @@ class CoreFlowTest {
         val h = Harness(base)
         h.drive(0.0, 12.0, null, null)
         h.advance(AutoBriefCore.AUTO_WAIT_MS + 1); h.core.tick()
-        val reply = h.core.handleGleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("""{"purpose":"BUSINESS","memo":"가상고객사 미팅"}"""))
+        val reply = h.core.gleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("""{"purpose":"BUSINESS","memo":"가상고객사 미팅"}"""))
         assertEquals("success", reply.status)
         val row = h.core.trips.value.single()
         assertEquals(TripPurpose.BUSINESS, row.purpose)
         assertEquals(ClassifiedBy.VOICE, row.classifiedBy)
         assertEquals("가상고객사 미팅", row.memo)
         h.advance(AutoBriefCore.VOICE_CLASSIFY_WINDOW_MS + 1)
-        assertEquals("fail", h.core.handleGleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("""{"purpose":"PERSONAL"}""")).status)
-        assertEquals("asking", h.core.handleGleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("{}")).status)
+        assertEquals("fail", h.core.gleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("""{"purpose":"PERSONAL"}""")).status)
+        assertEquals("asking", h.core.gleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("{}")).status)
     }
 
     @Test fun voiceCannotRewriteARecordedPurpose() {
         val h = Harness(base)
         h.bookmarks()
         h.drive(0.0, 18.0, SampleHistory.HOME.point, SampleHistory.OFFICE.point)
-        val reply = h.core.handleGleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("""{"purpose":"PERSONAL"}"""))
+        val reply = h.core.gleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("""{"purpose":"PERSONAL"}"""))
         assertEquals("fail", reply.status)
         val row = h.core.trips.value.single()
         assertEquals(TripPurpose.COMMUTE, row.purpose)
@@ -158,10 +158,10 @@ class CoreFlowTest {
     @Test fun voiceSendIsRateLimited() {
         val h = Harness(base)
         h.drive(0.0, 12.0, null, null)
-        assertEquals("success", h.core.handleGleo(GleoContract.SEND_LOGBOOK, GleoContract.parseParams("{}")).status)
-        assertEquals("fail", h.core.handleGleo(GleoContract.SEND_LOGBOOK, GleoContract.parseParams("{}")).status)
+        assertEquals("success", h.core.gleo(GleoContract.SEND_LOGBOOK, GleoContract.parseParams("{}")).status)
+        assertEquals("fail", h.core.gleo(GleoContract.SEND_LOGBOOK, GleoContract.parseParams("{}")).status)
         h.advance(AutoBriefCore.SEND_COOLDOWN_MS + 1)
-        assertEquals("success", h.core.handleGleo(GleoContract.SEND_LOGBOOK, GleoContract.parseParams("{}")).status)
+        assertEquals("success", h.core.gleo(GleoContract.SEND_LOGBOOK, GleoContract.parseParams("{}")).status)
     }
 
     @Test fun wrongAdminPinsLockEntryAndThePersistedCounterSurvivesARestart() {
@@ -183,9 +183,9 @@ class CoreFlowTest {
         h.drive(0.0, 18.0, SampleHistory.HOME.point, SampleHistory.OFFICE.point)
         h.drive(18.0, 10.0, null, null)
         h.advance(AutoBriefCore.AUTO_WAIT_MS + 1); h.core.tick()
-        val status = h.core.handleGleo(GleoContract.GET_LOGBOOK_STATUS, GleoContract.parseParams("{}"))
+        val status = h.core.gleo(GleoContract.GET_LOGBOOK_STATUS, GleoContract.parseParams("{}"))
         assertEquals("This month: 2 trips, 28 km, business use 64.3 percent. 1 trips still need a purpose.", status.message)
-        val send = h.core.handleGleo(GleoContract.SEND_LOGBOOK, GleoContract.parseParams("""{"period":"THIS_MONTH"}"""))
+        val send = h.core.gleo(GleoContract.SEND_LOGBOOK, GleoContract.parseParams("""{"period":"THIS_MONTH"}"""))
         assertEquals("success", send.status)
         assertTrue(h.files.keys.any { it.startsWith("live/운행기록부_2026-10-01_2026-10-31") && it.endsWith(".xlsx") })
         val archive = h.core.outbox.value.single { it.kind == "archive" }

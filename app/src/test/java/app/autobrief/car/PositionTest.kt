@@ -145,7 +145,7 @@ class PositionTest {
         h.gps(home)
         h.odo(45_200.0); h.gear(Gear.PARK); h.advance(60_000); h.gear(Gear.DRIVE)
         h.advance(20 * 60_000); h.gps(office); h.odo(45_218.0); h.gear(Gear.PARK)
-        h.core.exportWorkbook(app.autobrief.car.domain.TaxPeriods.month(2026, 10), businessYear = false)
+        h.core.exportNow(app.autobrief.car.domain.TaxPeriods.month(2026, 10), businessYear = false)
         assertEquals(TripPurpose.COMMUTE, h.core.trips.value.single().purpose)
         val stored = h.store.data.values.joinToString("\n") { d ->
             Json.encodeToString(ListSerializer(TripRecord.serializer()), d.trips) + d.ledger.joinToString { it.body } +

@@ -56,7 +56,9 @@ fun ReportScreen(core: AutoBriefCore, onFlush: () -> Unit) {
         PeriodOption("지난 사업연도", TaxPeriods.businessYear(byYear - 1, fy), true),
     )
     var choice by remember { mutableStateOf(4) }
-    var result by remember { mutableStateOf<String?>(null) }
+    // the workbook is made off the main thread: until it is, the screen says so and both buttons wait
+    val workbook by core.workbook.collectAsState()
+    val making = workbook is AutoBriefCore.WorkbookRequest.Making
     val opt = options[choice]
     val s = core.summary(opt.range)
     val unit = if (opt.businessYear) "사업연도" else "기간"
@@ -69,7 +71,7 @@ fun ReportScreen(core: AutoBriefCore, onFlush: () -> Unit) {
         var topHeight by remember { mutableStateOf(0.dp) }
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(SECTION_GAP)) {
             Column(Modifier.onSizeChanged { topHeight = with(density) { it.height.toDp() } }, verticalArrangement = Arrangement.spacedBy(SECTION_GAP)) {
-                ChipRow { options.forEachIndexed { i, o -> Choice(o.label, i == choice) { choice = i; result = null } } }
+                ChipRow { options.forEachIndexed { i, o -> Choice(o.label, i == choice) { choice = i; core.dismissWorkbook() } } }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                     Panel(Modifier.weight(1.2f)) {
                         Txt("업무용승용차 운행기록부", Type.title)
@@ -85,23 +87,22 @@ fun ReportScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                             "운행 ${s.rowCount}건 · 미분류 ${s.unclassifiedCount}건(업무로 계산하지 않음) · 미기록 구간 ${s.gapRowCount}건(비업무) · 계기판 연속성 끊김 ${s.continuityBreaks}곳",
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                            BigButton("엑셀 만들기", Modifier.weight(1f), enabled = s.rowCount > 0, sub = "국세청 서식 + 검증 기록") {
-                                val r = core.exportWorkbook(opt.range, opt.businessYear, send = false)
-                                result = "차량에 저장했습니다: ${r.fileName} (${r.rows}행)"
+                            BigButton("엑셀 만들기", Modifier.weight(1f), enabled = !making && s.rowCount > 0, sub = "국세청 서식 + 검증 기록") {
+                                core.requestWorkbook(opt.range, opt.businessYear, send = false)
                             }
                             BigButton(
                                 "지금 보내기",
                                 Modifier.weight(1f),
-                                enabled = s.rowCount > 0 && settings.archiveWebhookUrl.isNotBlank(),
+                                enabled = !making && s.rowCount > 0 && settings.archiveWebhookUrl.isNotBlank(),
                                 outlined = true,
                                 sub = if (settings.archiveWebhookUrl.isBlank()) "설정에서 주소를 넣어 주세요" else "회사 서버, 메일 연동",
                             ) {
-                                val r = core.exportWorkbook(opt.range, opt.businessYear, send = true)
-                                onFlush()
-                                result = "저장하고 전송을 시작했습니다: ${r.fileName}"
+                                if (core.requestWorkbook(opt.range, opt.businessYear, send = true)) onFlush()
                             }
                         }
-                        result?.let { Txt(it, Type.body, p.accent) }
+                        workbook?.let { w ->
+                            Txt(workbookMessage(w), Type.body, if (w is AutoBriefCore.WorkbookRequest.Failed) p.danger else p.accent)
+                        }
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
                         Panel(border = if (check.ok) null else p.danger) {
@@ -134,6 +135,14 @@ fun ReportScreen(core: AutoBriefCore, onFlush: () -> Unit) {
             Gap(24.dp)
         }
     }
+}
+
+/** What the report screen says about its workbook: being made, where it went, or that it could not be written. */
+private fun workbookMessage(w: AutoBriefCore.WorkbookRequest): String = when (w) {
+    is AutoBriefCore.WorkbookRequest.Making -> "만드는 중…"
+    is AutoBriefCore.WorkbookRequest.Made ->
+        if (w.send) "저장하고 전송을 시작했습니다: ${w.result.fileName}" else "차량에 저장했습니다: ${w.result.fileName} (${w.result.rows}행)"
+    is AutoBriefCore.WorkbookRequest.Failed -> "엑셀을 만들지 못했습니다(${w.error}). 차량 저장 공간을 확인한 뒤 다시 눌러 주세요."
 }
 
 private val SECTION_GAP = 22.dp

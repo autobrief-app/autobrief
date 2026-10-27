@@ -37,7 +37,7 @@ object DocsSample {
         h.odo(45_200.0); h.gear(Gear.PARK); h.gear(Gear.DRIVE)
         h.now = Harness.at(TODAY, 10, 58)
         h.odo(45_218.0); h.gear(Gear.PARK)
-        val voice = h.core.handleGleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("""{"purpose":"BUSINESS","memo":"가상고객사 미팅"}"""))
+        val voice = h.core.gleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("""{"purpose":"BUSINESS","memo":"가상고객사 미팅"}"""))
         check(voice.status == "success") { voice.message }
         h.core.onNavi(NaviEvent.RouteEnded)
         // 22:40 → 23:06, 11 km, purpose not given yet
@@ -134,8 +134,8 @@ class SampleScenarioTest {
         assertEquals(22.0, tax.ratePct, 0.0) // a business year starting 2026-01-01 takes the 2026 table
 
         val dir = File("build/sample").apply { mkdirs() }
-        val yearBook = core.exportWorkbook(year, businessYear = true, send = false)
-        val monthBook = core.exportWorkbook(october, businessYear = false, send = false)
+        val yearBook = core.exportNow(year, businessYear = true, send = false)
+        val monthBook = core.exportNow(october, businessYear = false, send = false)
         File(dir, "운행기록부_2026_사업연도_가상예시.xlsx").writeBytes(h.files.getValue("demo/${yearBook.fileName}"))
         File(dir, "운행기록부_2026_사업연도_가상예시.csv").writeBytes(h.files.getValue("demo/${yearBook.fileName.removeSuffix(".xlsx")}.csv"))
         File(dir, "운행기록부_2026-10_가상예시.xlsx").writeBytes(h.files.getValue("demo/${monthBook.fileName}"))
