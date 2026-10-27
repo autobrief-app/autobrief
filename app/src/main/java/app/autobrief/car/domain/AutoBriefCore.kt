@@ -944,6 +944,9 @@ class AutoBriefCore private constructor(
                 val items = withContext(background.work) {
                     entries.map { e -> Queued(ledgerKey(e, into, chain), LEDGER_KIND, ledgerPayload(e, into, chain, car), e.seq) }
                 }
+                // the ledger was replaced meanwhile (the sample loaded again or reset, e.g. by a setup that restarted the
+                // app while these were built): they are copies of a chain that is gone, and the new one has its own mark
+                if (space == into && chainId != chain) return@launch
                 enqueueAll(items, into) // back on the core's thread, which owns the queue (see [enqueueAll])
                 // a space left meanwhile keeps its mark: entering it again queues nothing twice and clears it then
                 if (space == into && _settings.value.ledgerBackfillThroughSeq == throughSeq) {

@@ -207,6 +207,29 @@ class OffMainWorkTest {
         assertTrue(h.files.keys.all { it.startsWith("demo/") })
     }
 
+    @Test fun copiesOfALedgerReplacedWhileTheyWereBuiltAreNotQueued() {
+        // the sample loaded again while the first load's sending copies were still being built (setup restarts the app
+        // and loads the sample once more after an ANR): only the new chain goes out, and its mark clears once it is queued
+        val hook = "https://receiver.example/hook"
+        val h = harness(LocalDate.of(2026, 10, 23))
+        val gate = holdWork()
+        onCore {
+            check(h.core.setDemoMode(true, null) == AutoBriefCore.SettingsResult.SAVED)
+            h.core.loadSampleHistory(hook)
+        }
+        val replaced = onCore { h.core.ledgerChainId }!!
+        onCore { h.core.loadSampleHistory(hook) }
+        val chain = onCore { h.core.ledgerChainId }!!
+        assertTrue(chain != replaced)
+        assertTrue("held until the new chain's copies are queued", onCore { h.core.settings.value.ledgerBackfillThroughSeq } > 0)
+        gate.countDown()
+        val entries = onCore { h.core.ledgerEntries.size }
+        waitFor("the new chain's copies queued") { onCore { h.core.outbox.value.count { chain in it.key } } == entries }
+        waitFor("the mark cleared") { onCore { h.core.settings.value.ledgerBackfillThroughSeq } == 0L }
+        assertEquals("copies of the replaced chain", 0, onCore { h.core.outbox.value.count { chain !in it.key } })
+        assertEquals(entries, onCore { h.core.outboxSnapshot() }.items.size)
+    }
+
     @Test fun theSampleLedgersSendingCopiesAreQueuedOnTheCoreThread() {
         val store = GatedQueueStore().also { it.arm() }
         val h = harness(LocalDate.of(2026, 10, 23), store)
