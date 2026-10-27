@@ -47,6 +47,7 @@ import app.autobrief.car.domain.TaxPeriods
 import app.autobrief.car.model.Gear
 import app.autobrief.car.model.VehicleSnapshot
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import java.time.YearMonth
 
 enum class Tab(val label: String, val icon: ImageVector) {
@@ -54,6 +55,35 @@ enum class Tab(val label: String, val icon: ImageVector) {
     TRIPS("운행 목록", Icons.Filled.List),
     REPORT("운행기록부", Icons.Filled.DateRange),
     SETTINGS("설정", Icons.Filled.Settings),
+}
+
+/**
+ * The app's screen: 불러오는 중 while the stored logbook is read when the process starts (a moment; seconds on a loaded
+ * head unit), then [AutoBriefScreen].
+ */
+@Composable
+fun AutoBriefRoot(core: StateFlow<AutoBriefCore?>, tab: MutableState<Tab>, onFlush: () -> Unit, night: Boolean? = null) {
+    val loaded by core.collectAsState()
+    val c = loaded
+    when {
+        c != null -> AutoBriefScreen(c, tab, onFlush, night)
+        night == null -> AutoBriefTheme { Loading() }
+        else -> AutoBriefTheme(night) { Loading() }
+    }
+}
+
+@Composable
+private fun Loading() {
+    val p = LocalPalette.current
+    Column(
+        Modifier.fillMaxSize().background(p.bg),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        AppMark(96)
+        Gap(28.dp)
+        Txt("불러오는 중", Type.title, p.muted)
+    }
 }
 
 @Composable

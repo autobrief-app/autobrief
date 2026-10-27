@@ -5,8 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import app.autobrief.car.AutoBriefApp
+import app.autobrief.car.autoBrief
 import app.autobrief.car.background
-import app.autobrief.car.core
 import app.autobrief.car.domain.AutoBriefCore
 import app.autobrief.car.service.VehicleMonitorService
 import kotlinx.coroutines.launch
@@ -17,10 +17,23 @@ import kotlinx.coroutines.launch
  * fictional history; `cmd reset` wipes the demo space, `cmd live` returns to the real logbook,
  * `cmd gleo --es function <name> --es params '<json>'` runs a Gleo function the way Gleo would (adb cannot
  * hold Gleo's signature permission that guards the real receiver).
+ *
+ * The broadcast stays open (goAsync) until the command ran, after the stored logbook was read when the broadcast started
+ * the process: `am broadcast` returns once it is done.
  */
 class DemoReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val core = context.core
+        val pending: PendingResult? = goAsync() // null when called directly (tests), not by a broadcast
+        context.background.scope.launch {
+            try {
+                run(context, context.autoBrief.awaitCore(), intent)
+            } finally {
+                pending?.finish()
+            }
+        }
+    }
+
+    private suspend fun run(context: Context, core: AutoBriefCore, intent: Intent) {
         when (intent.getStringExtra("cmd")) {
             "load_sample" -> {
                 if (core.setDemoMode(true, null) != AutoBriefCore.SettingsResult.SAVED) {
@@ -36,15 +49,8 @@ class DemoReceiver : BroadcastReceiver() {
                 val function = intent.getStringExtra("function") ?: return
                 val params = app.autobrief.car.domain.GleoContract.parseParams(intent.getStringExtra("params") ?: "{}")
                 // like GleoActionReceiver: SEND_LOGBOOK's workbook is made off the main thread before the reply
-                val pending: PendingResult? = goAsync()
-                context.background.scope.launch {
-                    try {
-                        val reply = core.handleGleo(function, params)
-                        Log.i(AutoBriefApp.LOG_TAG, "GLEO_REPLY function=$function status=${reply.status} message=${reply.message}")
-                    } finally {
-                        pending?.finish()
-                    }
-                }
+                val reply = core.handleGleo(function, params)
+                Log.i(AutoBriefApp.LOG_TAG, "GLEO_REPLY function=$function status=${reply.status} message=${reply.message}")
             }
             "reset" -> if (core.demoMode) core.resetDemo()
             "live" -> core.setDemoMode(false, null)

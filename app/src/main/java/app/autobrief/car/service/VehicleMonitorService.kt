@@ -11,7 +11,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import app.autobrief.car.R
-import app.autobrief.car.core
+import app.autobrief.car.autoBrief
 import app.autobrief.car.domain.AutoBriefCore
 import app.autobrief.car.domain.VehicleEvent
 import app.autobrief.car.model.Gear
@@ -36,13 +36,18 @@ import kotlinx.coroutines.launch
  * Pleos Vehicle and NaviHelper SDKs, ticks the time-based rules, asks navigation for the position while a
  * trip is open, and sends queued ledger entries and workbooks on its own I/O loop. Started at boot and when
  * the app opens. One bad event, tick or send round is logged and dropped; it never ends the process.
+ *
+ * The links start at once, while the process may still be reading the stored logbook (AutoBriefApp): what they report
+ * until the core is there waits in [inputs] and goes in first, in arrival order ([attach]).
  */
 class VehicleMonitorService : Service() {
 
     private val scope = CoroutineScope(
         SupervisorJob() + Dispatchers.Main + CoroutineExceptionHandler { _, e -> logError("coroutine", e) },
     )
+    /** Set once the stored logbook is read ([attach]). */
     private lateinit var core: AutoBriefCore
+    private val inputs = CoreInputs<AutoBriefCore> { n -> Log.w(TAG, "$n early reports dropped: the logbook took too long to read") }
     private lateinit var vehicle: PleosVehicleSource
     private lateinit var navi: PleosNaviSource
     private lateinit var car: CarServices
@@ -53,22 +58,29 @@ class VehicleMonitorService : Service() {
     /** Running as a foreground service of the location type, which keeps GNSS fixes coming while navigation is in front. */
     private var locationForeground = false
 
-    @OptIn(FlowPreview::class)
     override fun onCreate() {
         super.onCreate()
         startAsForeground()
-        core = applicationContext.core
-        vehicle = PleosVehicleSource(this) { e -> dispatch("vehicle event") { core.onVehicle(e) } }
-        navi = PleosNaviSource(this) { e -> dispatch("navigation event") { core.onNavi(e) } }
-        car = CarServices(this) { r -> dispatch("driving restrictions") { core.setRestricted(r) } }
-        gps = PlatformLocationSource(this) { fix -> dispatch("gnss fix") { core.onPlatformFix(fix) } }
-        sender = WebhookSender(core)
-        core.naviControl = AutoBriefCore.NaviControl { navi.requestLocation() }
+        vehicle = PleosVehicleSource(this, emit = { e -> dispatch("vehicle event") { it.onVehicle(e) } })
+        navi = PleosNaviSource(this) { e -> dispatch("navigation event") { it.onNavi(e) } }
+        car = CarServices(this) { r -> dispatch("driving restrictions") { it.setRestricted(r) } }
+        gps = PlatformLocationSource(this) { fix -> dispatch("gnss fix") { it.onPlatformFix(fix) } }
+        // ticks and sending rounds run once the core is there (started in attach); a flush asked for before waits
+        loops = MonitorLoops(scope, Dispatchers.IO, TICK_MS, FLUSH_EVERY_MS, ::logError, ::onTick) { sender.flush() }
         vehicle.start()
         navi.start()
         car.start()
         gps.start()
-        loops = MonitorLoops(scope, Dispatchers.IO, TICK_MS, FLUSH_EVERY_MS, ::logError, ::onTick) { sender.flush() }
+        scope.launch { attach(autoBrief.awaitCore()) }
+    }
+
+    /** The stored logbook is read: the reports that waited go in first, then the ticks and the sending start. */
+    @OptIn(FlowPreview::class)
+    private fun attach(c: AutoBriefCore) {
+        core = c
+        sender = WebhookSender(c)
+        c.naviControl = AutoBriefCore.NaviControl { navi.requestLocation() }
+        inputs.open(c)
         loops.start()
         scope.launch {
             // new ledger entries reach the company endpoint within seconds, not at the next periodic round
@@ -93,9 +105,12 @@ class VehicleMonitorService : Service() {
         if (n % BOOKMARKS_EVERY_TICKS == 0) navi.requestBookmarks()
     }
 
-    /** SDK callbacks are posted to the main thread one by one; each runs on its own, so one that throws loses only itself. */
-    private fun dispatch(what: String, block: () -> Unit) {
-        scope.launch { guarded(what, ::logError, block) }
+    /**
+     * SDK callbacks are posted to the main thread one by one and reach the core in that order (after the ones that waited
+     * for it); each runs on its own, so one that throws loses only itself.
+     */
+    private fun dispatch(what: String, block: (AutoBriefCore) -> Unit) {
+        scope.launch { inputs.deliver { c -> guarded(what, ::logError) { block(c) } } }
     }
 
     private fun logError(what: String, e: Throwable) {
@@ -121,10 +136,12 @@ class VehicleMonitorService : Service() {
         navi.stop()
         car.stop()
         gps.stop()
-        // the vehicle link is gone with the service: its last gear no longer tells the screen the car is parked
-        core.onVehicle(VehicleEvent.Connection(false, "monitor stopped"))
-        core.setRestricted(null)
-        core.naviControl = null
+        if (::core.isInitialized) {
+            // the vehicle link is gone with the service: its last gear no longer tells the screen the car is parked
+            core.onVehicle(VehicleEvent.Connection(false, "monitor stopped"))
+            core.setRestricted(null)
+            core.naviControl = null
+        }
         super.onDestroy()
     }
 

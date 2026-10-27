@@ -137,6 +137,12 @@ data class AppSettings(
     val lastMonthlyCloseYm: String = "",
     /** The car's VIN as last read from the vehicle (ISO 3779), so a send before the SDK answers still names the car. */
     val vin: String = "",
+    /**
+     * The ledger's sending copies up to this seq are still to be queued (a sending address was set for the first time, or
+     * the sample loaded with one): saved with that address, cleared once they are in the outbox, so a start that finds
+     * it set queues them again. 0 = nothing pending.
+     */
+    val ledgerBackfillThroughSeq: Long = 0,
 )
 
 data class VehicleSnapshot(

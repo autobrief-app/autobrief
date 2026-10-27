@@ -16,7 +16,8 @@ object Backoff {
  * normal; before any gear is known the start-up retries are at work.
  */
 class QuietWatch(private val quietMs: Long, private val clock: () -> Long) {
-    private var lastHeard = clock()
+    /** Set from the SDK's callback threads, read on the source's own thread. */
+    @Volatile private var lastHeard = clock()
 
     fun heard() {
         lastHeard = clock()

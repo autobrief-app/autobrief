@@ -8,7 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.mutableStateOf
 import app.autobrief.car.R
-import app.autobrief.car.core
+import app.autobrief.car.autoBrief
 import app.autobrief.car.service.VehicleMonitorService
 import app.autobrief.car.vehicle.PlatformLocationSource
 
@@ -26,7 +26,7 @@ class MainActivity : ComponentActivity() {
         // the monitor normally starts at boot; opening the app makes sure it runs (e.g. right after install)
         VehicleMonitorService.start(this)
         setContent {
-            AutoBriefScreen(core = core, tab = tab, onFlush = { VehicleMonitorService.start(this, VehicleMonitorService.ACTION_FLUSH) })
+            AutoBriefRoot(autoBrief.coreState, tab, onFlush = { VehicleMonitorService.start(this, VehicleMonitorService.ACTION_FLUSH) })
         }
         askLocationOnce()
     }

@@ -156,3 +156,27 @@ class DrainMainLooper : ExternalResource() {
         shadowOf(Looper.getMainLooper()).idle()
     }
 }
+
+/**
+ * Runs the main looper, one batch of due messages at a time, until [done] or [timeoutMs] of real time: work the app runs
+ * on Dispatchers.IO (a real thread under Robolectric) posts its result there. Returns the longest batch in ms (a batch
+ * holds every message that was due at once, so it bounds each of them).
+ */
+fun runMainLooperUntil(what: String, timeoutMs: Long = 20_000, done: () -> Boolean): Long {
+    val until = System.nanoTime() + timeoutMs * 1_000_000
+    var longest = 0L
+    while (true) {
+        val started = System.nanoTime()
+        shadowOf(Looper.getMainLooper()).idle()
+        longest = maxOf(longest, (System.nanoTime() - started) / 1_000_000)
+        if (done()) return longest
+        check(System.nanoTime() < until) { "timed out waiting for $what" }
+        Thread.sleep(5)
+    }
+}
+
+/** The app's core once its stored logbook is read (see [AutoBriefApp.coreState]). */
+fun AutoBriefApp.loadedCore(): AutoBriefCore {
+    runMainLooperUntil("the stored logbook to be read") { coreState.value != null }
+    return coreState.value!!
+}

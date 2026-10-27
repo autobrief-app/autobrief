@@ -59,6 +59,9 @@ class Ledger(initial: List<LedgerEntry> = emptyList()) {
     val size: Int get() = entries.size
     val headHash: String get() = entries.lastOrNull()?.hash ?: GENESIS
 
+    /** The newest entry's seq; 0 for an empty ledger. */
+    val headSeq: Long get() = entries.lastOrNull()?.seq ?: 0
+
     fun append(kind: String, tripId: String, body: JsonObject, epochMs: Long): LedgerEntry {
         val seq = (entries.lastOrNull()?.seq ?: 0L) + 1
         val text = body.toString()

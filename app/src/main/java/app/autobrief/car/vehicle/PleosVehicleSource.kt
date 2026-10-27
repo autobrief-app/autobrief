@@ -1,12 +1,8 @@
 package app.autobrief.car.vehicle
 
-import ai.pleos.playground.vehicle.Vehicle
-import ai.pleos.playground.vehicle.constant.control.VehicleGear
-import ai.pleos.playground.vehicle.listener.DistanceDrivenListener
-import ai.pleos.playground.vehicle.listener.GearSelectionListener
 import android.content.Context
 import android.os.Handler
-import android.os.Looper
+import android.os.HandlerThread
 import android.os.SystemClock
 import android.util.Log
 import app.autobrief.car.domain.VehicleEvent
@@ -19,30 +15,25 @@ import app.autobrief.car.model.Gear
  * The vehicle service may not be up when the app starts: initialising and the first query are tried again with a
  * growing pause until they succeed. Once connected, listeners that went quiet outside P ([checkQuiet], called by the
  * monitor's tick) are connected again from scratch.
+ *
+ * Every call into the SDK runs on this source's own thread, never the main thread: the SDK reflects over its classes
+ * with kotlin-reflect on its first calls, and on a loaded head unit the odometer probe kept the main thread for seconds
+ * (rehearsal 40475583018: Android closed the app for not taking a focus event within 5 s). The link and the state below
+ * belong to that thread. emit() posts to the main thread itself (see VehicleMonitorService), so it can be called from
+ * here and from the SDK's callback threads.
  */
-class PleosVehicleSource(context: Context, private val emit: (VehicleEvent) -> Unit) {
-    // emit() posts to the main thread itself (see VehicleMonitorService), so SDK callback threads are safe here
-
-    private val app = context.applicationContext
-    private var vehicle = Vehicle(app)
-    private val main = Handler(Looper.getMainLooper())
+class PleosVehicleSource(
+    context: Context,
+    private val emit: (VehicleEvent) -> Unit,
+    private val newLink: () -> VehicleLink = { PleosVehicleLink(context.applicationContext) },
+) {
+    private val thread = HandlerThread("AutoBriefVehicleSdk").apply { start() }
+    private val sdk = Handler(thread.looper)
+    private var link: VehicleLink? = null
     private var registered = false
-    private var stopped = false
+    @Volatile private var stopped = false
     @Volatile private var lastGear = Gear.UNKNOWN
     private val quiet = QuietWatch(QUIET_MS, SystemClock::elapsedRealtime)
-
-    private val odometerListener = object : DistanceDrivenListener {
-        override fun onDistanceDrivenUpdated(km: Float?) {
-            quiet.heard()
-            km?.let { emit(VehicleEvent.Odometer(it.toDouble())) }
-        }
-        override fun onFailed(e: Exception) = issue("odometer", e)
-    }
-
-    private val gearListener = object : GearSelectionListener {
-        override fun onSelected(gear: VehicleGear?) = gearIs(gear.toGear())
-        override fun onFailed(e: Exception) = issue("gear", e)
-    }
 
     private fun gearIs(gear: Gear) {
         quiet.heard()
@@ -52,53 +43,65 @@ class PleosVehicleSource(context: Context, private val emit: (VehicleEvent) -> U
 
     fun start() {
         stopped = false
-        initialize(attempt = 0)
+        sdk.post(::connect)
     }
 
-    private fun initialize(attempt: Int) {
-        if (stopped) return
-        runCatching { vehicle.initialize() }.onFailure {
+    /** A new link, initialised and probed. */
+    private fun connect() {
+        val l = newLink()
+        link = l
+        initialize(l, attempt = 0)
+    }
+
+    private fun initialize(l: VehicleLink, attempt: Int) {
+        if (stopped || l !== link) return
+        runCatching { l.initialize() }.onFailure {
             issue("initialize", it)
             emit(VehicleEvent.Connection(false, it.message))
-            main.postDelayed({ initialize(attempt + 1) }, Backoff.delayMs(attempt))
+            sdk.postDelayed({ initialize(l, attempt + 1) }, Backoff.delayMs(attempt))
             return
         }
         // initialize() binds to the Pleos vehicle service asynchronously: probe until it answers
-        probe(attempt = 0)
+        probe(l, attempt = 0)
     }
 
-    private fun probe(attempt: Int) {
-        main.postDelayed({
-            if (stopped) return@postDelayed
+    private fun probe(l: VehicleLink, attempt: Int) {
+        sdk.postDelayed({
+            if (stopped || l !== link) return@postDelayed
             runCatching {
-                vehicle.getOdometer().getCurrentDistanceDriven({ km ->
-                    main.post {
-                        if (stopped) return@post
+                l.currentDistance({ km ->
+                    sdk.post {
+                        if (stopped || l !== link) return@post
                         quiet.heard()
                         emit(VehicleEvent.Connection(true))
                         km?.let { emit(VehicleEvent.Odometer(it.toDouble())) }
                         if (!registered) {
                             registered = true
-                            register()
+                            register(l)
                         }
                     }
                 }, {
                     issue("probe", it)
-                    main.post { probe(attempt + 1) }
+                    sdk.post { probe(l, attempt + 1) }
                 })
             }.onFailure {
                 issue("probe", it)
-                probe(attempt + 1)
+                probe(l, attempt + 1)
             }
         }, Backoff.delayMs(attempt))
     }
 
-    private fun register() = runCatching {
-        vehicle.getOdometer().registerDistanceDriven(odometerListener)
-        val gear = vehicle.getGear()
-        gear.getCurrentGearSelectionState({ gearIs(it.toGear()) }, { issue("gear", it) })
-        gear.registerGearSelection(gearListener)
-        vehicle.getCarInfo().getVINInfo({ emit(VehicleEvent.Vin(it)) }, { issue("vin", it) })
+    private fun register(l: VehicleLink) = runCatching {
+        l.listen(
+            onDistance = { km ->
+                quiet.heard()
+                km?.let { emit(VehicleEvent.Odometer(it.toDouble())) }
+            },
+            onGear = ::gearIs,
+            onFailed = ::issue,
+        )
+        l.currentGear(::gearIs) { issue("gear", it) }
+        l.vin({ emit(VehicleEvent.Vin(it)) }, { issue("vin", it) })
     }.onFailure {
         issue("register", it)
         emit(VehicleEvent.Connection(false, it.message))
@@ -109,39 +112,33 @@ class PleosVehicleSource(context: Context, private val emit: (VehicleEvent) -> U
      * A fresh SDK object is initialised and probed, and registers its listeners once it answers.
      */
     fun checkQuiet() {
-        if (stopped || !registered || !quiet.reconnectDue(lastGear)) return
-        Log.w(TAG, "no vehicle data for ${QUIET_MS / 60_000} min outside P: connecting again")
-        emit(VehicleEvent.Connection(false, "no data"))
-        release()
-        vehicle = Vehicle(app)
-        initialize(attempt = 0)
+        sdk.post {
+            if (stopped || !registered || !quiet.reconnectDue(lastGear)) return@post
+            Log.w(TAG, "no vehicle data for ${QUIET_MS / 60_000} min outside P: connecting again")
+            emit(VehicleEvent.Connection(false, "no data"))
+            sdk.removeCallbacksAndMessages(null) // the old link's retries end with it
+            release()
+            connect()
+        }
     }
 
     private fun release() {
-        runCatching { vehicle.getOdometer().unregisterDistanceDriven(odometerListener) }
-        runCatching { vehicle.getGear().unregisterGearSelection(gearListener) }
-        runCatching { vehicle.release() }
+        link?.release()
+        link = null
         registered = false
         lastGear = Gear.UNKNOWN // the next gear comes from the next link
     }
 
+    /** Ends this source: the link is released on its thread, which then ends. */
     fun stop() {
         stopped = true
-        main.removeCallbacksAndMessages(null)
-        release()
+        sdk.removeCallbacksAndMessages(null)
+        sdk.post(::release)
+        thread.quitSafely()
     }
 
     private fun issue(what: String, e: Throwable) {
         Log.w(TAG, "$what: ${e.message}")
-    }
-
-    private fun VehicleGear?.toGear(): Gear = when (this) {
-        null -> Gear.UNKNOWN
-        VehicleGear.GEAR_PARK -> Gear.PARK
-        VehicleGear.GEAR_REVERSE -> Gear.REVERSE
-        VehicleGear.GEAR_NEUTRAL -> Gear.NEUTRAL
-        VehicleGear.GEAR_UNKNOWN -> Gear.UNKNOWN
-        else -> Gear.DRIVE // GEAR_DRIVE and manual-range gears all mean the car is in motion gear
     }
 
     companion object {

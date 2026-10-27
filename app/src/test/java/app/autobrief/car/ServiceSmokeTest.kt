@@ -3,6 +3,7 @@ package app.autobrief.car
 import android.os.Looper
 import app.autobrief.car.service.VehicleMonitorService
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
@@ -28,6 +29,10 @@ class ServiceSmokeTest {
         val controller = Robolectric.buildService(VehicleMonitorService::class.java).create().startCommand(0, 1)
         shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(3))
         assertNotNull(shadowOf(controller.get()).lastForegroundNotification)
+        // the stored logbook is read off the main thread; the monitor takes the core once it is there
+        val core = (RuntimeEnvironment.getApplication() as AutoBriefApp).loadedCore()
+        runMainLooperUntil("the monitor to take the core") { core.naviControl != null }
         controller.destroy()
+        assertNull(core.naviControl)
     }
 }

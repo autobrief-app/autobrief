@@ -45,13 +45,19 @@ class PlatformLocationTest {
 
     private fun grant() = shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
 
-    private fun source() = PlatformLocationSource(app) { fix -> app.core.onPlatformFix(fix) }
+    /** The app's core: its stored logbook is read off the main thread at start. */
+    private val core by lazy { app.loadedCore() }
+
+    private fun source(): PlatformLocationSource {
+        val c = core
+        return PlatformLocationSource(app) { fix -> c.onPlatformFix(fix) }
+    }
 
     @Test fun withoutTheGrantNothingIsRequestedAndTheAppWorksAsBefore() {
         val gps = source()
         assertFalse(gps.start())
         assertTrue(shadowOf(lm).getLocationUpdateListeners(LocationManager.GPS_PROVIDER).isEmpty())
-        assertEquals(AutoBriefCore.PlaceResult.NO_LOCATION, app.core.registerPlaceHere("집", PlaceKind.HOME))
+        assertEquals(AutoBriefCore.PlaceResult.NO_LOCATION, core.registerPlaceHere("집", PlaceKind.HOME))
     }
 
     @Test fun withTheGrantGnssFixesReachTheLogbookEveryFiveSecondsUntilItStops() {
@@ -69,8 +75,8 @@ class PlatformLocationTest {
             },
         )
         idle()
-        assertEquals(AutoBriefCore.PlaceResult.SAVED, app.core.registerPlaceHere("집", PlaceKind.HOME))
-        assertEquals(SampleHistory.HOME.point, app.core.settings.value.places.single().point)
+        assertEquals(AutoBriefCore.PlaceResult.SAVED, core.registerPlaceHere("집", PlaceKind.HOME))
+        assertEquals(SampleHistory.HOME.point, core.settings.value.places.single().point)
         gps.stop()
         assertTrue(shadowOf(lm).getLocationUpdateListeners(LocationManager.GPS_PROVIDER).isEmpty())
     }

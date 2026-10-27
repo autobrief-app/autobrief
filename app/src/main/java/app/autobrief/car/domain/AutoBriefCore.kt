@@ -46,26 +46,41 @@ import kotlin.coroutines.CoroutineContext
  *
  * Data lives in two separate spaces: LIVE (the real logbook) and DEMO (labelled fictional history for
  * presentations). Switching never copies anything between them, so a demo can never touch real records.
+ *
+ * The app makes it with [open], which reads the stored space off the calling thread; the public constructor reads it on
+ * the calling thread (tests, and a restart in them).
  */
-class AutoBriefCore(
+class AutoBriefCore private constructor(
     private val store: Store,
-    private val files: FileSink = FileSink { _, name, _ -> name },
-    private val clock: () -> Long = System::currentTimeMillis,
-    private val log: (String) -> Unit = {},
+    private val files: FileSink,
+    private val clock: () -> Long,
+    private val log: (String) -> Unit,
     /**
      * Place labels in the log (`POSITION place=`, the place part of `reason=`). Only debug builds turn it
      * on: a release build matches positions and keeps nothing of them, not even the owner's own place
      * names in logcat.
      */
-    private val detailLogs: Boolean = false,
+    private val detailLogs: Boolean,
     /**
      * Milliseconds that only move forward (SystemClock.elapsedRealtime on the car): the PIN lockout runs on it, so
      * setting the car's clock ahead does not end a lock. Tests that do not care pass nothing and share [clock].
      */
-    private val monotonic: () -> Long = clock,
+    private val monotonic: () -> Long,
     /** Where the work too slow for the core's own thread runs (see [Background]); the app passes [Background.android]. */
-    private val background: Background = Background.inline(),
+    private val background: Background,
+    /** The space to start on, read before the core is made. */
+    stored: StoredSpace,
 ) {
+    /** A core on the space the store marks in use, read on the calling thread. */
+    constructor(
+        store: Store,
+        files: FileSink = FileSink { _, name, _ -> name },
+        clock: () -> Long = System::currentTimeMillis,
+        log: (String) -> Unit = {},
+        detailLogs: Boolean = false,
+        monotonic: () -> Long = clock,
+        background: Background = Background.inline(),
+    ) : this(store, files, clock, log, detailLogs, monotonic, background, StoredSpace.read(store, store.activeSpace()))
     enum class Space(val dir: String) { LIVE("live"), DEMO("demo") }
 
     data class SpaceData(
@@ -147,7 +162,7 @@ class AutoBriefCore(
 
     var naviControl: NaviControl? = null
 
-    private var space: Space = store.activeSpace()
+    private var space: Space = stored.space
     private var logbook = TripLogbook()
     private var ledger = Ledger()
 
@@ -162,9 +177,6 @@ class AutoBriefCore(
      * thread marks results while the main thread queues entries or switches the space.
      */
     private val outboxLock = Any()
-
-    /** Spaces whose ledger entries the sender holds back while a backfill is being built (count per space; [outboxLock]). */
-    private val ledgerHolds = HashMap<Space, Int>()
 
     private val _space = MutableStateFlow(space)
     private val _settings = MutableStateFlow(AppSettings())
@@ -229,27 +241,52 @@ class AutoBriefCore(
     private var uxRestricted: Boolean? = null
 
     init {
-        loadSpace(space)
+        enter(stored)
         updateRestricted()
     }
 
-    private fun loadSpace(s: Space) {
-        val d = store.load(s)
+    /**
+     * A space as read from the store, with what takes time to derive from it: the rows repaired from the chain and the
+     * chain re-hashed against them. It can be read on any thread; [open] reads it off the main thread before the core
+     * exists.
+     */
+    private class StoredSpace(
+        val space: Space,
+        val data: SpaceData,
+        val logbook: TripLogbook,
+        val ledger: Ledger,
+        val rebuilt: Int,
+        val check: LedgerCheck,
+    ) {
+        companion object {
+            fun read(store: Store, space: Space): StoredSpace {
+                val d = store.load(space)
+                // the ledger is written before the trips file: rows the app died before storing come back from the chain
+                val (rows, rebuilt) = Ledger.repair(d.trips, d.ledger)
+                if (rebuilt > 0) store.saveTrips(space, rows)
+                val logbook = TripLogbook(rows)
+                val ledger = Ledger(d.ledger)
+                return StoredSpace(space, d, logbook, ledger, rebuilt, Ledger.check(ledger.all, logbook.records))
+            }
+        }
+    }
+
+    /** Switches to [s] (demo on or off, the sample loaded or reset): a user's action, read on the core's thread. */
+    private fun loadSpace(s: Space) = enter(StoredSpace.read(store, s))
+
+    /** Makes [o] the space in use. A backfill the app was closed in the middle of goes on (see [backfillLedger]). */
+    private fun enter(o: StoredSpace) {
+        val d = o.data
         synchronized(outboxLock) {
-            space = s
+            space = o.space
             _settings.value = d.settings
             _outbox.value = d.outbox
         }
-        // the ledger is written before the trips file: rows the app died before storing come back from the chain
-        val (rows, rebuilt) = Ledger.repair(d.trips, d.ledger)
-        if (rebuilt > 0) {
-            store.saveTrips(s, rows)
-            log("TRIPS_REBUILT rows=$rebuilt")
-        }
-        logbook = TripLogbook(rows)
-        ledger = Ledger(d.ledger)
+        if (o.rebuilt > 0) log("TRIPS_REBUILT rows=${o.rebuilt}")
+        logbook = o.logbook
+        ledger = o.ledger
         chainId = d.chainId
-        _space.value = s
+        _space.value = o.space
         _trips.value = logbook.records
         _open.value = null
         _lastClosedId.value = null
@@ -263,10 +300,11 @@ class AutoBriefCore(
         pinLockUntilMono = null
         pinLockRestored = false
         d.openTrip?.let(::resumeOpenTrip)
-        refreshCheck()
+        _check.value = o.check
         // the new logbook needs the car's current state to detect the next departure correctly
         _vehicle.value.odometerKm?.let { logbook.seedOdometer(it) }
         logbook.onGear(_vehicle.value.gear, clock())
+        d.settings.ledgerBackfillThroughSeq.takeIf { it > 0 }?.let(::backfillLedger)
     }
 
     /** The trip that was open when the app stopped goes on (it closes at the next P); one already written is dropped. */
@@ -740,10 +778,11 @@ class AutoBriefCore(
     }
 
     fun outboxSnapshot(): OutboxSnapshot = synchronized(outboxLock) {
-        // while a backfill is being built no ledger entry goes out: a newer one must not reach the receiver first
-        val held = (ledgerHolds[space] ?: 0) > 0
+        val s = _settings.value
+        // while a backfill is still to be queued no ledger entry goes out: a newer one must not reach the receiver first
+        val held = s.ledgerBackfillThroughSeq > 0
         val items = if (held) _outbox.value.filter { it.kind != LEDGER_KIND } else _outbox.value
-        OutboxSnapshot(space, _settings.value.archiveWebhookUrl, items, currentVin())
+        OutboxSnapshot(space, s.archiveWebhookUrl, items, currentVin())
     }
 
     /** The round's space and address are still the ones in use; a switch or a new address ends the round. */
@@ -860,6 +899,8 @@ class AutoBriefCore(
         val sensitive = newPin != null || url != old.archiveWebhookUrl
         if (sensitive) checkAdminPin(currentPin).takeIf { it != SettingsResult.SAVED }?.let { return it }
         val current = _settings.value
+        // an address set for the first time gets the whole ledger: the mark of that is saved with the address
+        val firstAddress = old.archiveWebhookUrl.isBlank() && url.isNotBlank()
         var next = new.copy(
             archiveWebhookUrl = url,
             adminPinHash = current.adminPinHash,
@@ -868,6 +909,7 @@ class AutoBriefCore(
             adminPinLockedUntilMs = current.adminPinLockedUntilMs,
             lastMonthlyCloseYm = current.lastMonthlyCloseYm,
             vin = current.vin,
+            ledgerBackfillThroughSeq = if (firstAddress) ledger.headSeq else current.ledgerBackfillThroughSeq,
             fiscalYearStartMonth = new.fiscalYearStartMonth.coerceIn(1, 12),
             defaultUserIndex = new.defaultUserIndex.coerceIn(0, (new.users.size - 1).coerceAtLeast(0)),
         )
@@ -877,34 +919,41 @@ class AutoBriefCore(
             next = next.copy(adminPinSalt = salt, adminPinHash = AdminPin.hash(newPin, salt))
         }
         writeSettings(next)
-        if (old.archiveWebhookUrl.isBlank() && url.isNotBlank()) backfillLedger()
+        if (firstAddress && next.ledgerBackfillThroughSeq > 0) backfillLedger(next.ledgerBackfillThroughSeq)
         return SettingsResult.SAVED
     }
 
     /**
-     * Queues the ledger (its newest [BACKFILL_MAX] entries) for an address set for the first time. Thousands of sending
-     * copies: they are built on [Background.work] from the entries as they are now, and queued back on the core's thread. Until they are in the outbox the sender holds back this space's ledger entries, so an
-     * entry recorded meanwhile (queued at once, as always) cannot reach the receiver before the older ones.
+     * Queues the sending copies of the ledger up to [throughSeq] (its newest [BACKFILL_MAX] up to there) for an address
+     * set for the first time, or the sample loaded with one. Thousands of copies: they are built on [Background.work]
+     * from the entries as they are now and queued back on the core's thread.
+     *
+     * The mark saved with the address ([AppSettings.ledgerBackfillThroughSeq]) is cleared only once they are in the
+     * outbox, so a start that finds it set queues them again ([enter]): the app closed meanwhile (a kill 2 s after the
+     * sample loaded lost entries 1-977 on CI) leaves no hole at the receiver; a copy already queued is not queued twice.
+     * While the mark is set the sender holds back this space's ledger entries, so an entry recorded meanwhile (queued at
+     * once, as always) cannot reach the receiver before the older ones.
      */
-    private fun backfillLedger() {
+    private fun backfillLedger(throughSeq: Long) {
         val into = space
         val chain = chainId
         val car = carJson()
-        val entries = ledger.all.takeLast(BACKFILL_MAX)
-        synchronized(outboxLock) { ledgerHolds[into] = (ledgerHolds[into] ?: 0) + 1 }
+        val entries = ledger.all.filter { it.seq <= throughSeq }.takeLast(BACKFILL_MAX)
         background.scope.launch {
             try {
                 val items = withContext(background.work) {
                     entries.map { e -> Queued(ledgerKey(e, into, chain), LEDGER_KIND, ledgerPayload(e, into, chain, car), e.seq) }
                 }
                 enqueueAll(items, into) // back on the core's thread, which owns the queue (see [enqueueAll])
+                // a space left meanwhile keeps its mark: entering it again queues nothing twice and clears it then
+                if (space == into && _settings.value.ledgerBackfillThroughSeq == throughSeq) {
+                    writeSettings(_settings.value.copy(ledgerBackfillThroughSeq = 0))
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // nothing was queued: the entries recorded from now on still go out, the older ones did not
+                // the mark stays: the next start queues them, and this space's ledger entries wait until then
                 log("BACKFILL_FAILED entries=${entries.size} error=${e::class.java.simpleName}")
-            } finally {
-                synchronized(outboxLock) { ledgerHolds[into] = (ledgerHolds[into] ?: 1) - 1 }
             }
         }
     }
@@ -934,13 +983,18 @@ class AutoBriefCore(
         val today = TripLogbook.localDate(clock())
         val (rows, sampleLedger) = SampleHistory.build(today)
         store.wipe(Space.DEMO)
-        store.saveSettings(Space.DEMO, SampleHistory.settings(webhookUrl))
+        // the closing of past months is part of the sample, not something to resend now; an address comes with the mark
+        // of the sending copies still to queue, which entering the space starts (see [backfillLedger])
+        store.saveSettings(
+            Space.DEMO,
+            SampleHistory.settings(webhookUrl).copy(
+                lastMonthlyCloseYm = YearMonth.from(today).minusMonths(1).toString(),
+                ledgerBackfillThroughSeq = if (webhookUrl.isNotBlank()) sampleLedger.headSeq else 0,
+            ),
+        )
         store.saveTrips(Space.DEMO, rows)
         store.saveLedger(Space.DEMO, newChainId(), sampleLedger.all)
-        // the closing of past months is part of the sample, not something to resend now
-        store.saveSettings(Space.DEMO, SampleHistory.settings(webhookUrl).copy(lastMonthlyCloseYm = YearMonth.from(today).minusMonths(1).toString()))
         loadSpace(Space.DEMO)
-        if (webhookUrl.isNotBlank()) backfillLedger()
         log("DEMO_READY trips=${rows.size}")
         return rows.size
     }
@@ -1231,6 +1285,25 @@ class AutoBriefCore(
         (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
 
     companion object {
+        /**
+         * The app's core. The space is read on [Background.io] (its files parsed, the chain re-hashed: seconds on a loaded
+         * head unit) and the core is made back on the calling thread, which becomes its thread. Made in
+         * Application.onCreate on the main thread, a year of trips kept a loaded car from completing the app's start
+         * (rehearsal 40475583018), and Android closed it.
+         */
+        suspend fun open(
+            store: Store,
+            files: FileSink,
+            log: (String) -> Unit,
+            detailLogs: Boolean,
+            monotonic: () -> Long,
+            background: Background,
+            clock: () -> Long = System::currentTimeMillis,
+        ): AutoBriefCore {
+            val stored = withContext(background.io) { StoredSpace.read(store, store.activeSpace()) }
+            return AutoBriefCore(store, files, clock, log, detailLogs, monotonic, background, stored)
+        }
+
         const val APP_VERSION = "2.0.0"
         const val VOICE_CLASSIFY_WINDOW_MS = 30 * 60_000L
         const val START_LOCATION_MAX_AGE_MS = 10 * 60_000L

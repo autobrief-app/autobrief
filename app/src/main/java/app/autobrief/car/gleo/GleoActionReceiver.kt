@@ -5,8 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import app.autobrief.car.AutoBriefApp
+import app.autobrief.car.autoBrief
 import app.autobrief.car.background
-import app.autobrief.car.core
 import app.autobrief.car.domain.AutoBriefCore
 import app.autobrief.car.domain.GleoContract
 import app.autobrief.car.service.VehicleMonitorService
@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
  * Gleo functions declared with `"component": "service"` arrive here via sendBroadcast. The reply goes back as
  * APP_ACTION_RESPONSE inside Gleo's 7-second window. SEND_LOGBOOK makes a workbook first: that runs off the main
  * thread (the broadcast is kept open with goAsync until the reply is sent), so the screen keeps answering meanwhile.
+ * A request that starts the process waits for the stored logbook to be read the same way.
  */
 class GleoActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -27,7 +28,7 @@ class GleoActionReceiver : BroadcastReceiver() {
         context.background.scope.launch {
             try {
                 val reply = try {
-                    context.core.handleGleo(function, params)
+                    context.autoBrief.awaitCore().handleGleo(function, params)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {

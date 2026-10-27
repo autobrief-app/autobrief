@@ -26,7 +26,7 @@ class LaunchSmokeTest {
         shadowOf(Looper.getMainLooper()).idle()
         val activity = controller.get()
         assertFalse(activity.isFinishing)
-        assertTrue(activity.core.trips.value.isEmpty())
+        assertTrue((activity.application as AutoBriefApp).loadedCore().trips.value.isEmpty())
         controller.pause().stop().destroy()
     }
 }

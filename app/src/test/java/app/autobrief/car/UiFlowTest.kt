@@ -24,10 +24,12 @@ import app.autobrief.car.model.CarUser
 import app.autobrief.car.model.ClassifiedBy
 import app.autobrief.car.model.Gear
 import app.autobrief.car.model.TripPurpose
+import app.autobrief.car.ui.AutoBriefRoot
 import app.autobrief.car.ui.AutoBriefScreen
 import app.autobrief.car.ui.Tab
 import app.autobrief.car.ui.VEHICLE_WAIT_MS
 import app.autobrief.car.ui.keepWords
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -60,6 +62,18 @@ class UiFlowTest {
         val amend = core.ledgerFor(id).last()
         assertEquals(LedgerKind.AMEND, amend.kind)
         return Json.parseToJsonElement(amend.body).jsonObject.getValue("reason").jsonPrimitive.content
+    }
+
+    @Test fun theScreenSaysLoadingUntilTheStoredLogbookIsRead() {
+        val core = MutableStateFlow<AutoBriefCore?>(null)
+        compose.setContent { AutoBriefRoot(core, mutableStateOf(Tab.HOME), onFlush = {}, night = true) }
+        compose.waitForIdle()
+        compose.onNodeWithText("불러오는 중").assertExists()
+        compose.onNodeWithText("설정").assertDoesNotExist()
+        core.value = Harness().core
+        compose.waitForIdle()
+        compose.onNodeWithText("불러오는 중").assertDoesNotExist()
+        compose.onNodeWithText("설정").assertExists()
     }
 
     @Test fun outOfParkTheScreenIsTheDrivingViewEvenAtAStandstill() {

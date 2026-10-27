@@ -39,6 +39,7 @@ class ReceiversTest {
         val refusing = object : ContextWrapper(app) {
             override fun startForegroundService(service: Intent): ComponentName = throw ForegroundServiceStartNotAllowedException("not allowed")
         }
+        (app as AutoBriefApp).loadedCore() // read off the main thread at start; the receiver waits for it
         GleoActionReceiver().onReceive(refusing, Intent(GleoContract.SEND_LOGBOOK))
         val reply = shadowOf(app).broadcastIntents.last()
         assertEquals(GleoContract.RESPONSE_ACTION, reply.action)
