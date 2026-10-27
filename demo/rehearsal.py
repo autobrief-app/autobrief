@@ -7,16 +7,20 @@ coordinates). Every step waits for the screen state, log line or console record 
 fails its scene loudly (a screenshot and the UI dump are saved) and the rehearsal goes on with the next scene. Nothing in
 the app is changed for the rehearsal. Scene 6 sends the workbook with '지금 보내기' and downloads it from the console's
 운행기록부 보관함, the way the presenter gets it onto the laptop (adb may not read the driver user's app storage: on the
-Pleos image both `adb pull` and `run-as` are refused). With --pause-recording-flag (CI), the screen recording is
-stopped while the app writes the workbook, which it does on its main thread: on a 2-core runner the software video
-encoder starved that thread past Android's 5 s input limit, and car UI mode closes an app without a dialog. Scene 7 sends Gleo's request through the debug APK's relay (adb cannot hold Gleo's
-signature permission): it reproduces the request as a debug signal and is never speech.
+Pleos image both `adb pull` and `run-as` are refused); the screen keeps recording while the app makes the workbook off
+its main thread. Scene 7 sends Gleo's request through the debug APK's relay (adb cannot hold Gleo's signature
+permission): it reproduces the request as a debug signal and is never speech.
+
+Car UI mode closes an app that stops answering (ANR) without a dialog, and Android writes its report 15-20 s after the
+input it missed, often during the next scene. Every input to the app (taps, starts, broadcasts, positions, vehicle
+console writes) is noted with its start time, and each report is charged to the scene whose input came last before
+Android declared the ANR, at most ANR_ACTION_WINDOW_S earlier (scenes.json `anr`, the scene's evidence `anr`).
 
 Before scene 1 it waits until the fleet console holds the app's whole ledger (the console shows the verification code the
 app shows), the state docs/DEMO.md prepares the day before.
 
 Writes into --out: scenes.json (the timeline for the video compositor: host epoch seconds, captions, events, verdicts,
-device-host clock samples, console screenshots, recording pauses), screenshots, failure dumps, the downloaded workbook
+device-host clock samples, console screenshots, inputs and ANR reports), screenshots, failure dumps, the downloaded workbook
 and gleo_reply.txt.
 
 Python 3.9+ standard library only. Exit codes: 0 every scene passed, 1 a scene failed, 2 adb/SDK missing or usage,
@@ -24,7 +28,6 @@ Python 3.9+ standard library only. Exit codes: 0 every scene passed, 1 a scene f
 """
 
 import argparse
-import contextlib
 import http.client
 import json
 import os
@@ -79,6 +82,8 @@ UI_WAIT_S = 30.0  # a screen state the app shows at once (a tap, a closed trip)
 MAX_SCROLLS = 4  # the dump lists only what is on screen: a missing element below the fold is scrolled to
 SWIPE_MS = 500
 LOG_WAIT_S = 30.0
+ANR_ACTION_WINDOW_S = 20.0  # an ANR is charged to the scene whose input to the app came last before it, at most this long
+ANR_REPORT_WAIT_S = 25.0  # Android writes an ANR report after dumping stacks: 15.3 s after declaring it in run 40458417995
 CONSOLE_WAIT_S = (
     120.0  # the outbox sends in order, paced, and flushes at least every 30 s
 )
@@ -87,8 +92,6 @@ PREP_POLL_S = 5.0
 PREP_CODE_EVERY_S = 60.0  # re-read the app's verification code this often while waiting
 CAPTION_LEAD_S = 3.0  # a scene's caption is on screen this long before the scene acts
 HOLD_S = 4.0  # a scene's result stays on screen this long before the next caption
-RECORDER_WAIT_S = 20.0  # screenrecord closes its file after SIGINT; the CI loop starts the next one within a second
-RECORDER_POLL_S = 0.5
 CHROME_TIMEOUT_S = 90.0
 CONSOLE_SHOT_SIZE = (960, 1440)  # CSS px; the console's table needs 800 px
 CHROME_BUDGET_MS = (
@@ -516,12 +519,126 @@ def measure_clock(adb, wall: Callable[[], float] = time.time) -> dict:
     }
 
 
-_ANR = re.compile(r"\bANR in %s\b" % re.escape(APP_PACKAGE))
+@dataclass(frozen=True)
+class AnrReport:
+    """One 'ANR in <app>' report of ActivityManager, on the device clock (epoch seconds). Car UI mode shows no dialog:
+    Android closes the app."""
+
+    logged: float  # the 'ANR in' line, written after the app's stacks were dumped
+    declared: float  # when Android declared the ANR ('Completed ANR ... in N ms, latency L ms'); `logged` if that is missing
+    pid: str
+    reason: str
+
+    @property
+    def key(self) -> Tuple[str, float]:
+        return self.pid, round(self.logged, 3)
 
 
-def anr_count(adb) -> int:
-    """How many times Android closed the app for not responding (car UI mode closes it without a dialog)."""
-    return len(_ANR.findall(adb.logcat_dump("ActivityManager", "E")))
+_LOGCAT_EPOCH = re.compile(r"^\s*(\d+\.\d+)\s+(\d+)\s+(\d+)\s+[VDIWEF]\s+(\S[^:]*?)\s*: (.*)$")
+
+
+def parse_anr_reports(logcat: str, package: str = APP_PACKAGE) -> List[AnrReport]:
+    """The app's ANR reports in `logcat -v epoch -s ActivityManager:D`. One thread of ActivityManager writes 'ANR in
+    <app>', 'PID:', 'Reason:' and the CPU load after dumping stacks, then 'Completed ANR of <app> in N ms, latency L ms':
+    the ANR was declared N + L ms before that line (run 40458417995: declared 15:20:46.75, 'ANR in' at 15:21:02.07)."""
+    started = re.compile(r"ANR in %s(?:\s|$)" % re.escape(package))
+    completed = re.compile(r"Completed ANR of %s in (\d+)ms, latency (\d+)ms" % re.escape(package))
+    reports: List[dict] = []
+    open_by_thread: Dict[str, dict] = {}
+    for line in logcat.splitlines():
+        match = _LOGCAT_EPOCH.match(line)
+        if not match or match.group(4) != "ActivityManager":
+            continue
+        at, thread, message = float(match.group(1)), match.group(3), match.group(5)
+        if started.match(message):
+            open_by_thread[thread] = {"logged": at, "declared": None, "pid": "", "reason": ""}
+            reports.append(open_by_thread[thread])
+            continue
+        report = open_by_thread.get(thread)
+        if report is None:
+            continue
+        if message.startswith("PID: ") and not report["pid"]:
+            report["pid"] = message[len("PID: "):].strip()
+        elif message.startswith("Reason: ") and not report["reason"]:
+            report["reason"] = message[len("Reason: "):].strip()
+        else:
+            done = completed.match(message)
+            if done:
+                report["declared"] = at - (int(done.group(1)) + int(done.group(2))) / 1000.0
+                del open_by_thread[thread]
+    return [
+        AnrReport(r["logged"], r["logged"] if r["declared"] is None else r["declared"], r["pid"], r["reason"])
+        for r in reports
+    ]
+
+
+def charge_anr(
+    at: float, actions: Sequence[dict], scenes: Sequence[dict], window: float = ANR_ACTION_WINDOW_S
+) -> Tuple[Optional[int], Optional[dict]]:
+    """The scene an ANR declared at `at` (host clock) belongs to: the scene of the last input to the app before it, when
+    that came at most `window` s before; else the scene that was running then (None = before the first scene). An app
+    that does not answer an input is declared 5 s after it, and the report comes another 15 s or more later, often in
+    the next scene. Returns (scene number, the input it followed or None)."""
+    last = None
+    for action in actions:
+        if action["t"] <= at and (last is None or action["t"] >= last["t"]):
+            last = action
+    if last is not None and at - last["t"] <= window:
+        return last["scene"], last
+    running = None
+    for scene in scenes:
+        if scene["start"] <= at:
+            running = scene["number"]
+    return running, None
+
+
+APP_INPUT_SHELL = ("input", "monkey")
+APP_INPUT_AM = ("start", "start-activity", "broadcast", "startservice", "start-service", "start-foreground-service", "force-stop")
+
+
+def app_input(args: Sequence[str]) -> Optional[str]:
+    """What an `adb shell` command does to the app (a tap, a start, a broadcast), or None for a read (dump, date, pidof)."""
+    if args and (args[0] in APP_INPUT_SHELL or (args[0] == "am" and len(args) > 1 and args[1] in APP_INPUT_AM)):
+        return " ".join(args)[:160]
+    return None
+
+
+class InputAdb:
+    """The rehearsal's adb: every command that acts on the app (see app_input, and the car's position) is noted with
+    its start time before it runs, so an ANR can be charged to the input that came before it (charge_anr)."""
+
+    def __init__(self, adb, note: Callable[[str], None] = lambda what: None):
+        self._adb = adb
+        self.note = note
+
+    def __getattr__(self, name):
+        return getattr(self._adb, name)
+
+    def shell(self, *args, timeout=None):
+        what = app_input(args)
+        if what:
+            self.note(what)
+        return self._adb.shell(*args, timeout=timeout)
+
+    def geo_fix(self, lon: float, lat: float) -> None:
+        self.note("emu geo fix")
+        self._adb.geo_fix(lon, lat)
+
+    def geo_nmea(self, sentence: str) -> None:
+        self.note("emu geo nmea")
+        self._adb.geo_nmea(sentence)
+
+
+class InputConsole(director.Console):
+    """The vehicle console: every write (gear, odometer, pedals, seat) is an input to the app, noted before it is sent."""
+
+    def __init__(self, *args, note: Callable[[str], None] = lambda what: None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.note = note
+
+    def _put(self, endpoint, params):
+        self.note("vehicle %s %s" % (endpoint, "&".join("%s=%s" % (k, v) for k, v in params)))
+        return super()._put(endpoint, params)
 
 
 def gleo_broadcast_args(
@@ -555,12 +672,6 @@ def gleo_replies(logcat: str) -> List[dict]:
                 }
             )
     return out
-
-
-def recorder_running(adb) -> bool:
-    """Whether the CI screen recording (`adb shell screenrecord`) runs on the device now."""
-    rc, out, _ = adb.run("shell", "pidof screenrecord", check=False, timeout=30)
-    return rc == 0 and bool(decode(out).strip())
 
 
 _XLSX_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
@@ -759,6 +870,8 @@ class Timeline:
             "console_shots": [],
             "scenes": [],
             "result": None,
+            "actions": [],  # every input to the app, in order (InputAdb, InputConsole): what ANRs are charged to
+            "anr": [],  # the app's ANR reports with the scene each was charged to (charge_anr)
         }
         self.current: Optional[dict] = None
 
@@ -771,6 +884,16 @@ class Timeline:
     def clock(self, sample: dict) -> None:
         self.data["clock"].append(sample)
         self.save()
+
+    def clock_offset(self) -> float:
+        """device - host, the median of the samples (0 without one: the emulator runs on this host's clock)."""
+        offsets = sorted(sample["offset"] for sample in self.data["clock"])
+        return offsets[len(offsets) // 2] if offsets else 0.0
+
+    def action(self, what: str) -> None:
+        """An input to the app, at its start; written with the next save (one per tap or console write would be many)."""
+        scene = self.current["number"] if self.current is not None else None
+        self.data["actions"].append({"t": self.wall(), "what": what, "scene": scene})
 
     def begin(self, spec: SceneSpec) -> dict:
         self.current = {
@@ -1193,9 +1316,7 @@ class Rehearsal:
         sleep: Optional[Callable[[float], None]] = None,
         now: Optional[Callable[[], float]] = None,
         wall: Callable[[], float] = time.time,
-        pause_flag: Optional[str] = None,
     ):
-        self.pause_flag = pause_flag  # CI: while this file exists the recording loop starts no new segment
         self.adb, self.ui, self.fleet, self.camera, self.timeline = (
             adb,
             ui,
@@ -1209,6 +1330,7 @@ class Rehearsal:
         self.now = now or time.monotonic
         self.wall = wall
         self.trips: Dict[str, director.TripClosed] = {}
+        self.anr_seen: set = set()  # AnrReport keys already charged
 
     def record(self, text: str) -> None:
         self.timeline.event(text)
@@ -1255,7 +1377,53 @@ class Rehearsal:
 
     def run(self, specs: Sequence[SceneSpec] = SCENES) -> List[bool]:
         self.camera.shot("console_00_start.png", 0)
-        return [self.play(spec) for spec in specs]
+        results = [self.play(spec) for spec in specs]
+        self.await_late_anrs()
+        return results
+
+    def sweep_anrs(self) -> None:
+        """Charges each new ANR report of the app to a scene (charge_anr) and adds it to that scene's evidence, also when
+        that scene has ended: Android writes the report after dumping the app's stacks, often during the next scene."""
+        try:
+            log = self.adb.logcat_dump("ActivityManager", "D", fmt="epoch")
+        except AdbError as exc:
+            self.say("  (경고) ANR 기록을 읽지 못했습니다: %s" % exc)
+            return
+        offset = self.timeline.clock_offset()
+        for report in parse_anr_reports(log):
+            if report.key in self.anr_seen:
+                continue
+            self.anr_seen.add(report.key)
+            at = report.declared - offset
+            number, action = charge_anr(at, self.timeline.data["actions"], self.timeline.data["scenes"])
+            entry = {
+                "declared": at,
+                "logged": report.logged - offset,
+                "pid": report.pid,
+                "reason": report.reason,
+                "scene": number,
+                "after": None if action is None else {"what": action["what"], "t": action["t"], "s": round(at - action["t"], 1)},
+            }
+            self.timeline.data["anr"].append(entry)
+            scene = next((s for s in self.timeline.data["scenes"] if s["number"] == number), None)
+            if scene is not None:
+                evidence = scene["evidence"]
+                evidence["anr"] = evidence.get("anr", 0) + 1  # the count the video shows on that scene
+                evidence.setdefault("anr_reports", []).append(entry)
+            self.say(
+                "  (경고) %s 뒤 앱이 응답 없음(ANR)으로 닫혔습니다: %s"
+                % ("장면 %d의 조작" % number if number is not None else "준비 단계", report.reason or "이유 미기록")
+            )
+        self.timeline.save()
+
+    def await_late_anrs(self) -> None:
+        """Before the run ends: wait until the last input is ANR_REPORT_WAIT_S old, then charge the reports that came."""
+        actions = self.timeline.data["actions"]
+        left = ANR_REPORT_WAIT_S - (self.wall() - actions[-1]["t"]) if actions else 0.0
+        if left > 0:
+            self.say("마지막 조작 뒤 늦게 쓰이는 ANR 기록을 %.0f초 기다립니다" % left)
+            self.sleep(left)
+        self.sweep_anrs()
 
     def play(self, spec: SceneSpec) -> bool:
         self.timeline.begin(spec)
@@ -1266,7 +1434,6 @@ class Rehearsal:
             self.timeline.clock(measure_clock(self.adb, self.wall))
         except (AdbError, ValueError) as exc:
             self.say("  (경고) 기기 시계를 읽지 못했습니다: %s" % exc)
-        anr_before = anr_count(self.adb)
         self.sleep(CAPTION_LEAD_S)
         try:
             evidence = getattr(self, "scene_" + spec.key)()
@@ -1279,16 +1446,9 @@ class Rehearsal:
         except (AdbError, ConsoleError, SetupError) as exc:
             detail = "%s: %s" % (type(exc).__name__, exc)
             ok, evidence = False, dict(self.ui.fail(spec.key, detail).evidence)
-        anr_new = anr_count(self.adb) - anr_before
-        if anr_new:
-            evidence["anr"] = (
-                anr_new  # Android closed the app for not responding during the scene
-            )
-            self.say(
-                "  (경고) 이 장면에서 앱이 응답 없음(ANR)으로 %d번 닫혔습니다" % anr_new
-            )
         self.camera.shot("console_%02d_%s.png" % (spec.number, spec.key), spec.number)
         self.timeline.end(ok, detail, evidence)
+        self.sweep_anrs()  # after end(): a report may belong to this scene or to one before it
         self.say(
             "[%s] 장면 %d %s: %s"
             % ("PASS" if ok else "FAIL", spec.number, spec.title, detail)
@@ -1527,11 +1687,9 @@ class Rehearsal:
             % (screen["⑪"]["text"], screen["⑫"]["text"], screen["⑬"]["text"])
         )
         seen = {archive_mark(item) for item in console_archives(self.fleet.state())}
-        with self.recording_paused("앱이 엑셀을 쓰는 동안"):
-            self.ui.tap_text("send", SEND_BUTTON, "'%s'" % SEND_BUTTON)
-            name, _ = self.ui.wait_for(
-                "sent", "'저장하고 전송을 시작했습니다' 안내", sent_workbook
-            )
+        self.ui.tap_text("send", SEND_BUTTON, "'%s'" % SEND_BUTTON)
+        # the app shows '만드는 중…' while it makes the workbook off its main thread, then the line with the file name
+        name, _ = self.ui.wait_for("sent", "'저장하고 전송을 시작했습니다' 안내", sent_workbook)
         self.record("앱 화면: 저장하고 전송을 시작했습니다 (%s)" % name)
         line = self.wait_log(
             "export_log",
@@ -1577,42 +1735,6 @@ class Rehearsal:
             "엑셀 %d행을 회사 서버로 보내 관리자 화면에서 받았고, ⑪ ⑫ ⑬과 검증 코드가 앱 화면과 같음" % rows
         )
         return evidence
-
-    @contextlib.contextmanager
-    def recording_paused(self, why: str):
-        """CI only (pause_flag): stop the screen recording around a step whose work runs on the app's main thread, so
-        the software encoder does not starve it past the 5 s input limit; the pause is recorded for the video."""
-        if not self.pause_flag:
-            yield
-            return
-        with open(self.pause_flag, "w", encoding="utf-8") as handle:
-            handle.write(why + "\n")
-        pause = {"why": why, "start": self.wall(), "end": None, "stopped": False, "resumed": False}
-        self.timeline.data.setdefault("recording_pauses", []).append(pause)
-        try:
-            self.adb.run("shell", "pkill -SIGINT screenrecord", check=False, timeout=30)
-            pause["stopped"] = self.wait_recorder(False)
-            pause["start"] = self.wall()
-            self.record("녹화 잠시 멈춤 (%s, CI 서버 부하 줄이기)" % why)
-            yield
-        finally:
-            os.remove(self.pause_flag)
-            pause["resumed"] = self.wait_recorder(True)
-            pause["end"] = self.wall()
-            self.timeline.save()
-            if pause["resumed"]:
-                self.record("녹화 다시 시작")
-            else:
-                self.say("  (경고) 녹화가 %.0f초 안에 다시 시작되지 않았습니다" % RECORDER_WAIT_S)
-                self.record("녹화가 다시 시작되지 않았습니다")
-
-    def wait_recorder(self, running: bool) -> bool:
-        deadline = self.now() + RECORDER_WAIT_S
-        while recorder_running(self.adb) != running:
-            if self.now() >= deadline:
-                return False
-            self.sleep(RECORDER_POLL_S)
-        return True
 
     def scene_gleo(self) -> dict:
         self.ensure_front()
@@ -1689,11 +1811,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="관리자 화면을 장면마다 캡처할 크롬 (없으면 캡처 안 함)",
     )
     parser.add_argument(
-        "--pause-recording-flag",
-        metavar="FILE",
-        help="CI 녹화 루프가 보는 파일: 앱이 엑셀을 쓰는 동안 이 파일을 만들고 screenrecord를 멈춥니다 (영상에 표시)",
-    )
-    parser.add_argument(
         "--km-interval",
         type=float,
         default=director.DEFAULT_KM_INTERVAL,
@@ -1730,8 +1847,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except SetupError as exc:
         say(str(exc), err=True)
         return exc.code
-    adb = Adb(tools.adb, serial=args.serial)
-    console = director.Console(args.console, notify=say)
+    adb = InputAdb(Adb(tools.adb, serial=args.serial))
+    console = InputConsole(args.console, notify=say)
     try:
         forward = director.forward_ports(args.console)
         if forward:
@@ -1750,6 +1867,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return EXIT_CONSOLE
 
     timeline = Timeline(os.path.join(args.out, TIMELINE_FILE))
+    adb.note = console.note = timeline.action  # inputs from here on are what an ANR gets charged to
     ui = UiDriver(adb, args.out, record=timeline.event)
     camera = ConsoleCamera(args.chrome, args.fleet_url, args.out, timeline)
 
@@ -1781,10 +1899,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             timeline.clock(measure_clock(adb))
         except (AdbError, ValueError) as exc:  # each scene samples the clock again; the video needs one sample
             say("  (경고) 기기 시계를 읽지 못했습니다: %s" % exc)
-        rehearsal = Rehearsal(
-            adb, ui, fleet, camera, timeline, drive, user, args.out,
-            pause_flag=args.pause_recording_flag,
-        )
+        rehearsal = Rehearsal(adb, ui, fleet, camera, timeline, drive, user, args.out)
         try:
             rehearsal.prepare()
         except StepFailed as exc:

@@ -196,9 +196,10 @@ python3 demo/setup_emulator.py --demo-sample --no-browser
 Gleo 요청(디버그 신호로 재현, 음성 아님). 사용자 10의 앱 저장소는 adb와 `run-as` 모두 읽지 못해(Permission denied) 엑셀은 관리자 화면으로 받습니다.
 시작 전에 관리자 화면이 앱의 원장 전체를 받을 때까지(검증 코드가 같아질 때까지) 기다립니다. 장면마다 화면 상태를 기다리고,
 나타나지 않으면 그 장면을 실패로 남기며 스크린샷과 화면 구조(`FAIL_*.png`, `FAIL_*.xml`)를 저장한 뒤 다음 장면으로 갑니다.
-GitHub 서버는 2코어라, 앱이 엑셀을 쓰는 동안(앱의 화면 스레드에서 처리) 녹화를 잠시 멈춥니다(`--pause-recording-flag`).
-소프트웨어 영상 인코더가 CPU를 나눠 쓰면 그 처리가 5초를 넘어 Android가 앱을 닫았습니다(실행 40453627285). 멈춘 구간은 영상에 표시됩니다.
-결과물(`rehearsal-out`): `scenes.json`(장면 시각, 자막, 판정, 기기 시계, 녹화 일시 중지), `rehearsal-*.mp4`(180초 조각), `console_*.png`(관리자 화면),
+녹화는 처음부터 끝까지 멈추지 않습니다. 앱은 엑셀을 화면 스레드 밖에서 만들고 그동안 '만드는 중…'을 보여 줍니다.
+앱이 응답 없음(ANR)으로 닫히면, Android가 그 ANR을 선언한 시각 직전 20초 안의 마지막 입력(누름, 앱 실행, 신호, 위치, 차량 콘솔 값)이 있던
+장면에 표시합니다. ANR 보고 줄은 선언보다 15~20초 늦게 써져 다음 장면 중에 나오기도 합니다.
+결과물(`rehearsal-out`): `scenes.json`(장면 시각, 자막, 판정, 기기 시계, 앱 입력 시각, ANR 기록), `rehearsal-*.mp4`(180초 조각), `console_*.png`(관리자 화면),
 관리자 화면에서 받은 엑셀, `gleo_reply.txt`, 로그. 노트북에서 직접 돌릴 때: `python3 demo/rehearsal.py --out rehearsal-out --fleet-data ./fleet-data`.
 
 ## 9. 장치 없이 시험하기

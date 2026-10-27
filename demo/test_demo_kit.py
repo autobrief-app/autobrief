@@ -3959,9 +3959,7 @@ class FakeCarApp:
         self.on_send = None  # what the console gets when '지금 보내기' is pressed (the test's console state)
         self.taps, self.swipes, self.shells, self.actions = [], 0, [], []
         self.log = []
-        self.recording = True  # the CI loop's screenrecord
-        self.pause_flag = None  # while this file exists the CI loop starts no new segment
-        self.recorder_events = []
+        self.anr_log = []  # ActivityManager lines in `logcat -v epoch` form (what Android writes about an ANR)
         self.form = ("9,636.0 km", "9,117.0 km", "94.6%")
         self.dumped = None
         self.clickables = []
@@ -4002,26 +4000,17 @@ class FakeCarApp:
     def activities(self):
         return "  topResumedActivity=ActivityRecord{1 u10 app.autobrief.car/.ui.MainActivity t1}\n"
 
-    def logcat_dump(self, tag="AutoBriefLog", level="I"):
+    def logcat_dump(self, tag="AutoBriefLog", level="I", fmt=None):
+        if tag == "ActivityManager":
+            assert fmt == "epoch", "ANR reports are read on the device's epoch clock"
+            return "".join(line + "\n" for line in self.anr_log)
         return "".join(line + "\n" for line in self.log if tag == "AutoBriefLog")
 
     def screencap_png(self):
         return PNG
 
     def run(self, *args, timeout=None, check=True):
-        if args == ("shell", "pkill -SIGINT screenrecord"):
-            self.recorder_events.append(("sigint", self.actions[-1:], self.flag_up()))
-            found, self.recording = self.recording, False
-            return (0 if found else 1), b"", b""
-        if args == ("shell", "pidof screenrecord"):
-            if not self.recording and self.pause_flag is not None and not self.flag_up():
-                self.recording = True  # the CI loop starts the next segment once the flag is gone
-                self.recorder_events.append(("restart", self.actions[-1:], False))
-            return (0, b"4242\n", b"") if self.recording else (1, b"", b"")
         raise AssertionError("unexpected adb %r" % (args,))
-
-    def flag_up(self):
-        return self.pause_flag is not None and os.path.exists(self.pause_flag)
 
     # --- taps -----------------------------------------------------------------------------
     def tap(self, x, y):
@@ -4467,13 +4456,10 @@ class RehearsalHelperTests(QuietTestCase):
 class RehearsalSceneTests(QuietTestCase):
     """The scenes against the fake app: the taps they make, the files they write and what they verify."""
 
-    def make(self, state=None, forge_out="위조 기록을 보냈습니다: 순번 975, 개인 운행을 업무로 바꾼 내용 (HTTP 200)\n",
-             pause=False):
+    def make(self, state=None, forge_out="위조 기록을 보냈습니다: 순번 975, 개인 운행을 업무로 바꾼 내용 (HTTP 200)\n"):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.app = FakeCarApp(self.tmp)
-        self.flag = os.path.join(self.tmp, "pause-recording") if pause else None
-        self.app.pause_flag = self.flag
         self.downloads = []
 
         def download(url):
@@ -4496,7 +4482,7 @@ class RehearsalSceneTests(QuietTestCase):
         camera = rehearsal.ConsoleCamera(None, "http://fleet", self.tmp, self.timeline)
         self.rehearsal = rehearsal.Rehearsal(self.app, ui, fleet, camera, self.timeline, None, 10, self.tmp,
                                              say_fn=lambda line: None, sleep=self.clock.sleep, now=self.clock.now,
-                                             wall=lambda: 1000.0 + self.clock.now(), pause_flag=self.flag)
+                                             wall=lambda: 1000.0 + self.clock.now())
         return self.rehearsal
 
     def arrive_at_console(self, code="AD90-6338"):
@@ -4559,9 +4545,9 @@ class RehearsalSceneTests(QuietTestCase):
                          (487, "AD90-6338", "AD90-6338"))
         self.assertEqual(evidence["xlsx"]["⑪"]["value"], 9636.0)
         self.assertTrue(os.path.exists(os.path.join(self.tmp, self.NAME)))
-        # a laptop run (no --pause-recording-flag) never touches a screen recording
-        self.assertEqual(self.app.recorder_events, [])
+        # the screen keeps recording: the app makes the workbook off its main thread (no pause for it any more)
         self.assertNotIn("recording_pauses", self.timeline.data)
+        self.assertFalse(any("screenrecord" in line for line in self.app.shells))
 
     def test_export_scene_ignores_a_workbook_of_the_same_name_sent_before(self):
         r = self.make(console_state(archives=[console_archive(received="2026-10-27T09:00:00+09:00")]))
@@ -4595,40 +4581,6 @@ class RehearsalSceneTests(QuietTestCase):
         with self.assertRaises(rehearsal.StepFailed) as caught:
             r.scene_export()
         self.assertIn("검증 코드: 앱 AD90-6338, 보관된 엑셀 FFFF-0000", str(caught.exception))
-
-    def test_ci_stops_the_recording_only_while_the_app_writes_the_workbook(self):
-        r = self.make(pause=True)
-        self.app.screen = "home"
-        self.arrive_at_console()
-        r.scene_export()
-        # SIGINT after '사업연도' with the flag up (the loop waits), the next segment once '지금 보내기' was handled
-        self.assertEqual(self.app.recorder_events, [("sigint", ["year"], True), ("restart", ["send"], False)])
-        self.assertFalse(os.path.exists(self.flag))
-        (pause,) = self.timeline.data["recording_pauses"]
-        self.assertTrue(pause["stopped"] and pause["resumed"])
-        self.assertIsNotNone(pause["end"])
-        self.assertLessEqual(pause["start"], pause["end"])
-        self.assertEqual(json.load(open(os.path.join(self.tmp, "scenes.json"), encoding="utf-8"))["recording_pauses"],
-                         [pause])
-
-    def test_a_send_that_fails_still_lets_the_recording_go_on(self):
-        r = self.make(pause=True)
-        self.app.screen, self.app.send_enabled = "home", False  # shown but never enabled: the tap never happens
-        with self.assertRaises(rehearsal.StepFailed):
-            r.scene_export()
-        self.assertFalse(os.path.exists(self.flag))
-        self.assertEqual([e[0] for e in self.app.recorder_events], ["sigint", "restart"])
-        self.assertTrue(self.timeline.data["recording_pauses"][0]["resumed"])
-
-    def test_a_recording_that_does_not_come_back_is_reported_not_hidden(self):
-        r = self.make(pause=True)
-        self.app.screen = "home"
-        self.arrive_at_console()
-        self.app.pause_flag = os.path.join(self.tmp, "never-removed")  # the fake loop waits on another file
-        open(self.app.pause_flag, "w").close()
-        r.scene_export()
-        (pause,) = self.timeline.data["recording_pauses"]
-        self.assertEqual((pause["stopped"], pause["resumed"]), (True, False))
 
     def test_gleo_scene_sends_the_debug_relay_and_keeps_the_reply(self):
         r = self.make()
@@ -4671,6 +4623,147 @@ class RehearsalSceneTests(QuietTestCase):
                 rehearsal.build_parser().parse_args(["--out", "x"])
         args = rehearsal.build_parser().parse_args(["--out", "x", "--fleet-data", "d", "--chrome", "google-chrome"])
         self.assertEqual((args.fleet_url, args.km_interval), ("http://127.0.0.1:8787", director.DEFAULT_KM_INTERVAL))
+
+
+def am_line(at, tid, level, message, pid=796):
+    """An ActivityManager line as `adb logcat -v epoch` prints it (device clock, epoch seconds)."""
+    return "%14.3f %5d %5d %s ActivityManager: %s" % (at, pid, tid, level, message)
+
+
+def anr_report(declared, took=15.329, latency=0.002, tid=8199, pid=8261,
+               reason="Input dispatching timed out (4364957 app.autobrief.car/app.autobrief.car.ui.MainActivity (server) "
+                      "is not responding. Waited 5007ms for MotionEvent)."):
+    """What ActivityManager writes after dumping the app's stacks: 'ANR in', PID, Reason, then 'Completed ANR'."""
+    logged = declared + latency + took - 0.013
+    return [
+        am_line(logged, tid, "E", "ANR in app.autobrief.car (app.autobrief.car/.ui.MainActivity)"),
+        am_line(logged, tid, "E", "PID: %d" % pid),
+        am_line(logged, tid, "E", "Reason: " + reason),
+        am_line(logged + 0.001, 1127, "I", "START u10 {flg=0x10000000 cmp=app.autobrief.car/.ui.MainActivity}"),
+        am_line(logged + 0.013, tid, "D", "Completed ANR of app.autobrief.car in %dms, latency %dms"
+                % (round(took * 1000), round(latency * 1000))),
+    ]
+
+
+class RehearsalAnrTests(QuietTestCase):
+    """An ANR is charged to the scene whose input to the app came last before Android declared it, not to the scene that
+    is running when its report shows up in the log (run 40458417995: the '지금 보내기' tap of scene 6 was declared an ANR
+    5 s later, but its report was written 20 s after the tap, during scene 7, and the old count charged scene 7)."""
+
+    T = 1793082046.753  # run 40458417995: the ANR of the '지금 보내기' tap was declared at 15:20:46.753 KST
+
+    def test_reports_are_dated_by_when_android_declared_them(self):
+        lines = anr_report(self.T) + [
+            am_line(self.T + 3.0, 9000, "E", "ANR in com.android.systemui"),  # another app's report
+            am_line(self.T + 3.0, 9000, "E", "PID: 1200"),
+        ] + anr_report(self.T + 38.423, took=19.348, latency=0.235, tid=10932, pid=10178,
+                       reason="Process ProcessRecord{31fe941 10178:app.autobrief.car/u10a175} failed to complete startup")
+        first, second = rehearsal.parse_anr_reports("\n".join(lines))
+        self.assertAlmostEqual(first.declared, self.T, places=3)
+        self.assertAlmostEqual(first.logged - first.declared, 15.318, places=3)  # written after the stack dump
+        self.assertEqual(first.pid, "8261")
+        self.assertIn("Waited 5007ms for MotionEvent", first.reason)
+        self.assertAlmostEqual(second.declared, self.T + 38.423, places=3)
+        self.assertIn("failed to complete startup", second.reason)
+        # a report whose closing line is missing keeps the time it was written: it can only be charged later, never earlier
+        (only,) = rehearsal.parse_anr_reports(am_line(self.T, 1, "E", "ANR in app.autobrief.car"))
+        self.assertEqual(only.declared, only.logged)
+        self.assertEqual(rehearsal.parse_anr_reports(am_line(self.T, 1, "E", "ANR in app.autobrief.carx")), [])
+
+    def test_charge_goes_to_the_last_input_within_the_window_else_to_the_running_scene(self):
+        scenes = [{"number": 6, "start": 100.0}, {"number": 7, "start": 160.0}]
+        tap = {"t": 150.0, "what": "input tap 2200 1100", "scene": 6}
+        self.assertEqual(rehearsal.charge_anr(155.0, [tap], scenes), (6, tap))
+        self.assertEqual(rehearsal.charge_anr(165.0, [tap], scenes), (6, tap))  # scene 7 runs, the tap was scene 6's
+        self.assertEqual(rehearsal.charge_anr(170.0 + 0.5, [tap], scenes), (7, None))  # 20.5 s after it: no input to blame
+        self.assertEqual(rehearsal.charge_anr(90.0, [tap], scenes), (None, None))  # before the first scene
+        start = {"t": 162.0, "what": "am start -W --user 10 -n app.autobrief.car/.ui.MainActivity", "scene": 7}
+        self.assertEqual(rehearsal.charge_anr(165.0, [tap, start], scenes), (7, start))  # the later input wins
+        self.assertEqual(rehearsal.charge_anr(161.0, [tap, start], scenes), (6, tap))  # an input after it is no cause
+
+    def test_inputs_are_noted_before_they_run_and_reads_are_not(self):
+        app = FakeCarApp(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, app.out_dir, True)
+        noted = []
+        adb = rehearsal.InputAdb(app, note=lambda what: noted.append((what, len(app.shells))))
+        adb.shell("uiautomator", "dump", "--windows", "/sdcard/window_dump.xml")
+        adb.shell("date", "+%s.%N")
+        adb.shell("input", "tap", "10", "20")
+        adb.shell(*rehearsal.gleo_broadcast_args(10))
+        self.assertEqual([what for what, _ in noted][0], "input tap 10 20")
+        self.assertTrue(noted[1][0].startswith("am broadcast"))
+        self.assertEqual([before for _, before in noted], [2, 3])  # noted before the command ran
+        self.assertEqual(len(noted), 2)
+        self.assertEqual(adb.activities(), app.activities())  # everything else goes straight through
+
+    def test_vehicle_console_writes_are_inputs(self):
+        noted, sent = [], []
+        console = rehearsal.InputConsole("http://127.0.0.1:8088/", request=lambda method, url: sent.append((method, url)) or "{}",
+                                         note=noted.append)
+        console.set_gear("Drive")
+        self.assertEqual(noted, ["vehicle /vehicle/gear gear=Drive"])
+        self.assertEqual(sent, [("PUT", "http://127.0.0.1:8088/vehicle/gear?gear=Drive")])
+
+    def make(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.app = FakeCarApp(self.tmp)
+        self.app.screen = "home"
+        self.clock = FakeClock()
+        self.lines = []
+        self.timeline = rehearsal.Timeline(os.path.join(self.tmp, "scenes.json"), wall=lambda: 1000.0 + self.clock.now())
+        adb = rehearsal.InputAdb(self.app, note=self.timeline.action)  # as in main()
+        ui = rehearsal.UiDriver(adb, self.tmp, now=self.clock.now, sleep=self.clock.sleep, record=self.timeline.event)
+        fleet = rehearsal.Fleet("http://fleet", "/fleet-data", self.tmp, fetch=lambda url: json.dumps(console_state()),
+                                now=self.clock.now, sleep=self.clock.sleep)
+        camera = rehearsal.ConsoleCamera(None, "http://fleet", self.tmp, self.timeline)
+        return rehearsal.Rehearsal(adb, ui, fleet, camera, self.timeline, None, 10, self.tmp, say_fn=self.lines.append,
+                                   sleep=self.clock.sleep, now=self.clock.now, wall=lambda: 1000.0 + self.clock.now())
+
+    def test_a_report_written_during_the_next_scene_goes_to_the_scene_whose_tap_it_followed(self):
+        r = self.make()
+        offset = []
+
+        def send():
+            r.ui.tap_text("open_report", "운행기록부", "'운행기록부' 탭")
+            return {"summary": "tapped"}
+
+        def next_scene():
+            # the report appears in the log now, in scene 7; Android declared the ANR 5 s after scene 6's tap
+            (tap,) = [a for a in self.timeline.data["actions"] if a["scene"] == 6]
+            offset.append(self.timeline.clock_offset())
+            declared = tap["t"] + 5.0
+            self.assertGreater(declared + 15.3, self.timeline.current["start"])  # the line shows up while scene 7 runs
+            self.app.anr_log.extend(anr_report(declared + offset[0]))
+            return {"summary": "nothing to see"}
+
+        r.scene_send, r.scene_next = send, next_scene
+        r.run([rehearsal.SceneSpec(6, "send", "보내기", "6"), rehearsal.SceneSpec(7, "next", "다음", "7")])
+        six, seven = self.timeline.data["scenes"]
+        self.assertEqual(six["evidence"]["anr"], 1)
+        self.assertNotIn("anr", seven["evidence"])
+        (report,) = self.timeline.data["anr"]
+        self.assertEqual((report["scene"], report["after"]["s"]), (6, 5.0))
+        self.assertTrue(report["after"]["what"].startswith("input tap"))
+        self.assertTrue(any("장면 6의 조작 뒤 앱이 응답 없음(ANR)" in line for line in self.lines))
+        with open(os.path.join(self.tmp, "scenes.json"), encoding="utf-8") as handle:
+            on_disk = json.load(handle)
+        self.assertEqual(on_disk["scenes"][0]["evidence"]["anr"], 1)  # saved where the compositor reads it
+
+    def test_a_report_of_the_last_scene_is_waited_for_before_the_run_ends(self):
+        r = self.make()
+
+        def last():
+            r.ui.tap_text("open_report", "운행기록부", "'운행기록부' 탭")
+            tap = self.timeline.data["actions"][-1]
+            self.app.anr_log.extend(anr_report(tap["t"] + 5.0 + self.timeline.clock_offset()))
+            return {"summary": "tapped"}
+
+        r.scene_last = last
+        r.run([rehearsal.SceneSpec(7, "last", "끝", "7")])
+        self.assertEqual(self.timeline.data["scenes"][0]["evidence"]["anr"], 1)
+        actions_end = self.timeline.data["actions"][-1]["t"]
+        self.assertGreaterEqual(1000.0 + self.clock.now() - actions_end, rehearsal.ANR_REPORT_WAIT_S)
 
 
 class LogcatClearTests(unittest.TestCase):

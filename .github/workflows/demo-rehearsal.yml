@@ -8,10 +8,9 @@
 # 180 s segments and headless Chrome captures the console at every scene; the artifact holds both plus scenes.json,
 # which a local compositor turns into the rehearsal video.
 #
-# The runner has 2 cores. The app writes the workbook on its main thread, and the software video encoder starved that
-# thread past Android's 5 s input limit (run 40453627285: ANR, and car UI mode closes the app without a dialog), so
-# rehearsal.py stops the recording for that one step: it creates /tmp/pause-recording and interrupts screenrecord; this
-# loop starts the next segment once the file is gone. scenes.json records the pause and the video labels it.
+# The runner has 2 cores and the recording runs throughout. Runs 40453627285 and 40458417995 were cut short when the app
+# built the workbook on its main thread for about 6 s (past Android's 5 s input limit; car UI mode closes the app without
+# a dialog); the app now builds it off the main thread, and rehearsal.py charges any ANR to the scene whose input caused it.
 #
 # Run by hand only (Actions > demo-rehearsal > Run workflow, or the workflow_dispatch API): it never runs on push.
 # Pushing or editing a file under .github/workflows/ needs a token with the `workflow` scope.
@@ -123,8 +122,7 @@ jobs:
         # times (winscope metadata), which the compositor uses to place the captions. segments.txt keeps host times.
         run: |
           rm -f /tmp/stop-recording
-          rm -f /tmp/pause-recording
-          nohup bash -c 'for i in $(seq 1 24); do echo "$i start $(date +%s.%N)" >> "$OUT/segments.txt"; adb shell screenrecord --size 1280x720 --time-limit 180 /sdcard/rehearsal-$i.mp4; echo "$i end $(date +%s.%N)" >> "$OUT/segments.txt"; while [ -f /tmp/pause-recording ] && [ ! -f /tmp/stop-recording ]; do sleep 0.5; done; [ -f /tmp/stop-recording ] && break; done' \
+          nohup bash -c 'for i in $(seq 1 24); do echo "$i start $(date +%s.%N)" >> "$OUT/segments.txt"; adb shell screenrecord --size 1280x720 --time-limit 180 /sdcard/rehearsal-$i.mp4; echo "$i end $(date +%s.%N)" >> "$OUT/segments.txt"; [ -f /tmp/stop-recording ] && break; done' \
             > "$OUT/screenrecord.log" 2>&1 < /dev/null &
           for _ in $(seq 1 60); do
             if adb shell pidof screenrecord > /dev/null 2>&1; then
@@ -142,7 +140,6 @@ jobs:
         run: >
           python3 demo/rehearsal.py --out "$OUT"
           --fleet-url http://127.0.0.1:8787 --fleet-data /tmp/fleet
-          --pause-recording-flag /tmp/pause-recording
           --chrome "$(command -v google-chrome || echo google-chrome)"
 
       - name: Collect the recording, logcat and console state
@@ -150,7 +147,6 @@ jobs:
         run: |
           mkdir -p "$OUT"
           touch /tmp/stop-recording
-          rm -f /tmp/pause-recording
           adb shell pkill -SIGINT screenrecord || echo "screenrecord was not running"
           sleep 3
           for i in $(seq 1 24); do

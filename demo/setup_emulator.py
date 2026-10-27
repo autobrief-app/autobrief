@@ -589,8 +589,9 @@ class Adb:
     def logcat_buffer_size(self, size: str) -> None:
         self.run("logcat", "-G", size)
 
-    def logcat_dump(self, tag: str = LOG_TAG, level: str = "I") -> str:
-        return self.out("logcat", "-d", "-s", "%s:%s" % (tag, level))
+    def logcat_dump(self, tag: str = LOG_TAG, level: str = "I", fmt: Optional[str] = None) -> str:
+        """`fmt` = a logcat -v format (e.g. "epoch": seconds since 1970 on the device clock instead of its local time)."""
+        return self.out("logcat", "-d", *(("-v", fmt) if fmt else ()), "-s", "%s:%s" % (tag, level))
 
     def current_user(self) -> Optional[int]:
         return parse_current_user(self.shell("am", "get-current-user"))
