@@ -47,6 +47,15 @@ open class MemoryStore(var active: Space = Space.LIVE) : AutoBriefCore.Store {
 /** [AutoBriefCore.handleGleo] from a test thread; with the inline background the reply is made before this returns. */
 fun AutoBriefCore.gleo(function: String, params: JsonObject): AutoBriefCore.GleoReply = runBlocking { handleGleo(function, params) }
 
+/** [AutoBriefCore.setDemoMode] from a test thread: the space is switched, and written, when this returns. */
+fun AutoBriefCore.setDemoModeNow(on: Boolean, pin: String?): AutoBriefCore.SettingsResult = runBlocking { setDemoMode(on, pin) }
+
+/** [AutoBriefCore.loadSampleHistory] from a test thread: the sample is in use, and written, when this returns. */
+fun AutoBriefCore.loadSampleHistoryNow(webhookUrl: String = ""): Int = runBlocking { loadSampleHistory(webhookUrl) }
+
+/** [AutoBriefCore.resetDemo] from a test thread. */
+fun AutoBriefCore.resetDemoNow() = runBlocking { resetDemo() }
+
 /** [AutoBriefCore.exportWorkbook] from a test thread. */
 fun AutoBriefCore.exportNow(period: ClosedRange<LocalDate>, businessYear: Boolean, send: Boolean = true): AutoBriefCore.ExportResult =
     runBlocking { exportWorkbook(period, businessYear, send) }

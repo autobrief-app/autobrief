@@ -167,14 +167,14 @@ class CoreFlowTest {
     @Test fun wrongAdminPinsLockEntryAndThePersistedCounterSurvivesARestart() {
         val h = Harness(base)
         h.core.saveSettings(h.core.settings.value, "4321", null)
-        repeat(4) { assertEquals(AutoBriefCore.SettingsResult.PIN_REQUIRED, h.core.setDemoMode(true, "0000")) }
-        assertEquals(AutoBriefCore.SettingsResult.PIN_LOCKED, h.core.setDemoMode(true, "0000"))
+        repeat(4) { assertEquals(AutoBriefCore.SettingsResult.PIN_REQUIRED, h.core.setDemoModeNow(true, "0000")) }
+        assertEquals(AutoBriefCore.SettingsResult.PIN_LOCKED, h.core.setDemoModeNow(true, "0000"))
         // even the right PIN is refused while locked, and a fresh core on the same storage stays locked
-        assertEquals(AutoBriefCore.SettingsResult.PIN_LOCKED, h.core.setDemoMode(true, "4321"))
+        assertEquals(AutoBriefCore.SettingsResult.PIN_LOCKED, h.core.setDemoModeNow(true, "4321"))
         val again = AutoBriefCore(h.store, clock = { h.now })
-        assertEquals(AutoBriefCore.SettingsResult.PIN_LOCKED, again.setDemoMode(true, "4321"))
+        assertEquals(AutoBriefCore.SettingsResult.PIN_LOCKED, again.setDemoModeNow(true, "4321"))
         h.advance(AutoBriefCore.PIN_LOCK_MS + 1)
-        assertEquals(AutoBriefCore.SettingsResult.SAVED, again.setDemoMode(true, "4321"))
+        assertEquals(AutoBriefCore.SettingsResult.SAVED, again.setDemoModeNow(true, "4321"))
     }
 
     @Test fun statusAndSendRepliesAreEnglishAndCarryNoPlaces() {
@@ -212,10 +212,10 @@ class CoreFlowTest {
         assertEquals(AutoBriefCore.SettingsResult.SAVED, h.core.saveSettings(h.core.settings.value, "4321", null))
         assertTrue(h.core.adminPinSet)
         assertEquals(AutoBriefCore.SettingsResult.PIN_REQUIRED, h.core.saveSettings(h.core.settings.value.copy(archiveWebhookUrl = "https://a.invalid/x"), null, "0000"))
-        assertEquals(AutoBriefCore.SettingsResult.PIN_REQUIRED, h.core.setDemoMode(true, null))
-        assertEquals(AutoBriefCore.SettingsResult.SAVED, h.core.setDemoMode(true, "4321"))
+        assertEquals(AutoBriefCore.SettingsResult.PIN_REQUIRED, h.core.setDemoModeNow(true, null))
+        assertEquals(AutoBriefCore.SettingsResult.SAVED, h.core.setDemoModeNow(true, "4321"))
         assertEquals(Space.DEMO, h.core.activeSpace.value)
-        assertEquals(AutoBriefCore.SettingsResult.SAVED, h.core.setDemoMode(false, null)) // leaving never needs the PIN
+        assertEquals(AutoBriefCore.SettingsResult.SAVED, h.core.setDemoModeNow(false, null)) // leaving never needs the PIN
     }
 
     @Test fun demoSpaceNeverTouchesTheRealLogbookAndTheDistanceShowsUpAsAGap() {
@@ -225,8 +225,8 @@ class CoreFlowTest {
         val liveBefore = h.store.data.getValue(Space.LIVE).trips
         assertEquals(1, liveBefore.size)
 
-        assertEquals(AutoBriefCore.SettingsResult.SAVED, h.core.setDemoMode(true, null))
-        val n = h.core.loadSampleHistory()
+        assertEquals(AutoBriefCore.SettingsResult.SAVED, h.core.setDemoModeNow(true, null))
+        val n = h.core.loadSampleHistoryNow()
         assertTrue(n > 500)
         assertTrue(h.logs.any { it == "DEMO_READY trips=$n" })
         assertTrue(h.core.integrity.value.ok)
@@ -237,7 +237,7 @@ class CoreFlowTest {
         assertEquals(TripPurpose.COMMUTE, h.core.trips.value.last().purpose)
         assertEquals(liveBefore, h.store.data.getValue(Space.LIVE).trips)
 
-        assertEquals(AutoBriefCore.SettingsResult.SAVED, h.core.setDemoMode(false, null))
+        assertEquals(AutoBriefCore.SettingsResult.SAVED, h.core.setDemoModeNow(false, null))
         assertEquals(1, h.core.trips.value.size)
         // next real drive: the 208 km the odometer moved meanwhile is recorded as a non-business gap first
         h.advance(60_000)
@@ -263,7 +263,7 @@ class CoreFlowTest {
     @Test fun demoSwitchIsRefusedMidTrip() {
         val h = Harness(base)
         h.odo(10.0); h.gear(Gear.PARK); h.gear(Gear.DRIVE)
-        assertEquals(AutoBriefCore.SettingsResult.TRIP_IN_PROGRESS, h.core.setDemoMode(true, null))
+        assertEquals(AutoBriefCore.SettingsResult.TRIP_IN_PROGRESS, h.core.setDemoModeNow(true, null))
     }
 
     @Test fun firstEventOfANewMonthClosesThePreviousMonthOnce() {
@@ -297,17 +297,17 @@ class CoreFlowTest {
     /** The demo backfill queues ~1,000 ledger entries: one outbox write, not one per entry (that took minutes on the emulator). */
     @Test fun backfillWritesTheOutboxOnce() {
         val h = Harness()
-        check(h.core.setDemoMode(true, null) == AutoBriefCore.SettingsResult.SAVED)
+        check(h.core.setDemoModeNow(true, null) == AutoBriefCore.SettingsResult.SAVED)
         val before = h.store.outboxSaves
-        h.core.loadSampleHistory("http://10.0.2.2:8787/hook")
+        h.core.loadSampleHistoryNow("http://10.0.2.2:8787/hook")
         assertEquals(h.core.integrity.value.entryCount, h.core.outbox.value.size)
         assertTrue("outbox written ${h.store.outboxSaves - before} times", h.store.outboxSaves - before <= 1)
     }
 
     @Test fun deliveryResultsAreAppliedWithOneWritePerBatch() {
         val h = Harness()
-        h.core.setDemoMode(true, null)
-        h.core.loadSampleHistory("http://10.0.2.2:8787/hook")
+        h.core.setDemoModeNow(true, null)
+        h.core.loadSampleHistoryNow("http://10.0.2.2:8787/hook")
         val keys = h.core.outbox.value.map { it.key }
         val before = h.store.outboxSaves
         h.core.markDeliveries(keys.take(50).map { AutoBriefCore.Delivery(it, true, null) } + AutoBriefCore.Delivery(keys[50], false, "HTTP 503"))

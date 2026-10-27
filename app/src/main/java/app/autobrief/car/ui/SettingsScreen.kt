@@ -53,6 +53,9 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
     var placeName by remember { mutableStateOf("") }
     var message by remember { mutableStateOf<String?>(null) }
 
+    /** A space change (demo on or off, the sample loaded or wiped) is being made. */
+    var changing by remember { mutableStateOf(false) }
+
     // the form scrolls; the save bar under it stays on screen
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(24.dp)) {
@@ -134,26 +137,52 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                         if (core.adminPinSet) Field("현재 PIN (보내기 주소, PIN, 시연 모드를 바꿀 때)", currentPin, Modifier.fillMaxWidth(), numeric = true) { currentPin = it.filter(Char::isDigit).take(8) }
                     }
                     Panel(border = if (space == AutoBriefCore.Space.DEMO) p.pending else null) {
-                        ToggleRow("시연 모드", space == AutoBriefCore.Space.DEMO, trackColor = p.pending) { on ->
-                            message = when (core.setDemoMode(on, currentPin.ifBlank { null })) {
-                                AutoBriefCore.SettingsResult.SAVED -> if (on) "시연 모드: 실제 운행기록과 따로 저장됩니다." else "실제 운행기록으로 돌아왔습니다."
-                                AutoBriefCore.SettingsResult.PIN_REQUIRED -> "시연 모드를 켜려면 현재 관리자 PIN이 필요합니다."
-                                AutoBriefCore.SettingsResult.PIN_LOCKED -> "PIN을 여러 번 틀려 잠시 잠겼습니다. 잠시 뒤 다시 시도해 주세요."
-                                AutoBriefCore.SettingsResult.TRIP_IN_PROGRESS -> "운행 중에는 바꿀 수 없습니다. P에서 바꿔 주세요."
-                                AutoBriefCore.SettingsResult.INVALID_URL -> null
+                        // the other space is read off the main thread: the controls wait until the change is made
+                        ToggleRow("시연 모드", space == AutoBriefCore.Space.DEMO, trackColor = p.pending, enabled = !changing) { on ->
+                            val pin = currentPin.ifBlank { null }
+                            changing = true
+                            message = if (on) "시연 모드로 바꾸는 중…" else "실제 운행기록으로 돌아가는 중…"
+                            core.launch {
+                                try {
+                                    message = when (setDemoMode(on, pin)) {
+                                        AutoBriefCore.SettingsResult.SAVED -> if (on) "시연 모드: 실제 운행기록과 따로 저장됩니다." else "실제 운행기록으로 돌아왔습니다."
+                                        AutoBriefCore.SettingsResult.PIN_REQUIRED -> "시연 모드를 켜려면 현재 관리자 PIN이 필요합니다."
+                                        AutoBriefCore.SettingsResult.PIN_LOCKED -> "PIN을 여러 번 틀려 잠시 잠겼습니다. 잠시 뒤 다시 시도해 주세요."
+                                        AutoBriefCore.SettingsResult.TRIP_IN_PROGRESS -> "운행 중에는 바꿀 수 없습니다. P에서 바꿔 주세요."
+                                        AutoBriefCore.SettingsResult.INVALID_URL -> null
+                                    }
+                                } finally {
+                                    changing = false
+                                }
                             }
                         }
                         Muted("시연 기록은 실제 운행기록부와 다른 저장 공간에 따로 남습니다. 시연 중 차량이 움직인 거리는 실제 기록부에 '미기록 구간(비업무)'으로 남습니다.")
                         if (space == AutoBriefCore.Space.DEMO) {
                             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                BigButton("가상 예시 이력 불러오기", Modifier.weight(1f), color = p.pending, onColor = p.bg, height = 76.dp) {
-                                    val n = core.loadSampleHistory(webhook.takeIf { AutoBriefCore.isAllowedEndpoint(it) } ?: "")
-                                    onFlush()
-                                    message = "가상 예시 운행 ${n}건을 불러왔습니다 (가상 회사, 가상 인물)."
+                                BigButton("가상 예시 이력 불러오기", Modifier.weight(1f), color = p.pending, onColor = p.bg, enabled = !changing, height = 76.dp) {
+                                    val url = webhook.takeIf { AutoBriefCore.isAllowedEndpoint(it) } ?: ""
+                                    changing = true
+                                    message = "가상 예시 이력을 불러오는 중…"
+                                    core.launch {
+                                        try {
+                                            val n = loadSampleHistory(url)
+                                            onFlush()
+                                            message = "가상 예시 운행 ${n}건을 불러왔습니다 (가상 회사, 가상 인물)."
+                                        } finally {
+                                            changing = false
+                                        }
+                                    }
                                 }
-                                BigButton("시연 기록 지우기", Modifier.weight(1f), outlined = true, color = p.danger, height = 76.dp) {
-                                    core.resetDemo()
-                                    message = "시연 기록을 지웠습니다."
+                                BigButton("시연 기록 지우기", Modifier.weight(1f), outlined = true, color = p.danger, enabled = !changing, height = 76.dp) {
+                                    changing = true
+                                    core.launch {
+                                        try {
+                                            resetDemo()
+                                            message = "시연 기록을 지웠습니다."
+                                        } finally {
+                                            changing = false
+                                        }
+                                    }
                                 }
                             }
                         }

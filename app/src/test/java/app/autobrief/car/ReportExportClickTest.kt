@@ -68,8 +68,8 @@ class ReportExportClickTest {
             // the thread name loses the " @coroutine#n" that coroutine debug mode appends
             onWrite = { writers += Thread.currentThread().name.substringBefore(" @"); release.await(5, TimeUnit.SECONDS) },
         )
-        check(h.core.setDemoMode(true, null) == AutoBriefCore.SettingsResult.SAVED)
-        h.core.loadSampleHistory("http://10.0.2.2:8787/hook") // an address, so 지금 보내기 is on too
+        check(h.core.setDemoModeNow(true, null) == AutoBriefCore.SettingsResult.SAVED)
+        h.core.loadSampleHistoryNow("http://10.0.2.2:8787/hook") // an address, so 지금 보내기 is on too
         compose.setContent { AutoBriefScreen(h.core, mutableStateOf(Tab.REPORT), onFlush = {}, night = true) }
         compose.waitForIdle()
         compose.onNode(button and hasText("지금 보내기")).assertIsEnabled()

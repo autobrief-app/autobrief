@@ -38,8 +38,8 @@ class ScreenshotTest {
     /** Demo space with the fictional year, parked at home at 45,200 km on the presentation day. */
     private fun demoHarness(): Harness {
         val h = Harness(startAt = Harness.at(ptDay, 8, 5))
-        h.core.setDemoMode(true, null)
-        h.core.loadSampleHistory()
+        h.core.setDemoModeNow(true, null)
+        h.core.loadSampleHistoryNow()
         h.core.onVehicle(VehicleEvent.Connection(true))
         h.core.onVehicle(VehicleEvent.Vin(SampleHistory.SAMPLE_VIN))
         h.core.onNavi(NaviEvent.Ready(true))

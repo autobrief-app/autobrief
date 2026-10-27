@@ -81,8 +81,8 @@ class DeliveryTest {
 
     @Test fun aRoundStopsAtItsTimeCapAndSaysMoreIsDue() {
         val h = Harness()
-        h.core.setDemoMode(true, null)
-        h.core.loadSampleHistory(hook)
+        h.core.setDemoModeNow(true, null)
+        h.core.loadSampleHistoryNow(hook)
         var mono = 0L
         val endpoint = Endpoint { _, _ -> mono += 1_000; true } // every post takes a second
         val sender = WebhookSender(h.core, { h.now }, { mono }, endpoint::post)
@@ -95,11 +95,11 @@ class DeliveryTest {
         val live = "https://live.invalid/hook"
         val h = Harness(AppSettings(plateNumber = "00가 0000", archiveWebhookUrl = live))
         h.drive(100.0, 10.0, null, null)
-        h.core.setDemoMode(true, null)
-        h.core.loadSampleHistory(hook) // the demo space's own address
+        h.core.setDemoModeNow(true, null)
+        h.core.loadSampleHistoryNow(hook) // the demo space's own address
         val endpoint = Endpoint()
         endpoint.answer = { _, _ ->
-            if (endpoint.posts.size == 3) h.core.setDemoMode(false, null) // the presenter switches back to LIVE
+            if (endpoint.posts.size == 3) h.core.setDemoModeNow(false, null) // the presenter switches back to LIVE
             true
         }
         WebhookSender(h.core, { h.now }, { h.now }, endpoint::post).flush()
@@ -115,8 +115,8 @@ class DeliveryTest {
 
     @Test fun concurrentQueueingAndDeliveryResultsLeaveTheSavedQueueEqualToTheOneInMemory() {
         val h = Harness(AppSettings(plateNumber = "00가 0000", archiveWebhookUrl = hook), startAt = Harness.at(LocalDate.of(2026, 10, 23), 9, 0))
-        h.core.setDemoMode(true, null)
-        h.core.loadSampleHistory(hook)
+        h.core.setDemoModeNow(true, null)
+        h.core.loadSampleHistoryNow(hook)
         val keys = h.core.outbox.value.map(OutboxItem::key)
         val marker = thread {
             keys.chunked(10).forEach { batch -> h.core.markDeliveries(batch.map { AutoBriefCore.Delivery(it, true, null) }) }

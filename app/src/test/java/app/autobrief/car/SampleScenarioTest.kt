@@ -29,8 +29,8 @@ object DocsSample {
     /** [webhook] set = the company address is configured, so every ledger entry is also queued for the fleet console. */
     fun build(webhook: String = ""): Harness {
         val h = Harness(startAt = Harness.at(TODAY, 9, 0))
-        check(h.core.setDemoMode(true, null) == AutoBriefCore.SettingsResult.SAVED)
-        h.core.loadSampleHistory(webhook)
+        check(h.core.setDemoModeNow(true, null) == AutoBriefCore.SettingsResult.SAVED)
+        h.core.loadSampleHistoryNow(webhook)
         // 10:20 → 10:58, 45,200 → 45,218 km to a client, labelled by voice right after parking
         h.now = Harness.at(TODAY, 10, 20)
         h.core.onNavi(NaviEvent.RouteStarted("가상고객사 판교 사옥", 1_800))

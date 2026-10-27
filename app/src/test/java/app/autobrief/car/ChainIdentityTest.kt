@@ -30,8 +30,8 @@ class ChainIdentityTest {
 
     @Test fun aDemoResetStartsANewChainWithItsOwnDeliveryKeys() {
         val h = Harness()
-        h.core.setDemoMode(true, null)
-        h.core.loadSampleHistory(hook)
+        h.core.setDemoModeNow(true, null)
+        h.core.loadSampleHistoryNow(hook)
         val first = h.core.ledgerChainId
         assertNotNull(first)
         val firstKeys = h.core.outbox.value.map { it.key }.toSet()
@@ -40,8 +40,8 @@ class ChainIdentityTest {
         // the receiver tells a demo restart (silent, labelled 시연) from a live one (a warning) by this field
         assertTrue(h.core.outbox.value.all { payloadSpace(it.payloadJson) == "demo" })
 
-        h.core.resetDemo()
-        h.core.loadSampleHistory(hook) // the same sample again: seq 1.. again, but a different chain
+        h.core.resetDemoNow()
+        h.core.loadSampleHistoryNow(hook) // the same sample again: seq 1.. again, but a different chain
         val second = h.core.ledgerChainId
         assertNotEquals(first, second)
         val secondKeys = h.core.outbox.value.map { it.key }.toSet()

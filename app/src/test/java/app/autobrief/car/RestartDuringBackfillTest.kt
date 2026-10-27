@@ -132,8 +132,8 @@ class RestartDuringBackfillTest {
         val first = AppRun(DAY)
         val gate = first.holdWork()
         first.onCore {
-            check(first.core.setDemoMode(true, null) == AutoBriefCore.SettingsResult.SAVED)
-            first.core.loadSampleHistory(HOOK)
+            check(first.core.setDemoModeNow(true, null) == AutoBriefCore.SettingsResult.SAVED)
+            first.core.loadSampleHistoryNow(HOOK)
         }
         assertTrue(first.logs.any { it.startsWith("DEMO_READY trips=") })
         val sample = first.onCore { first.core.ledgerEntries.size }

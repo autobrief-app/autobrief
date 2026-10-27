@@ -267,7 +267,7 @@ fun ChipRow(lead: String? = null, content: @Composable () -> Unit) {
 
 /** A switch whose whole 76dp row is the touch target; the Switch itself only shows the state. */
 @Composable
-fun ToggleRow(label: String, checked: Boolean, trackColor: Color = LocalPalette.current.accent, onChange: (Boolean) -> Unit) {
+fun ToggleRow(label: String, checked: Boolean, trackColor: Color = LocalPalette.current.accent, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
     val p = LocalPalette.current
     Row(
         Modifier
@@ -275,13 +275,13 @@ fun ToggleRow(label: String, checked: Boolean, trackColor: Color = LocalPalette.
             .heightIn(min = 76.dp)
             .clip(RoundedCornerShape(16.dp))
             .background(p.panelHigh)
-            .toggleable(value = checked, role = Role.Switch, onValueChange = onChange)
+            .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange)
             .padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Txt(label, Type.heading, modifier = Modifier.weight(1f))
         Spacer(Modifier.width(16.dp))
-        Switch(checked = checked, onCheckedChange = null, colors = SwitchDefaults.colors(checkedTrackColor = trackColor))
+        Switch(checked = checked, onCheckedChange = null, enabled = enabled, colors = SwitchDefaults.colors(checkedTrackColor = trackColor))
     }
 }
 

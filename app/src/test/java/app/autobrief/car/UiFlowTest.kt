@@ -113,8 +113,8 @@ class UiFlowTest {
 
     @Test fun homeCorrectionHasNoPreselectedReasonAndThePurposeButtonsWaitForOne() {
         val h = Harness(startAt = Harness.at(LocalDate.of(2026, 12, 3), 8, 5))
-        h.core.setDemoMode(true, null)
-        h.core.loadSampleHistory()
+        h.core.setDemoModeNow(true, null)
+        h.core.loadSampleHistoryNow()
         h.core.onVehicle(VehicleEvent.Connection(true))
         h.core.onNavi(NaviEvent.Ready(true))
         h.at(SampleHistory.HOME.point); h.odo(45_200.0); h.gear(Gear.PARK)

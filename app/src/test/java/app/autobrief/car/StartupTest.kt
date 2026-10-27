@@ -71,8 +71,8 @@ class SlowStorageApp : AutoBriefApp() {
     override fun attachBaseContext(base: Context) {
         super.attachBaseContext(base)
         AutoBriefCore(JsonFiles(File(filesDir, "logbook"))).apply {
-            check(setDemoMode(true, null) == AutoBriefCore.SettingsResult.SAVED)
-            sampleRows = loadSampleHistory()
+            check(setDemoModeNow(true, null) == AutoBriefCore.SettingsResult.SAVED)
+            sampleRows = loadSampleHistoryNow()
             sampleEntries = ledgerEntries.size
         }
         // the coroutine library's first use loads its classes (slow in a fresh Robolectric sandbox): not what is measured

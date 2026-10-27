@@ -90,7 +90,8 @@ private fun SetupCard(core: AutoBriefCore, onOpen: (Tab) -> Unit) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             BigButton("설정 열기", Modifier.weight(1f)) { onOpen(Tab.SETTINGS) }
             BigButton("가상 예시로 둘러보기", Modifier.weight(1f), outlined = true, sub = "실제 기록과 따로 저장됩니다") {
-                if (core.setDemoMode(true, null) == AutoBriefCore.SettingsResult.SAVED) core.loadSampleHistory()
+                // read and made off the main thread; the screen follows once the demo space is in use
+                core.launch { if (setDemoMode(true, null) == AutoBriefCore.SettingsResult.SAVED) loadSampleHistory() }
             }
         }
     }

@@ -31,23 +31,25 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The core's slow work leaves its thread. A stand-in main thread ("core") owns the core; workbooks and the sending
- * copies of a ledger are built on "wb-work" and written on "wb-io". Each test holds the work thread with a gate: while it
- * is closed nothing can be built, so what the core thread still does meanwhile is checked without timing.
+ * copies of a ledger are built on "wb-work" and written on "wb-io", and the logbook's own files are written on "store"
+ * (as on the car). Each test holds the work thread with a gate: while it is closed nothing can be built, so what the core
+ * thread still does meanwhile is checked without timing.
  */
 class OffMainWorkTest {
     private fun thread(name: String): ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, name).apply { isDaemon = true } }
     private val coreThread = thread("core")
     private val workThread = thread("wb-work")
     private val ioThread = thread("wb-io")
+    private val storeThread = thread("store")
     private val scope = CoroutineScope(SupervisorJob() + coreThread.asCoroutineDispatcher())
-    private val background = AutoBriefCore.Background(scope, workThread.asCoroutineDispatcher(), ioThread.asCoroutineDispatcher())
+    private val background = AutoBriefCore.Background(scope, workThread.asCoroutineDispatcher(), ioThread.asCoroutineDispatcher(), storeThread)
 
     /** The thread that wrote each exported file, in order (without the " @coroutine#n" that coroutine debug mode appends). */
     private val writers: MutableList<String> = Collections.synchronizedList(mutableListOf())
 
     @After fun stop() {
         scope.cancel()
-        listOf(coreThread, workThread, ioThread).forEach { it.shutdownNow() }
+        listOf(coreThread, workThread, ioThread, storeThread).forEach { it.shutdownNow() }
     }
 
     /** Runs [block] on the core thread and returns its value: it fails when that thread stays busy for 10 s. */
@@ -110,8 +112,8 @@ class OffMainWorkTest {
     /** The demo space with the labelled sample year (485 rows, 969 ledger entries up to 2026-10-22). */
     private fun sample(hook: String = ""): Harness = harness(LocalDate.of(2026, 10, 23)).also { h ->
         onCore {
-            check(h.core.setDemoMode(true, null) == AutoBriefCore.SettingsResult.SAVED)
-            h.core.loadSampleHistory(hook)
+            check(h.core.setDemoModeNow(true, null) == AutoBriefCore.SettingsResult.SAVED)
+            h.core.loadSampleHistoryNow(hook)
         }
         if (hook.isNotEmpty()) waitFor("the sample ledger in the outbox") { onCore { h.core.outbox.value.size } == onCore { h.core.ledgerEntries.size } }
     }
@@ -199,9 +201,10 @@ class OffMainWorkTest {
         val h = sample("https://receiver.example/hook")
         val gate = holdWork()
         assertTrue(onCore { h.core.requestWorkbook(TaxPeriods.month(2026, 10), businessYear = false, send = true) })
-        assertEquals(AutoBriefCore.SettingsResult.SAVED, onCore { h.core.setDemoMode(false, null) }) // back to LIVE meanwhile
+        assertEquals(AutoBriefCore.SettingsResult.SAVED, onCore { h.core.setDemoModeNow(false, null) }) // back to LIVE meanwhile
         gate.countDown()
         waitFor("the workbook") { onCore { h.core.workbook.value } is WorkbookRequest.Made }
+        assertTrue("written", h.core.flushWrites(10_000))
         assertTrue("queued in the demo space", h.store.load(Space.DEMO).outbox.any { it.kind == "archive" })
         assertTrue("not in the live queue", onCore { h.core.outbox.value }.none { it.kind == "archive" })
         assertTrue(h.files.keys.all { it.startsWith("demo/") })
@@ -214,11 +217,11 @@ class OffMainWorkTest {
         val h = harness(LocalDate.of(2026, 10, 23))
         val gate = holdWork()
         onCore {
-            check(h.core.setDemoMode(true, null) == AutoBriefCore.SettingsResult.SAVED)
-            h.core.loadSampleHistory(hook)
+            check(h.core.setDemoModeNow(true, null) == AutoBriefCore.SettingsResult.SAVED)
+            h.core.loadSampleHistoryNow(hook)
         }
         val replaced = onCore { h.core.ledgerChainId }!!
-        onCore { h.core.loadSampleHistory(hook) }
+        onCore { h.core.loadSampleHistoryNow(hook) }
         val chain = onCore { h.core.ledgerChainId }!!
         assertTrue(chain != replaced)
         assertTrue("held until the new chain's copies are queued", onCore { h.core.settings.value.ledgerBackfillThroughSeq } > 0)
@@ -227,16 +230,17 @@ class OffMainWorkTest {
         waitFor("the new chain's copies queued") { onCore { h.core.outbox.value.count { chain in it.key } } == entries }
         waitFor("the mark cleared") { onCore { h.core.settings.value.ledgerBackfillThroughSeq } == 0L }
         assertEquals("copies of the replaced chain", 0, onCore { h.core.outbox.value.count { chain !in it.key } })
+        assertTrue("written", h.core.flushWrites(10_000))
         assertEquals(entries, onCore { h.core.outboxSnapshot() }.items.size)
     }
 
-    @Test fun theSampleLedgersSendingCopiesAreQueuedOnTheCoreThread() {
+    @Test fun theSampleLedgersSendingCopiesAreWrittenOffTheCoreThreadWhichStaysFree() {
         val store = GatedQueueStore().also { it.arm() }
         val h = harness(LocalDate.of(2026, 10, 23), store)
         try {
             onCore {
-                check(h.core.setDemoMode(true, null) == AutoBriefCore.SettingsResult.SAVED)
-                h.core.loadSampleHistory("https://receiver.example/hook") // 969 sending copies: the backfill
+                check(h.core.setDemoModeNow(true, null) == AutoBriefCore.SettingsResult.SAVED)
+                h.core.loadSampleHistoryNow("https://receiver.example/hook") // 969 sending copies: the backfill
             }
             waitFor("the sample ledger queued, or its queue write held") {
                 store.held || onCore { h.core.outbox.value.size } == onCore { h.core.ledgerEntries.size }
@@ -246,7 +250,7 @@ class OffMainWorkTest {
             store.release()
         }
         waitFor("the whole ledger in the outbox") { onCore { h.core.outboxSnapshot() }.items.size == onCore { h.core.ledgerEntries.size } }
-        assertEquals("the queue file is written on the core thread only", setOf("core"), store.queueWriters.toSet())
+        assertEquals("the queue file is written on the store thread only", setOf("store"), store.queueWriters.toSet())
     }
 
     @Test fun aTripRecordedWhileTheMonthClosesWorkbookIsQueuedDoesNotWaitForTheQueueWrite() {
@@ -275,6 +279,6 @@ class OffMainWorkTest {
         }
         waitFor("September closed") { onCore { h.core.settings.value.lastMonthlyCloseYm } == "2026-09" }
         assertTrue(onCore { h.core.outbox.value.any { it.kind == "archive" } })
-        assertEquals("the queue file is written on the core thread only", setOf("core"), store.queueWriters.toSet())
+        assertEquals("the queue file is written on the store thread only", setOf("store"), store.queueWriters.toSet())
     }
 }

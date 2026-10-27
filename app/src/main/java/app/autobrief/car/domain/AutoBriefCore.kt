@@ -37,6 +37,10 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.util.Base64
 import java.util.UUID
+import java.util.concurrent.Executor
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.CoroutineContext
 
 /**
@@ -48,7 +52,7 @@ import kotlin.coroutines.CoroutineContext
  * presentations). Switching never copies anything between them, so a demo can never touch real records.
  *
  * The app makes it with [open], which reads the stored space off the calling thread; the public constructor reads it on
- * the calling thread (tests, and a restart in them).
+ * the calling thread (tests, and a restart in them). Its files are written in order off its thread ([StoreWriter]).
  */
 class AutoBriefCore private constructor(
     private val store: Store,
@@ -140,14 +144,28 @@ class AutoBriefCore private constructor(
      * [work] and its files written on [io] from a snapshot taken on the core's thread, and what follows it (queuing its
      * sending copies, a notice, the month marked closed) happens back there. A business-year workbook made on the main
      * thread kept it busy for 5.8 s on a loaded two-core emulator: Android closed the app as not responding (5 s limit).
+     * The logbook's own files (ledger, trips, queue, settings) are written on [writes], one at a time and in order (see
+     * [StoreWriter]): a tap that set a trip's purpose rewrote three of them on the main thread for 7 s (rehearsal
+     * 40486795890), and Android closed the app twice.
      */
-    class Background(val scope: CoroutineScope, val work: CoroutineContext, val io: CoroutineContext) {
+    class Background(
+        val scope: CoroutineScope,
+        val work: CoroutineContext,
+        val io: CoroutineContext,
+        /** Where the logbook's files are written; null = on the calling thread, before the call returns. */
+        val writes: Executor? = null,
+    ) {
         companion object {
-            /** The car: the main thread, Dispatchers.Default to build, Dispatchers.IO to write. */
-            fun android() = Background(CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate), Dispatchers.Default, Dispatchers.IO)
+            /** The car: the main thread, Dispatchers.Default to build, Dispatchers.IO for exports, one thread for the files. */
+            fun android() = Background(CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate), Dispatchers.Default, Dispatchers.IO, storeThread())
 
             /** Everything on the calling thread, in call order: for tests of what is written, not of where. */
             fun inline() = Background(CoroutineScope(SupervisorJob() + Dispatchers.Unconfined), Dispatchers.Unconfined, Dispatchers.Unconfined)
+
+            /** One thread for the logbook's files ([STORE_THREAD]); it ends after 30 s without a save and starts with the next. */
+            fun storeThread(): Executor =
+                ThreadPoolExecutor(1, 1, 30, TimeUnit.SECONDS, LinkedBlockingQueue()) { r -> Thread(r, STORE_THREAD).apply { isDaemon = true } }
+                    .apply { allowCoreThreadTimeOut(true) }
         }
     }
 
@@ -178,12 +196,23 @@ class AutoBriefCore private constructor(
      */
     private val outboxLock = Any()
 
+    /** Every save of the logbook's files goes through it: written in order on [Background.writes] (see [StoreWriter]). */
+    private val writer = StoreWriter(store, background.writes, log)
+
+    /** The keys of the queue in use as last written to the disk ([outboxLock]): only those go out (see [outboxSnapshot]). */
+    private var writtenKeys: Set<String> = emptySet()
+
+    /** The space a switch is reading ([outboxLock]), and the changes made to its stored queue meanwhile (see [enter]). */
+    private var entering: Space? = null
+    private val carried = mutableListOf<(List<OutboxItem>) -> List<OutboxItem>>()
+
     private val _space = MutableStateFlow(space)
     private val _settings = MutableStateFlow(AppSettings())
     private val _vehicle = MutableStateFlow(VehicleSnapshot())
     private val _trips = MutableStateFlow<List<TripRecord>>(emptyList())
     private val _check = MutableStateFlow(LedgerCheck(true, 0, "-", emptyList()))
     private val _outbox = MutableStateFlow<List<OutboxItem>>(emptyList())
+    private val _sendable = MutableStateFlow(0)
     private val _restricted = MutableStateFlow(false)
     private val _navi = MutableStateFlow(NaviStatus())
     private val _open = MutableStateFlow<OpenTripView?>(null)
@@ -198,6 +227,12 @@ class AutoBriefCore private constructor(
     val trips: StateFlow<List<TripRecord>> = _trips.asStateFlow()
     val integrity: StateFlow<LedgerCheck> = _check.asStateFlow()
     val outbox: StateFlow<List<OutboxItem>> = _outbox.asStateFlow()
+
+    /**
+     * Queued items not delivered yet whose queue file is on the disk: what a sending round can take now (see
+     * [outboxSnapshot]). The monitor asks for a round when it changes.
+     */
+    val sendable: StateFlow<Int> = _sendable.asStateFlow()
 
     /** CarUxRestrictions: true while the screen must stay in its glanceable driving layout. */
     val restricted: StateFlow<Boolean> = _restricted.asStateFlow()
@@ -259,11 +294,13 @@ class AutoBriefCore private constructor(
         val check: LedgerCheck,
     ) {
         companion object {
-            fun read(store: Store, space: Space): StoredSpace {
-                val d = store.load(space)
+            fun read(store: Store, space: Space): StoredSpace = of(space, store.load(space)) { rows -> store.saveTrips(space, rows) }
+
+            /** [d] as the core uses it; [saveRebuilt] stores the rows that had to be rebuilt from the chain. */
+            fun of(space: Space, d: SpaceData, saveRebuilt: (List<TripRecord>) -> Unit = {}): StoredSpace {
                 // the ledger is written before the trips file: rows the app died before storing come back from the chain
                 val (rows, rebuilt) = Ledger.repair(d.trips, d.ledger)
-                if (rebuilt > 0) store.saveTrips(space, rows)
+                if (rebuilt > 0) saveRebuilt(rows)
                 val logbook = TripLogbook(rows)
                 val ledger = Ledger(d.ledger)
                 return StoredSpace(space, d, logbook, ledger, rebuilt, Ledger.check(ledger.all, logbook.records))
@@ -271,16 +308,20 @@ class AutoBriefCore private constructor(
         }
     }
 
-    /** Switches to [s] (demo on or off, the sample loaded or reset): a user's action, read on the core's thread. */
-    private fun loadSpace(s: Space) = enter(StoredSpace.read(store, s))
-
     /** Makes [o] the space in use. A backfill the app was closed in the middle of goes on (see [backfillLedger]). */
     private fun enter(o: StoredSpace) {
         val d = o.data
         synchronized(outboxLock) {
             space = o.space
             _settings.value = d.settings
-            _outbox.value = d.outbox
+            // what was read is on the disk; a change made to this space's stored queue while it was read is applied here too,
+            // and goes out once the queue is written again
+            val edits = if (entering == o.space) carried.toList() else emptyList()
+            entering = null
+            carried.clear()
+            _outbox.value = edits.fold(d.outbox) { list, edit -> edit(list) }
+            writtenKeys = d.outbox.mapTo(HashSet()) { it.key }
+            if (edits.isNotEmpty()) saveOutbox() else refreshSendable()
         }
         if (o.rebuilt > 0) log("TRIPS_REBUILT rows=${o.rebuilt}")
         logbook = o.logbook
@@ -319,7 +360,7 @@ class AutoBriefCore private constructor(
     }
 
     private fun saveOpenTrip(t: OpenTripRecord?) {
-        store.saveOpenTrip(space, t)
+        writer.saveOpenTrip(space, t)
         openTripSaved = t != null
     }
 
@@ -670,7 +711,7 @@ class AutoBriefCore private constructor(
     private fun appendLedger(kind: String, trip: TripRecord, body: JsonObject): LedgerEntry {
         if (ledger.size == 0) chainId = newChainId()
         val entry = ledger.append(kind, trip.id, body, clock())
-        store.saveLedger(space, chainId, ledger.all)
+        writer.saveLedger(space, chainId, ledger.all)
         log("LEDGER seq=${entry.seq} kind=$kind hash=${entry.hash.take(8)}")
         if (_settings.value.archiveWebhookUrl.isNotBlank()) {
             enqueue(Queued(ledgerKey(entry), LEDGER_KIND, ledgerPayload(entry), entry.seq))
@@ -724,7 +765,7 @@ class AutoBriefCore private constructor(
 
     private fun saveTrips() {
         _trips.value = logbook.records
-        store.saveTrips(space, logbook.records)
+        writer.saveTrips(space, logbook.records)
         refreshCheck()
     }
 
@@ -738,23 +779,60 @@ class AutoBriefCore private constructor(
 
     /**
      * One update and ONE write for a whole batch: the outbox file is rewritten whole, so a write per item is quadratic.
-     * On the core's thread only: the lock is held through that write, and work queued from the I/O thread made the core's
-     * thread wait for it (a trip closing during a month close's workbook waited for the whole queue file). Items made for
-     * a space no longer in use (a workbook that finished after a switch) go to that space's stored queue.
+     * On the core's thread only (the queue in use belongs to it). Items made for a space no longer in use (a workbook that
+     * finished after a switch) go to that space's stored queue (see [updateStoredOutbox]).
      */
     private fun enqueueAll(items: List<Queued>, into: Space? = null) {
         if (items.isEmpty()) return
         synchronized(outboxLock) {
             val target = into ?: space
-            val inUse = target == space
-            val list = if (inUse) _outbox.value else store.load(target).outbox
-            val known = list.mapTo(HashSet()) { it.key }
-            val fresh = items.filter { known.add(it.key) }.map { OutboxItem(it.key, it.kind, it.payload, clock(), seq = it.seq) }
-            if (fresh.isEmpty()) return
-            val next = prune(list + fresh)
-            if (inUse) _outbox.value = next
-            store.saveOutbox(target, next)
+            if (target != space) {
+                updateStoredOutbox(target) { list -> withQueued(list, items) }
+                return
+            }
+            val next = withQueued(_outbox.value, items)
+            if (next === _outbox.value) return
+            _outbox.value = next
+            saveOutbox()
         }
+    }
+
+    /** [list] with those of [items] it does not hold yet (by key), pruned; [list] itself when it holds them all. */
+    private fun withQueued(list: List<OutboxItem>, items: List<Queued>): List<OutboxItem> {
+        val known = list.mapTo(HashSet()) { it.key }
+        val fresh = items.filter { known.add(it.key) }.map { OutboxItem(it.key, it.kind, it.payload, clock(), seq = it.seq) }
+        return if (fresh.isEmpty()) list else prune(list + fresh)
+    }
+
+    /**
+     * Changes the stored queue of [target], a space not in use, on the writing thread after what it still has to write.
+     * A switch to [target] that is reading it meanwhile gets the change too (see [enter]). Under [outboxLock].
+     */
+    private fun updateStoredOutbox(target: Space, edit: (List<OutboxItem>) -> List<OutboxItem>) {
+        if (entering == target) carried += edit
+        writer.updateOutbox(target, edit)
+    }
+
+    /** Hands the queue in use to the writer; its items may go out once it is written (see [outboxSnapshot]). Under [outboxLock]. */
+    private fun saveOutbox() {
+        val s = space
+        val items = _outbox.value
+        writer.saveOutbox(s, items) { outboxWritten(s, items) }
+        refreshSendable()
+    }
+
+    /** On the writing thread: [items] are on the disk as the queue of [s]. */
+    private fun outboxWritten(s: Space, items: List<OutboxItem>) {
+        synchronized(outboxLock) {
+            if (s != space) return
+            writtenKeys = items.mapTo(HashSet()) { it.key }
+            refreshSendable()
+        }
+    }
+
+    /** Under [outboxLock]. */
+    private fun refreshSendable() {
+        _sendable.value = _outbox.value.count { it.deliveredEpochMs == null && it.key in writtenKeys }
     }
 
     /** Bounded queue in queueing order: delivered items are kept only as a short history, undelivered ones up to a hard cap. */
@@ -781,7 +859,9 @@ class AutoBriefCore private constructor(
         val s = _settings.value
         // while a backfill is still to be queued no ledger entry goes out: a newer one must not reach the receiver first
         val held = s.ledgerBackfillThroughSeq > 0
-        val items = if (held) _outbox.value.filter { it.kind != LEDGER_KIND } else _outbox.value
+        // only what is on the disk goes out: the ledger is written before the queue, so the receiver never holds an entry the
+        // car could still lose (after a restart the car's next entry would take its number: a forgery to the receiver)
+        val items = _outbox.value.filter { it.key in writtenKeys && !(held && it.kind == LEDGER_KIND) }
         OutboxSnapshot(space, s.archiveWebhookUrl, items, currentVin())
     }
 
@@ -822,9 +902,9 @@ class AutoBriefCore private constructor(
         synchronized(outboxLock) {
             if (space == this.space) {
                 _outbox.value = apply(_outbox.value)
-                store.saveOutbox(space, _outbox.value)
+                saveOutbox()
             } else {
-                store.saveOutbox(space, apply(store.load(space).outbox))
+                updateStoredOutbox(space, ::apply)
             }
         }
     }
@@ -965,53 +1045,109 @@ class AutoBriefCore private constructor(
      * DEMO keeps labelled fictional data apart from the real logbook. Entering it needs the LIVE admin PIN
      * when one is set (a driver must not be able to hide real drives in the demo space); leaving it is
      * always allowed. Not while a trip is open: the drive would be split across both logbooks.
+     *
+     * Call it on the core's thread. The other space is read on the writing thread after what it still has to write (its
+     * files parsed and its chain re-hashed: seconds on a loaded head unit) while the core's thread stays free; the switch
+     * is made back there, and this returns once it is on the disk.
      */
-    fun setDemoMode(on: Boolean, pin: String?): SettingsResult {
+    suspend fun setDemoMode(on: Boolean, pin: String?): SettingsResult = spaceLock.withLock {
         if (on == demoMode) return SettingsResult.SAVED
         if (logbook.openTrip != null) return SettingsResult.TRIP_IN_PROGRESS
         if (on) checkAdminPin(pin).takeIf { it != SettingsResult.SAVED }?.let { return it }
         val target = if (on) Space.DEMO else Space.LIVE
-        store.setActiveSpace(target)
-        loadSpace(target)
+        val stored = readSpace(target)
+        if (logbook.openTrip != null) {
+            // a trip started while the other space was read: it is recorded in this one, which stays in use
+            synchronized(outboxLock) { stopEntering(target) }
+            return SettingsResult.TRIP_IN_PROGRESS
+        }
+        enter(stored)
+        writer.setActiveSpace(target)
+        writer.awaitWritten()
         log("SPACE ${target.name}")
-        return SettingsResult.SAVED
+        SettingsResult.SAVED
+    }
+
+    /** Space changes run one at a time: a second tap waits for the first to finish. */
+    private val spaceLock = Mutex()
+
+    /** [target] as stored, read on the writing thread after what it still has to write. */
+    private suspend fun readSpace(target: Space): StoredSpace {
+        val read = synchronized(outboxLock) {
+            entering = target
+            carried.clear()
+            writer.read { StoredSpace.read(it, target) }
+        }
+        try {
+            return read.await()
+        } catch (e: Throwable) {
+            synchronized(outboxLock) { stopEntering(target) }
+            throw e
+        }
+    }
+
+    /** No switch to [target] after all: changes to its stored queue are no longer carried. Under [outboxLock]. */
+    private fun stopEntering(target: Space) {
+        if (entering != target) return
+        entering = null
+        carried.clear()
     }
 
     /**
      * Replaces the DEMO space with the fictional sample history up to yesterday and the sample settings
-     * (fictional company, users, places). Refused outside the demo space.
+     * (fictional company, users, places). Refused outside the demo space. The year of trips and its chain are made and
+     * checked on [Background.io]; the space is then replaced in one step on the core's thread (what the old demo still had
+     * to write is written, then wiped), and this returns once the sample is on the disk.
      */
-    fun loadSampleHistory(webhookUrl: String = ""): Int {
+    suspend fun loadSampleHistory(webhookUrl: String = ""): Int = spaceLock.withLock {
         check(demoMode) { "sample history only loads in the demo space" }
         val today = TripLogbook.localDate(clock())
-        val (rows, sampleLedger) = SampleHistory.build(today)
-        store.wipe(Space.DEMO)
-        // the closing of past months is part of the sample, not something to resend now; an address comes with the mark
-        // of the sending copies still to queue, which entering the space starts (see [backfillLedger])
-        store.saveSettings(
-            Space.DEMO,
-            SampleHistory.settings(webhookUrl).copy(
-                lastMonthlyCloseYm = YearMonth.from(today).minusMonths(1).toString(),
-                ledgerBackfillThroughSeq = if (webhookUrl.isNotBlank()) sampleLedger.headSeq else 0,
-            ),
-        )
-        store.saveTrips(Space.DEMO, rows)
-        store.saveLedger(Space.DEMO, newChainId(), sampleLedger.all)
-        loadSpace(Space.DEMO)
-        log("DEMO_READY trips=${rows.size}")
-        return rows.size
+        val sample = withContext(background.io) { sampleSpace(today, webhookUrl) }
+        writer.wipe(Space.DEMO)
+        writer.saveLedger(Space.DEMO, sample.data.chainId, sample.data.ledger)
+        writer.saveTrips(Space.DEMO, sample.data.trips)
+        writer.saveSettings(Space.DEMO, sample.data.settings)
+        enter(sample)
+        writer.awaitWritten()
+        log("DEMO_READY trips=${sample.data.trips.size}")
+        sample.data.trips.size
     }
 
-    fun resetDemo() {
+    /** The sample year as the demo space holds it once loaded (see [loadSampleHistory]). */
+    private fun sampleSpace(today: LocalDate, webhookUrl: String): StoredSpace {
+        val (rows, sampleLedger) = SampleHistory.build(today)
+        // the closing of past months is part of the sample, not something to resend now; an address comes with the mark
+        // of the sending copies still to queue, which entering the space starts (see [backfillLedger])
+        val settings = SampleHistory.settings(webhookUrl).copy(
+            lastMonthlyCloseYm = YearMonth.from(today).minusMonths(1).toString(),
+            ledgerBackfillThroughSeq = if (webhookUrl.isNotBlank()) sampleLedger.headSeq else 0,
+        )
+        return StoredSpace.of(Space.DEMO, SpaceData(settings = settings, trips = rows, ledger = sampleLedger.all, chainId = newChainId()))
+    }
+
+    /** Empties the demo space (refused outside it); returns once that is on the disk. */
+    suspend fun resetDemo() = spaceLock.withLock {
         check(demoMode) { "only the demo space can be reset" }
-        store.wipe(Space.DEMO)
-        loadSpace(Space.DEMO)
+        writer.wipe(Space.DEMO)
+        enter(StoredSpace.of(Space.DEMO, SpaceData()))
+        writer.awaitWritten()
         log("DEMO_RESET")
+    }
+
+    /**
+     * Blocks until every save handed over so far is on the disk, at most [timeoutMs]; false when it was not. For the end of
+     * the process (AutoBriefApp); never on the writing thread.
+     */
+    fun flushWrites(timeoutMs: Long): Boolean = writer.flush(timeoutMs)
+
+    /** Runs [block] on the core's thread, in the core's own scope: it outlives the screen that started it. */
+    fun launch(block: suspend AutoBriefCore.() -> Unit) {
+        background.scope.launch { block() }
     }
 
     private fun writeSettings(new: AppSettings) {
         _settings.value = new
-        store.saveSettings(space, new)
+        writer.saveSettings(space, new)
     }
 
     // ---------------------------------------------------------------- summaries, tax, export
@@ -1308,6 +1444,9 @@ class AutoBriefCore private constructor(
         }
 
         const val APP_VERSION = "2.0.0"
+
+        /** The thread that writes the logbook's files on the car (see [Background.storeThread]). */
+        const val STORE_THREAD = "AutoBriefStore"
         const val VOICE_CLASSIFY_WINDOW_MS = 30 * 60_000L
         const val START_LOCATION_MAX_AGE_MS = 10 * 60_000L
         const val ARRIVAL_LOCATION_MAX_AGE_MS = 15_000L

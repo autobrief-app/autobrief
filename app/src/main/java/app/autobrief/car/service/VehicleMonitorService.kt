@@ -27,8 +27,6 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -83,9 +81,8 @@ class VehicleMonitorService : Service() {
         inputs.open(c)
         loops.start()
         scope.launch {
-            // new ledger entries reach the company endpoint within seconds, not at the next periodic round
-            core.outbox.map { list -> list.count { it.deliveredEpochMs == null } }
-                .distinctUntilChanged()
+            // new ledger entries reach the company endpoint within seconds of being written, not at the next periodic round
+            core.sendable
                 .debounce(FLUSH_DEBOUNCE_MS)
                 .collect { pending -> if (pending > 0) loops.requestFlush() }
         }
