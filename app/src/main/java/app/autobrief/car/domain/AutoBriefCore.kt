@@ -108,6 +108,12 @@ class AutoBriefCore private constructor(
         fun saveLedger(space: Space, chainId: String?, entries: List<LedgerEntry>)
         fun saveOutbox(space: Space, items: List<OutboxItem>)
         fun saveOpenTrip(space: Space, trip: OpenTripRecord?)
+
+        /**
+         * The admin PIN's miss count and lock, saved on the calling thread before the guess is checked (never through
+         * [StoreWriter]: a process killed right after a wrong guess must not lose it). [load] returns them in the settings.
+         */
+        fun saveAdminPin(space: Space, failures: Int, lockedUntilMs: Long)
         fun wipe(space: Space)
     }
 
@@ -940,14 +946,22 @@ class AutoBriefCore private constructor(
 
     /**
      * The one place an admin PIN is checked. No PIN at all is a request for one, not a wrong guess. Every fifth wrong
-     * PIN in a row locks entry for 5 minutes, doubling up to 80 minutes; the counters live in the settings file so a
-     * restart does not reset them. A PIN stored by an older version is re-hashed on its next correct entry.
+     * PIN in a row locks entry for 5 minutes, doubling up to 80 minutes; the counters are kept on the disk so a restart
+     * does not reset them. A PIN stored by an older version is re-hashed on its next correct entry.
+     *
+     * A guess is counted on the disk before it is checked, and a correct one clears the count on the disk before it opens
+     * anything (both written at once on this thread, see [savePinState]): killing the app right after a wrong guess cannot
+     * take the guess back. Storage that refuses the count refuses the check (PIN_LOCKED).
      */
     private fun checkAdminPin(pin: String?): SettingsResult {
         val s = _settings.value
         if (s.adminPinHash.isEmpty()) return SettingsResult.SAVED
         if (pinLockRemainingMs(s) > 0) return SettingsResult.PIN_LOCKED
         if (pin.isNullOrBlank()) return SettingsResult.PIN_REQUIRED
+        val failures = s.adminPinFailures + 1
+        val lockMs = if (failures % PIN_ATTEMPTS_BEFORE_LOCK == 0) pinLockLengthMs(failures) else 0L
+        val counted = s.copy(adminPinFailures = failures, adminPinLockedUntilMs = if (lockMs > 0) clock() + lockMs else s.adminPinLockedUntilMs)
+        if (!savePinState(counted)) return SettingsResult.PIN_LOCKED
         if (AdminPin.matches(pin, s.adminPinSalt, s.adminPinHash)) {
             var next = s.copy(adminPinFailures = 0, adminPinLockedUntilMs = 0)
             if (AdminPin.isLegacy(s.adminPinHash)) {
@@ -955,16 +969,29 @@ class AutoBriefCore private constructor(
                 next = next.copy(adminPinSalt = salt, adminPinHash = AdminPin.hash(pin, salt))
                 log("ADMIN_PIN_REHASHED")
             }
-            if (next != s) writeSettings(next)
+            // the guess stays counted until the cleared count is on the disk
+            if (!savePinState(next)) return SettingsResult.PIN_LOCKED
             pinLockUntilMono = null
             return SettingsResult.SAVED
         }
-        val failures = s.adminPinFailures + 1
-        val lockMs = if (failures % PIN_ATTEMPTS_BEFORE_LOCK == 0) pinLockLengthMs(failures) else 0L
         if (lockMs > 0) pinLockUntilMono = monotonic() + lockMs
-        writeSettings(s.copy(adminPinFailures = failures, adminPinLockedUntilMs = if (lockMs > 0) clock() + lockMs else s.adminPinLockedUntilMs))
         log("ADMIN_PIN_MISS count=$failures")
         return if (lockMs > 0) SettingsResult.PIN_LOCKED else SettingsResult.PIN_REQUIRED
+    }
+
+    /**
+     * [next]'s PIN miss count and lock, saved straight to the store on this thread (not through [writer], whose queue may
+     * hold seconds of bigger files), then the settings as usual; false when the store refused them (storage full or gone).
+     */
+    private fun savePinState(next: AppSettings): Boolean {
+        try {
+            store.saveAdminPin(space, next.adminPinFailures, next.adminPinLockedUntilMs)
+        } catch (e: Exception) {
+            log("ADMIN_PIN_NOT_SAVED error=${e::class.java.simpleName}")
+            return false
+        }
+        writeSettings(next)
+        return true
     }
 
     /**

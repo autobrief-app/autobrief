@@ -31,9 +31,15 @@ import java.util.Collections
  */
 open class MemoryStore(var active: Space = Space.LIVE) : AutoBriefCore.Store {
     val data = mutableMapOf(Space.LIVE to AutoBriefCore.SpaceData(), Space.DEMO to AutoBriefCore.SpaceData())
+
+    /** The admin PIN's miss count and lock per space, kept apart from the settings like admin_pin.json on the device. */
+    val pins = mutableMapOf<Space, Pair<Int, Long>>()
     @Synchronized override fun activeSpace() = active
     @Synchronized override fun setActiveSpace(space: Space) { active = space }
-    @Synchronized override fun load(space: Space) = data.getValue(space)
+    @Synchronized override fun load(space: Space): AutoBriefCore.SpaceData = data.getValue(space).let { d ->
+        pins[space]?.let { (failures, until) -> d.copy(settings = d.settings.copy(adminPinFailures = failures, adminPinLockedUntilMs = until)) } ?: d
+    }
+    @Synchronized override fun saveAdminPin(space: Space, failures: Int, lockedUntilMs: Long) { pins[space] = failures to lockedUntilMs }
     @Synchronized override fun saveSettings(space: Space, settings: AppSettings) { data[space] = data.getValue(space).copy(settings = settings) }
     @Synchronized override fun saveTrips(space: Space, trips: List<TripRecord>) { data[space] = data.getValue(space).copy(trips = trips) }
     @Synchronized override fun saveLedger(space: Space, chainId: String?, entries: List<LedgerEntry>) { data[space] = data.getValue(space).copy(chainId = chainId, ledger = entries) }
@@ -41,7 +47,10 @@ open class MemoryStore(var active: Space = Space.LIVE) : AutoBriefCore.Store {
     var outboxSaves = 0
     @Synchronized override fun saveOutbox(space: Space, items: List<OutboxItem>) { outboxSaves++; data[space] = data.getValue(space).copy(outbox = items) }
     @Synchronized override fun saveOpenTrip(space: Space, trip: OpenTripRecord?) { data[space] = data.getValue(space).copy(openTrip = trip) }
-    @Synchronized override fun wipe(space: Space) { data[space] = AutoBriefCore.SpaceData() }
+    @Synchronized override fun wipe(space: Space) {
+        data[space] = AutoBriefCore.SpaceData()
+        pins.remove(space)
+    }
 }
 
 /** [AutoBriefCore.handleGleo] from a test thread; with the inline background the reply is made before this returns. */

@@ -19,6 +19,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonTransformingSerializer
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Small JSON files in the app's private storage, one folder per data space (live/, demo/). Which space is
@@ -29,8 +30,15 @@ import java.io.FileOutputStream
  * three names, and nothing is ever deleted. Reading takes the file, else the temp file (the app died between
  * the two moves), else the backup; a damaged file is set aside, never replaced by defaults while a good copy
  * exists.
+ *
+ * Each file has its own lock: the admin PIN's count (admin_pin.json, saved on the main thread before a guess is
+ * checked) never waits for the store's thread rewriting a queue file of a megabyte.
  */
-class JsonFiles(private val root: File) : AutoBriefCore.Store {
+class JsonFiles(
+    private val root: File,
+    /** Called with a file's name once its lock is held, just before it is written (a test holds a write there). */
+    private val writing: (String) -> Unit = {},
+) : AutoBriefCore.Store {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val stateFile = File(root, "app_state.json")
 
@@ -47,6 +55,14 @@ class JsonFiles(private val root: File) : AutoBriefCore.Store {
             if (element is JsonArray) JsonObject(mapOf("entries" to element)) else element
     }
 
+    /** admin_pin.json: the PIN's miss count and lock, which win over the copies in settings.json (see [saveAdminPin]). */
+    @Serializable
+    private data class AdminPinFile(val failures: Int = 0, val lockedUntilMs: Long = 0)
+
+    private val locks = ConcurrentHashMap<String, Any>()
+
+    private fun lockOf(file: File): Any = locks.computeIfAbsent(file.path) { Any() }
+
     private fun dir(space: Space) = File(root, space.dir)
 
     override fun activeSpace(): Space = read(stateFile, AppState.serializer())?.space ?: Space.LIVE
@@ -56,8 +72,10 @@ class JsonFiles(private val root: File) : AutoBriefCore.Store {
     override fun load(space: Space): AutoBriefCore.SpaceData {
         val d = dir(space)
         val ledger = read(File(d, LEDGER), LedgerFileSerializer)
+        val settings = read(File(d, SETTINGS), AppSettings.serializer()) ?: AppSettings()
+        val pin = read(File(d, ADMIN_PIN), AdminPinFile.serializer())
         return AutoBriefCore.SpaceData(
-            settings = read(File(d, SETTINGS), AppSettings.serializer()) ?: AppSettings(),
+            settings = pin?.let { settings.copy(adminPinFailures = it.failures, adminPinLockedUntilMs = it.lockedUntilMs) } ?: settings,
             trips = read(File(d, TRIPS), ListSerializer(TripRecord.serializer())) ?: emptyList(),
             ledger = ledger?.entries ?: emptyList(),
             chainId = ledger?.chainId,
@@ -72,10 +90,17 @@ class JsonFiles(private val root: File) : AutoBriefCore.Store {
         write(File(dir(space), LEDGER), LedgerFileSerializer, LedgerFile(chainId, entries))
     override fun saveOutbox(space: Space, items: List<OutboxItem>) = write(File(dir(space), OUTBOX), ListSerializer(OutboxItem.serializer()), items)
     override fun saveOpenTrip(space: Space, trip: OpenTripRecord?) = write(File(dir(space), OPEN_TRIP), OpenTripRecord.serializer().nullable, trip)
+    override fun saveAdminPin(space: Space, failures: Int, lockedUntilMs: Long) =
+        write(File(dir(space), ADMIN_PIN), AdminPinFile.serializer(), AdminPinFile(failures, lockedUntilMs))
 
     override fun wipe(space: Space) {
         require(space == Space.DEMO) { "only the demo space can be wiped" }
-        dir(space).deleteRecursively()
+        val d = dir(space)
+        // every file of the space is held while it goes: a save to one of them waits, then lands in the empty space
+        fun under(files: List<String>) {
+            if (files.isEmpty()) d.deleteRecursively() else synchronized(lockOf(File(d, files.first()))) { under(files.drop(1)) }
+        }
+        under(FILES)
     }
 
     private fun tmpOf(file: File) = File(file.parentFile, file.name + ".tmp")
@@ -85,8 +110,7 @@ class JsonFiles(private val root: File) : AutoBriefCore.Store {
      * The file, else the temp file of a save the app died in, else the last good version. A damaged file is set aside
      * (renamed, for a look) instead of crashing every start of the app; null only when no copy is readable.
      */
-    @Synchronized
-    private fun <T> read(file: File, serializer: KSerializer<T>): T? {
+    private fun <T> read(file: File, serializer: KSerializer<T>): T? = synchronized(lockOf(file)) {
         for (candidate in listOf(file, tmpOf(file), backupOf(file))) {
             if (!candidate.exists()) continue
             val value = runCatching { json.decodeFromString(serializer, candidate.readText()) }
@@ -100,11 +124,11 @@ class JsonFiles(private val root: File) : AutoBriefCore.Store {
                 file.renameTo(aside)
             }
         }
-        return null
+        null
     }
 
-    @Synchronized
-    private fun <T> write(file: File, serializer: KSerializer<T>, value: T) {
+    private fun <T> write(file: File, serializer: KSerializer<T>, value: T): Unit = synchronized(lockOf(file)) {
+        writing(file.name)
         val text = json.encodeToString(serializer, value) // a value that cannot be written fails here, before any file
         file.parentFile?.mkdirs()
         val tmp = tmpOf(file)
@@ -127,5 +151,9 @@ class JsonFiles(private val root: File) : AutoBriefCore.Store {
         private const val LEDGER = "ledger.json"
         private const val OUTBOX = "outbox.json"
         private const val OPEN_TRIP = "open_trip.json"
+        private const val ADMIN_PIN = "admin_pin.json"
+
+        /** Every file of a space, in the order [wipe] takes their locks. */
+        private val FILES = listOf(SETTINGS, TRIPS, LEDGER, OUTBOX, OPEN_TRIP, ADMIN_PIN)
     }
 }

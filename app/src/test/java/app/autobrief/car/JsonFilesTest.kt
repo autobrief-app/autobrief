@@ -12,6 +12,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 /** The files on the car's storage survive a torn write, a crash between renames and a save that fails. */
 class JsonFilesTest {
@@ -21,6 +24,26 @@ class JsonFilesTest {
 
     @After fun clean() {
         root.deleteRecursively()
+    }
+
+    /**
+     * The admin PIN's count is saved on the main thread before a guess is checked: it must not wait for the store's thread
+     * rewriting another file (a queue of a megabyte takes seconds on a loaded car), and it wins over the settings' copy.
+     */
+    @Test fun thePinCountIsSavedWhileAnotherFileIsBeingWrittenAndWinsOverTheSettingsCopy() {
+        val held = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val files = JsonFiles(root) { name -> if (name == "outbox.json") { held.countDown(); release.await(10, TimeUnit.SECONDS) } }
+        files.saveSettings(Space.LIVE, AppSettings(adminPinFailures = 0))
+        val queue = thread { files.saveOutbox(Space.LIVE, emptyList()) }
+        assertTrue("the queue write is held", held.await(5, TimeUnit.SECONDS))
+        val started = System.nanoTime()
+        files.saveAdminPin(Space.LIVE, 3, 0)
+        val ms = (System.nanoTime() - started) / 1_000_000
+        release.countDown()
+        queue.join(5_000)
+        assertTrue("the PIN count waited $ms ms for the queue file", ms < 1_000)
+        assertEquals("the count wins over the settings' copy", 3, files.load(Space.LIVE).settings.adminPinFailures)
     }
 
     @Test fun aDamagedFileIsReadFromTheLastGoodVersionNotFromDefaults() {

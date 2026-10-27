@@ -227,7 +227,7 @@ class OrderedWritesTest {
         fun letGo() = gone.countDown()
 
         /** What is stored now, as a store of its own (the files a restart finds). */
-        fun copy(): MemoryStore = synchronized(this) { MemoryStore(active).also { it.data.putAll(data) } }
+        fun copy(): MemoryStore = synchronized(this) { MemoryStore(active).also { it.data.putAll(data); it.pins.putAll(pins) } }
 
         private fun write(file: String, detail: String) {
             hold?.let { latch ->
