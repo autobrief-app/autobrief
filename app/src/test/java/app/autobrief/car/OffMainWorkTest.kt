@@ -5,6 +5,7 @@ import app.autobrief.car.domain.AutoBriefCore.Space
 import app.autobrief.car.domain.AutoBriefCore.WorkbookRequest
 import app.autobrief.car.domain.GleoContract
 import app.autobrief.car.domain.TaxPeriods
+import app.autobrief.car.model.OutboxItem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -25,6 +26,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The core's slow work leaves its thread. A stand-in main thread ("core") owns the core; workbooks and the sending
@@ -61,8 +64,47 @@ class OffMainWorkTest {
         }
     }
 
-    private fun harness(day: LocalDate) = onCore {
-        Harness(startAt = Harness.at(day, 9, 0), background = background, onWrite = { writers += Thread.currentThread().name.substringBefore(" @") })
+    private fun harness(day: LocalDate, store: MemoryStore = MemoryStore()) = onCore {
+        Harness(
+            startAt = Harness.at(day, 9, 0),
+            background = background,
+            onWrite = { writers += Thread.currentThread().name.substringBefore(" @") },
+            store = store,
+        )
+    }
+
+    /**
+     * Records which thread writes the queue file and, once armed, holds a write from any thread but the core's at a gate:
+     * a whole-file write of a big queue (thousands of sending copies, a workbook in base64) takes seconds on a loaded car.
+     */
+    private class GatedQueueStore : MemoryStore() {
+        private val armed = AtomicBoolean(false)
+        private val gate = CountDownLatch(1)
+        @Volatile var held = false
+            private set
+        val queueWriters: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
+        fun arm() = armed.set(true)
+        fun release() = gate.countDown()
+
+        override fun saveOutbox(space: Space, items: List<OutboxItem>) {
+            val name = Thread.currentThread().name.substringBefore(" @")
+            queueWriters += name
+            if (armed.get() && name != "core") {
+                held = true
+                gate.await(30, TimeUnit.SECONDS)
+            }
+            super.saveOutbox(space, items)
+        }
+    }
+
+    /** Runs [block] on the core thread; taking longer than [ms] means it waited for a lock another thread held. */
+    private fun coreAnswers(what: String, ms: Long = 2_000, block: () -> Unit) {
+        try {
+            coreThread.submit(block).get(ms, TimeUnit.MILLISECONDS)
+        } catch (e: TimeoutException) {
+            fail("the core thread waited for a background thread's queue write: $what")
+        }
     }
 
     /** The demo space with the labelled sample year (485 rows, 969 ledger entries up to 2026-10-22). */
@@ -163,5 +205,53 @@ class OffMainWorkTest {
         assertTrue("queued in the demo space", h.store.load(Space.DEMO).outbox.any { it.kind == "archive" })
         assertTrue("not in the live queue", onCore { h.core.outbox.value }.none { it.kind == "archive" })
         assertTrue(h.files.keys.all { it.startsWith("demo/") })
+    }
+
+    @Test fun theSampleLedgersSendingCopiesAreQueuedOnTheCoreThread() {
+        val store = GatedQueueStore().also { it.arm() }
+        val h = harness(LocalDate.of(2026, 10, 23), store)
+        try {
+            onCore {
+                check(h.core.setDemoMode(true, null) == AutoBriefCore.SettingsResult.SAVED)
+                h.core.loadSampleHistory("https://receiver.example/hook") // 969 sending copies: the backfill
+            }
+            waitFor("the sample ledger queued, or its queue write held") {
+                store.held || onCore { h.core.outbox.value.size } == onCore { h.core.ledgerEntries.size }
+            }
+            coreAnswers("a trip recorded while the sample ledger is queued") { h.drive(90_000.0, 4.0, null, null) }
+        } finally {
+            store.release()
+        }
+        waitFor("the whole ledger in the outbox") { onCore { h.core.outboxSnapshot() }.items.size == onCore { h.core.ledgerEntries.size } }
+        assertEquals("the queue file is written on the core thread only", setOf("core"), store.queueWriters.toSet())
+    }
+
+    @Test fun aTripRecordedWhileTheMonthClosesWorkbookIsQueuedDoesNotWaitForTheQueueWrite() {
+        val store = GatedQueueStore()
+        val h = harness(LocalDate.of(2026, 9, 30), store)
+        onCore {
+            h.drive(1_000.0, 12.0, null, null) // a September trip
+            check(h.core.saveSettings(h.core.settings.value.copy(archiveWebhookUrl = "https://receiver.example/hook"), null, null) == AutoBriefCore.SettingsResult.SAVED)
+        }
+        waitFor("the backfill in the outbox") { onCore { h.core.outboxSnapshot() }.items.size == onCore { h.core.ledgerEntries.size } }
+        store.arm()
+        try {
+            onCore {
+                h.now = Harness.at(LocalDate.of(2026, 10, 1), 9, 0)
+                h.core.tick() // October: September's workbook is made and queued for the address
+            }
+            waitFor("September's workbook queued, or its queue write held") {
+                store.held || onCore { h.core.outbox.value.any { it.kind == "archive" } }
+            }
+            coreAnswers("a trip recorded while the month's workbook is queued") {
+                h.advance(60_000)
+                h.drive(1_012.0, 3.0, null, null)
+            }
+        } finally {
+            store.release()
+        }
+        waitFor("September closed") { onCore { h.core.settings.value.lastMonthlyCloseYm } == "2026-09" }
+        assertTrue(onCore { h.core.outbox.value.any { it.kind == "archive" } })
+        assertEquals("the queue file is written on the core thread only", setOf("core"), store.queueWriters.toSet())
     }
 }

@@ -122,9 +122,9 @@ class AutoBriefCore(
      * Where the work too slow for the core's own thread runs. The core's state belongs to the thread that calls it (the
      * main thread on the car), and [scope] runs on that thread too: it starts the work the core begins by itself (the
      * month close, a workbook the report screen asked for, the sending copies of a whole ledger). That work is built on
-     * [work] and written on [io] from a snapshot taken on the core's thread, and what follows it (a notice, the month
-     * marked closed) happens back there. A business-year workbook made on the main thread kept it busy for 5.8 s on a
-     * loaded two-core emulator: Android closed the app as not responding (5 s input limit).
+     * [work] and its files written on [io] from a snapshot taken on the core's thread, and what follows it (queuing its
+     * sending copies, a notice, the month marked closed) happens back there. A business-year workbook made on the main
+     * thread kept it busy for 5.8 s on a loaded two-core emulator: Android closed the app as not responding (5 s limit).
      */
     class Background(val scope: CoroutineScope, val work: CoroutineContext, val io: CoroutineContext) {
         companion object {
@@ -700,8 +700,9 @@ class AutoBriefCore(
 
     /**
      * One update and ONE write for a whole batch: the outbox file is rewritten whole, so a write per item is quadratic.
-     * Safe on any thread. Items made for a space no longer in use (a workbook that finished after a switch) go to that
-     * space's stored queue.
+     * On the core's thread only: the lock is held through that write, and work queued from the I/O thread made the core's
+     * thread wait for it (a trip closing during a month close's workbook waited for the whole queue file). Items made for
+     * a space no longer in use (a workbook that finished after a switch) go to that space's stored queue.
      */
     private fun enqueueAll(items: List<Queued>, into: Space? = null) {
         if (items.isEmpty()) return
@@ -882,8 +883,7 @@ class AutoBriefCore(
 
     /**
      * Queues the ledger (its newest [BACKFILL_MAX] entries) for an address set for the first time. Thousands of sending
-     * copies and a rewrite of the whole outbox: they are built on [Background.work] and queued on [Background.io], from
-     * the entries as they are now. Until they are in the outbox the sender holds back this space's ledger entries, so an
+     * copies: they are built on [Background.work] from the entries as they are now, and queued back on the core's thread. Until they are in the outbox the sender holds back this space's ledger entries, so an
      * entry recorded meanwhile (queued at once, as always) cannot reach the receiver before the older ones.
      */
     private fun backfillLedger() {
@@ -897,7 +897,7 @@ class AutoBriefCore(
                 val items = withContext(background.work) {
                     entries.map { e -> Queued(ledgerKey(e, into, chain), LEDGER_KIND, ledgerPayload(e, into, chain, car), e.seq) }
                 }
-                withContext(background.io) { enqueueAll(items, into) }
+                enqueueAll(items, into) // back on the core's thread, which owns the queue (see [enqueueAll])
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -999,8 +999,8 @@ class AutoBriefCore(
 
     /**
      * Writes the period workbook (form + ledger sheet) and queues it for the sending address when one is set. Call it on
-     * the core's thread: the logbook is read there, the workbook is built on [Background.work] and written and queued on
-     * [Background.io], so that thread stays free meanwhile.
+     * the core's thread: the logbook is read there, the workbook is built on [Background.work] and its files are written
+     * on [Background.io], so that thread stays free meanwhile; its sending copy is queued back on the core's thread.
      */
     suspend fun exportWorkbook(period: ClosedRange<LocalDate>, businessYear: Boolean, send: Boolean = true): ExportResult =
         workbookLock.withLock { writeWorkbook(workbookInput(), period, businessYear, send) }
@@ -1011,13 +1011,12 @@ class AutoBriefCore(
 
     private suspend fun writeWorkbook(input: WorkbookInput, period: ClosedRange<LocalDate>, businessYear: Boolean, send: Boolean): ExportResult {
         val made = withContext(background.work) { buildWorkbook(input, period, businessYear, send) }
-        return withContext(background.io) {
-            val savedTo = files.write(input.space, made.name, made.xlsx)
-            files.write(input.space, made.name.removeSuffix(".xlsx") + ".csv", made.csv)
-            made.archive?.let { enqueueAll(listOf(it), input.space) }
-            log("EXPORT file=${made.name} rows=${made.rows} queued=${made.archive != null}")
-            ExportResult(made.name, savedTo, made.archive != null, made.rows)
+        val savedTo = withContext(background.io) {
+            files.write(input.space, made.name, made.xlsx).also { files.write(input.space, made.name.removeSuffix(".xlsx") + ".csv", made.csv) }
         }
+        made.archive?.let { enqueueAll(listOf(it), input.space) } // back on the core's thread, which owns the queue
+        log("EXPORT file=${made.name} rows=${made.rows} queued=${made.archive != null}")
+        return ExportResult(made.name, savedTo, made.archive != null, made.rows)
     }
 
     private fun buildWorkbook(i: WorkbookInput, period: ClosedRange<LocalDate>, businessYear: Boolean, send: Boolean): MadeWorkbook {

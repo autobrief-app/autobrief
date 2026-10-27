@@ -62,9 +62,11 @@ class Harness(
     detailLogs: Boolean = false,
     background: AutoBriefCore.Background = AutoBriefCore.Background.inline(),
     onWrite: (String) -> Unit = {},
+    /** A test that watches the store's writes passes its own (a subclass that records or holds them). */
+    store: MemoryStore = MemoryStore(),
 ) {
     @Volatile var now = startAt
-    val store = MemoryStore().also { it.saveSettings(Space.LIVE, settings) }
+    val store: MemoryStore = store.also { it.saveSettings(Space.LIVE, settings) }
     val logs: MutableList<String> = Collections.synchronizedList(mutableListOf())
     val files: MutableMap<String, ByteArray> = Collections.synchronizedMap(linkedMapOf())
     var locationRequests = 0
