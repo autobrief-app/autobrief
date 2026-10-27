@@ -2274,7 +2274,7 @@ class SessionKeeperTests(unittest.TestCase):
         self.assertTrue(any("종료 신호" in line for line in self.said))
 
 
-class WriteRetryTests(unittest.TestCase):
+class ConsoleRetryTests(unittest.TestCase):
     def console(self, outcomes):
         self.sleeps, self.notes = [], []
         self.request = RecordingRequest(script=outcomes)
@@ -2351,11 +2351,28 @@ class WriteRetryTests(unittest.TestCase):
         self.assertTrue(caught.exception.dropped)
         self.assertIsNone(caught.exception.status)
 
-    def test_reads_are_never_retried(self):
-        console = self.console([busy_503(), "{}"])
+    def test_a_read_is_retried_like_a_write(self):
+        # e2e run 40466387103: "GET .../vehicle/state -> Remote end closed connection without response" ended the run
+        # with exit 3 after the first scenario had passed (a write in the same state was resent)
+        dropped = se.ConsoleError("Remote end closed connection without response", dropped=True)
+        console = self.console([dropped, busy_503(), '{"gear": {"bridge_ready": true}}'])
+        self.assertEqual(console.state(), {"gear": {"bridge_ready": True}})
+        self.assertEqual(self.request.calls, [("GET", BASE + "/vehicle/state")] * 3)
+        self.assertEqual(self.sleeps, [1.0, 1.0])
+        self.assertIn("응답 없이 끊겼습니다", self.notes[0])
+
+    def test_a_read_that_keeps_dropping_or_fails_otherwise_is_raised(self):
+        dropped = se.ConsoleError("Remote end closed connection without response", dropped=True)
+        console = self.console([dropped] * (director.REQUEST_RETRIES + 1))
         with self.assertRaises(se.ConsoleError):
             console.state()
-        self.assertEqual(self.request.calls, [("GET", BASE + "/vehicle/state")])
+        self.assertEqual(len(self.request.calls), director.REQUEST_RETRIES + 1)
+        for error in (se.ConsoleError("connection refused"), se.ConsoleError("server error", status=500)):
+            with self.subTest(error=str(error)):
+                console = self.console([error, "{}"])
+                with self.assertRaises(se.ConsoleError):
+                    console.state()
+                self.assertEqual(len(self.request.calls), 1)  # an unreachable console is reported at once
 
     def test_every_write_endpoint_retries(self):
         writers = (

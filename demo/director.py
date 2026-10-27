@@ -77,8 +77,8 @@ GEAR_CONFIRM_TIMEOUT_S = 10.0
 SESSION_CLIENT = "autobrief-director"  # our client id on POST /browser/session
 SESSION_INTERVAL_S = 1.0  # the console page itself beats once a second
 BRIDGE_WAIT_S = 300.0  # gear.bridge_ready is false for a while after boot
-WRITE_RETRIES = 5  # a write answered 503 is retried this many times
-WRITE_RETRY_SLEEP_S = 1.0
+REQUEST_RETRIES = 5  # a console request answered 503, or dropped without an answer, is retried this many times
+REQUEST_RETRY_SLEEP_S = 1.0
 
 EXIT_OK = 0
 EXIT_VERIFY_FAILED = 1
@@ -517,12 +517,13 @@ def bridge_ready(state: dict) -> bool:
 
 
 class Console:
-    """The Vehicle Virtual Console write API: every write is `PUT <endpoint>?<query>`, empty body.
+    """The Vehicle Virtual Console API: every write is `PUT <endpoint>?<query>`, empty body; the state is `GET`.
 
-    A write answered 503 (emulator_inactive: no live browser session yet, or the vehicle data
+    A request answered 503 (emulator_inactive: no live browser session yet, or the vehicle data
     bridge is still coming up), or whose connection the console closed without an answer, is
-    retried WRITE_RETRIES times, WRITE_RETRY_SLEEP_S apart (every write sets a value, so sending
-    it again is safe); any other failure is raised at once. Reads are never retried.
+    retried REQUEST_RETRIES times, REQUEST_RETRY_SLEEP_S apart: a write sets a value and a read
+    changes nothing, so sending either again is safe (e2e run 40466387103 ended on a dropped
+    GET /vehicle/state). Any other failure is raised at once.
     """
 
     def __init__(self, base_url: str, request=console_request, sleep=None, notify=None):
@@ -533,12 +534,14 @@ class Console:
 
     def _put(self, endpoint: str, params: Sequence[Tuple[str, object]]) -> str:
         query = urllib.parse.urlencode(list(params))
-        url = "%s%s?%s" % (self.base, endpoint, query)
-        for attempt in range(WRITE_RETRIES + 1):
+        return self._send("PUT", "%s%s?%s" % (self.base, endpoint, query))
+
+    def _send(self, method: str, url: str) -> str:
+        for attempt in range(REQUEST_RETRIES + 1):
             try:
-                return self._request("PUT", url)
+                return self._request(method, url)
             except ConsoleError as exc:
-                if not (exc.status == 503 or exc.dropped) or attempt == WRITE_RETRIES:
+                if not (exc.status == 503 or exc.dropped) or attempt == REQUEST_RETRIES:
                     raise
                 if self._notify:
                     what = (
@@ -547,12 +550,12 @@ class Console:
                         else "(503 %s) 콘솔이 아직 준비되지 않았습니다" % exc.body[:60]
                     )
                     self._notify(
-                        "  %s. 재시도 %d/%d" % (what, attempt + 1, WRITE_RETRIES)
+                        "  %s. 재시도 %d/%d" % (what, attempt + 1, REQUEST_RETRIES)
                     )
-                self._sleep(WRITE_RETRY_SLEEP_S)
+                self._sleep(REQUEST_RETRY_SLEEP_S)
 
     def state(self) -> dict:
-        text = self._request("GET", self.base + "/vehicle/state")
+        text = self._send("GET", self.base + "/vehicle/state")
         try:
             data = json.loads(text)
         except ValueError:
