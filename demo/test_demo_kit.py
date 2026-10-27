@@ -25,14 +25,17 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 from urllib.parse import parse_qsl, urlsplit
+from xml.sax.saxutils import quoteattr
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import director  # noqa: E402
+import rehearsal  # noqa: E402
 import setup_emulator as se  # noqa: E402
 
 MIB = 1 << 20
@@ -3881,3 +3884,677 @@ class OfficialImageReuseTests(unittest.TestCase):
         )
         self.assertIn("image.sysdir.1=system-images/android-34/pleos_car_emulator/x86_64/", text)
         self.assertNotIn("pleos-connect", text)
+
+
+# --------------------------------------------------------------------------- rehearsal.py (the whole 7-minute script)
+
+REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SAMPLE_XLSX = os.path.join(REPO_DIR, "docs", "samples", "운행기록부_2026_사업연도_가상예시.xlsx")
+SAMPLE_SUMMARY = os.path.join(REPO_DIR, "docs", "samples", "sample_summary.json")
+
+
+def ui_node(text="", bounds=(0, 0, 0, 0), clickable=False, enabled=True, scrollable=False, kids=(), action=None):
+    """One <node> as the platform dumper writes it (plus `action`, which only the fake app reads)."""
+    attrs = [
+        ("index", "0"), ("text", text), ("resource-id", ""), ("class", "android.view.View"),
+        ("package", "app.autobrief.car"), ("content-desc", ""), ("clickable", str(clickable).lower()),
+        ("enabled", str(enabled).lower()), ("scrollable", str(scrollable).lower()),
+        ("bounds", "[%d,%d][%d,%d]" % bounds),
+    ]
+    if action:
+        attrs.append(("action", action))
+    return "<node %s>%s</node>" % (" ".join("%s=%s" % (k, quoteattr(v)) for k, v in attrs), "".join(kids))
+
+
+def ui_text(text, bounds):
+    return ui_node(text, bounds)
+
+
+def ui_button(label, bounds, action=None, sub=None, enabled=True):
+    """A Compose button: the clickable node has no text of its own; its Txt children carry the words."""
+    left, top, right, bottom = bounds
+    kids = [ui_text(label, (left + 10, top + 10, right - 10, top + (bottom - top) // 2))]
+    if sub:
+        kids.append(ui_text(sub, (left + 10, top + (bottom - top) // 2, right - 10, bottom - 10)))
+    return ui_node("", bounds, clickable=True, enabled=enabled, kids=kids, action=action)
+
+
+def ui_windows(*windows, cluster=()):
+    """A `uiautomator dump --windows` file: the windows of display 0 in z-order, then a cluster display."""
+    out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><displays><display id="0">']
+    for i, nodes in enumerate(windows):
+        out.append(
+            '<window index="%d" title="w%d" bounds="[0,0][2560,1440]" active="false" focused="false" layer="%d" '
+            'type="TYPE_APPLICATION"><hierarchy rotation="0">%s</hierarchy></window>' % (i, i, i, "".join(nodes))
+        )
+    out.append("</display>")
+    if cluster:
+        out.append('<display id="1"><window index="0" title="cluster" bounds="[0,0][1920,720]"><hierarchy rotation="0">'
+                   "%s</hierarchy></window></display>" % "".join(cluster))
+    out.append("</displays>")
+    return "".join(out)
+
+
+class FakeCarApp:
+    """The app's screens as `uiautomator dump --windows` XML, changed by `input tap` the way the real app changes them.
+
+    Like the device: the launcher's car panel is window 0 and the app window 1; a trip's detail is its own window on
+    top; the dialog shows its reason chips and 저장 only after a swipe (below the fold); a disabled 저장 ignores taps;
+    the home has a second '비업무' (the pending card) under the ask card and the cluster display shows '비업무' too."""
+
+    CODE = "AD90-6338"
+    CONSOLE_LOG = "I AutoBriefLog: "
+
+    def __init__(self, out_dir):
+        self.out_dir = out_dir
+        self.screen = "ask"
+        self.dialog = False
+        self.scrolled = False
+        self.picked = None
+        self.reason = None
+        self.amended = False
+        self.saved_message = False
+        self.taps, self.swipes, self.shells, self.actions = [], 0, [], []
+        self.log = []
+        self.pull_refused = False
+        self.form = ("9,636.0 km", "9,117.0 km", "94.6%")
+        self.dumped = None
+        self.clickables = []
+
+    # --- the adb surface rehearsal.py uses -------------------------------------------------
+    def shell(self, *args, timeout=None):
+        line = " ".join(args)
+        self.shells.append(line)
+        if args[:2] == ("uiautomator", "dump"):
+            self.dumped = self.render()
+            return "UI hierchary dumped to: %s\n" % args[-1]
+        if args[0] == "rm":
+            self.dumped = None
+            return ""
+        if args[0] == "cat":
+            if self.dumped is None:
+                raise se.AdbError("cat: %s: No such file or directory" % args[1])
+            return self.dumped
+        if args[:2] == ("input", "tap"):
+            self.tap(int(args[2]), int(args[3]))
+            return ""
+        if args[:2] == ("input", "swipe"):
+            self.swipes += 1
+            if self.dialog:
+                self.scrolled = True
+            return ""
+        if args[:2] == ("am", "broadcast"):
+            self.broadcast = list(args)
+            self.log.append(self.CONSOLE_LOG + "GLEO_REPLY function=GET_LOGBOOK_STATUS status=success "
+                            "message=This month: 39 trips, 735 km, business use 93.5 percent. Every trip has a purpose.")
+            return "Broadcasting: Intent { act=app.autobrief.car.debug.DEMO }\nBroadcast completed: result=0\n"
+        if line == "am get-current-user":
+            return "10\n"
+        if args[:2] == ("date", "+%s.%N"):
+            return "1793010211.250000000\n"
+        return ""
+
+    def activities(self):
+        return "  topResumedActivity=ActivityRecord{1 u10 app.autobrief.car/.ui.MainActivity t1}\n"
+
+    def logcat_dump(self, tag="AutoBriefLog", level="I"):
+        return "".join(line + "\n" for line in self.log if tag == "AutoBriefLog")
+
+    def screencap_png(self):
+        return PNG
+
+    def run(self, *args, timeout=None, check=True):
+        if args[0] == "pull":
+            if self.pull_refused:
+                raise se.AdbError("adb pull 실패 (rc=1): remote object '%s' does not exist" % args[1])
+            with open(SAMPLE_XLSX, "rb") as src, open(args[2], "wb") as dst:
+                dst.write(src.read())
+            return 0, b"", b""
+        if args[:2] == ("exec-out", "run-as"):
+            with open(SAMPLE_XLSX, "rb") as src:
+                return 0, src.read(), b""
+        raise AssertionError("unexpected adb %r" % (args,))
+
+    # --- taps -----------------------------------------------------------------------------
+    def tap(self, x, y):
+        self.taps.append((x, y))
+        hits = [(w, b, a, e) for w, b, a, e in self.clickables if b[0] <= x <= b[2] and b[1] <= y <= b[3]]
+        if not hits:
+            self.actions.append("miss")
+            return
+        window, _, action, enabled = max(hits, key=lambda h: (h[0], -((h[1][2] - h[1][0]) * (h[1][3] - h[1][1]))))
+        if not enabled:
+            self.actions.append("disabled:" + action)
+            return
+        self.actions.append(action)
+        kind, _, value = action.partition(":")
+        if kind == "ask":
+            self.screen = "ready"
+            self.log.append(self.CONSOLE_LOG + "TRIP_CLASSIFIED id=TRIP-P purpose=%s by=화면" % value)
+        elif kind == "tab":
+            self.screen, self.dialog = value, False
+        elif kind == "open":
+            self.dialog, self.scrolled = True, False
+        elif kind == "pick":
+            self.picked = value
+        elif kind == "reason":
+            self.reason = value
+        elif kind == "save":
+            self.dialog, self.amended = False, True
+            self.log.append(self.CONSOLE_LOG + "TRIP_CLASSIFIED id=TRIP-C purpose=%s by=화면 amended" % self.picked)
+        elif kind == "excel":
+            self.saved_message = True
+            self.log.append(self.CONSOLE_LOG + "EXPORT file=운행기록부_2026-01-01_2026-12-31.xlsx rows=487 queued=false")
+
+    # --- screens --------------------------------------------------------------------------
+    def render(self):
+        self.clickables = []
+        launcher = [ui_node("", (0, 90, 852, 1300), kids=[ui_text("도어 잠김", (330, 1190, 520, 1240))])]
+        windows = [launcher, [self.app_window()]]
+        if self.dialog:
+            windows.append([self.dialog_window()])
+        for index, nodes in enumerate(windows):
+            self.collect(index, "".join(nodes))
+        return ui_windows(*windows, cluster=[ui_text("비업무", (100, 100, 300, 160))])
+
+    def collect(self, window, xml_text):
+        for node in ET.fromstring("<w>%s</w>" % xml_text).iter("node"):
+            if node.get("action"):
+                bounds = rehearsal.parse_bounds(node.get("bounds"))
+                self.clickables.append((window, bounds, node.get("action"), node.get("enabled") == "true"))
+
+    def app_window(self):
+        kids = [
+            ui_button("오늘", (860, 200, 1010, 300), "tab:home"),
+            ui_button("운행 목록", (860, 320, 1010, 420), "tab:trips"),
+            ui_button("운행기록부", (860, 440, 1010, 540), "tab:report"),
+            ui_button("설정", (860, 560, 1010, 660), "tab:settings"),
+            ui_text("원장 정상 · 검증 코드 %s" % self.CODE, (1600, 100, 2100, 140)),
+        ]
+        kids += getattr(self, "screen_" + {"ask": "ask", "ready": "home", "home": "home"}.get(self.screen, self.screen))()
+        return ui_node("", (856, 90, 2560, 1300), kids=kids)
+
+    def screen_ask(self):
+        return [
+            ui_text("방금 끝난 운행", (1100, 180, 1300, 220)),
+            ui_text("7.0 km 운행했습니다", (1100, 240, 1700, 320)),
+            ui_text("이번 운행의 목적을 골라 주세요", (1100, 380, 1700, 420)),
+            ui_button("출퇴근", (1100, 440, 1300, 540), "ask:COMMUTE", "⑧ 출·퇴근용"),
+            ui_button("일반 업무", (1320, 440, 1520, 540), "ask:BUSINESS", "⑨ 일반 업무용"),
+            ui_button("비업무", (1540, 440, 1740, 540), "ask:PERSONAL", "개인 용무"),
+            ui_text("목적을 정해야 할 운행 1건", (1100, 700, 1600, 740)),
+            ui_button("비업무", (1540, 760, 1740, 836), "pending:PERSONAL", "개인 용무"),
+        ]
+
+    def screen_home(self):
+        return [
+            ui_text("시동을 걸고 기어를 D로 바꾸면 기록이 시작됩니다", (1100, 300, 2000, 360)),
+            ui_text("마지막 운행", (1100, 500, 1250, 540)),
+            ui_text("비업무", (1270, 500, 1370, 540)),
+            ui_text("10-27 19:25 · 7.0 km", (1390, 500, 1700, 540)),
+            ui_text("10월 업무사용비율", (1900, 200, 2200, 240)),
+        ]
+
+    def screen_trips(self):
+        commute = ["비업무", "화면 · 수정됨"] if self.amended else ["출퇴근", "자동(집→회사)"]
+        rows = [
+            ("45,229.0 → 45,236.0", ["비업무", "화면"], 300, None),
+            ("45,218.0 → 45,229.0", ["일반 업무", "자동(거래처 도착: 가상상사)"], 410, None),
+            ("45,200.0 → 45,218.0", commute, 520, "open:commute"),
+            ("45,190.0 → 45,200.0", ["비업무", "음성"], 630, None),
+        ]
+        nodes = []
+        for odometers, (chip, mark), top, action in rows:
+            nodes.append(ui_node("", (1020, top, 2540, top + 100), clickable=True, action=action or "open:other", kids=[
+                ui_text(odometers, (1300, top + 10, 1620, top + 50)),
+                ui_text(chip, (1820, top + 30, 1940, top + 70)),
+                ui_text(mark, (2000, top + 50, 2400, top + 90)),
+            ]))
+        return [ui_text("2026년 10월", (1100, 120, 1400, 180)), ui_node("", (1020, 280, 2540, 1300), scrollable=True, kids=nodes)]
+
+    def dialog_window(self):
+        shift = 500 if self.scrolled else 0
+        kids = []
+
+        def at(top):  # a row's top after the scroll; None when it is outside the panel (the dumper leaves it out)
+            moved = top - shift
+            return moved if 150 <= moved and moved + 40 <= 1250 else None
+
+        for text, left, right, top, action in (
+            ("10-27(화) 08:00~08:30", 1150, 1700, 170, None),
+            ("목적 고치기", 1150, 1400, 520, None),
+            ("고치는 이유 (기록 원장에 남습니다)", 1150, 1700, 1180, None),
+        ):
+            if at(top) is not None:
+                kids.append(ui_text(text, (left, at(top), right, at(top) + 40)))
+        if at(580) is not None:
+            for label, left, right in (("출퇴근", 1150, 1300), ("일반 업무", 1320, 1500), ("비업무", 1520, 1680)):
+                kids.append(ui_button(label, (left, at(580), right, at(580) + 76), "pick:" + {
+                    "출퇴근": "COMMUTE", "일반 업무": "BUSINESS", "비업무": "PERSONAL"}[label]))
+        if at(1240) is not None:
+            for label, left, right in (("경유지가 있었어요", 1150, 1400), (rehearsal.CORRECTION_REASON, 1420, 1700)):
+                kids.append(ui_button(label, (left, at(1240), right, at(1240) + 76), "reason:" + label))
+        if at(1450) is not None:
+            enabled = self.picked is not None and self.reason is not None
+            kids.append(ui_button("저장", (1150, at(1450), 1500, at(1450) + 96), "save", enabled=enabled))
+        if at(170) is not None:
+            kids.append(ui_button("닫기", (2200, at(170), 2380, at(170) + 76), "close"))
+        return ui_node("", (1100, 150, 2400, 1250), scrollable=True, kids=kids)
+
+    def screen_report(self):
+        eleven, twelve, thirteen = self.form
+        nodes = [
+            ui_button("사업연도", (1700, 120, 1860, 196), "year"),
+            ui_button("지난 사업연도", (1880, 120, 2100, 196), "last-year"),
+            ui_text("업무용승용차 운행기록부", (1100, 230, 1600, 280)),
+            ui_text("⑪ 사업연도 총주행 거리", (1120, 400, 1500, 440)), ui_text(eleven, (1700, 400, 1900, 440)),
+            ui_text("⑫ 사업연도 업무용 사용거리", (1120, 460, 1520, 500)), ui_text(twelve, (1700, 460, 1900, 500)),
+            ui_text("⑧ 출·퇴근용", (1150, 520, 1400, 560)), ui_text("6,330.0 km", (1700, 520, 1900, 560)),
+            ui_text("⑬ 업무사용비율 (⑫/⑪)", (1120, 640, 1500, 690)), ui_text(thirteen, (1700, 640, 1900, 690)),
+            ui_button("엑셀 만들기", (1120, 800, 1500, 896), "excel", "국세청 서식 + 검증 기록"),
+        ]
+        if self.saved_message:
+            nodes.append(ui_text("차량에 저장했습니다: 운행기록부_2026-01-01_2026-12-31.xlsx (487행)", (1120, 910, 2000, 950)))
+        return nodes
+
+
+def console_state(trips=(), status="정상", alerts=(), last_hash="AD90-6338", entries=972):
+    rows = [{"id": tid, "startOdometerKm": so, "endOdometerKm": eo, "purpose": purpose, "purposeLabel": purpose,
+             "amended": amended, "amendReason": reason} for tid, so, eo, purpose, amended, reason in trips]
+    return {"cars": [{"key": "00가 0000#chain", "label": "시연", "chainStatus": status, "entries": entries,
+                      "lastSeq": entries, "lastHashShort": last_hash, "recentTrips": rows, "alerts": list(alerts)}]}
+
+
+class RehearsalUiDumpTests(unittest.TestCase):
+    def test_a_windows_dump_keeps_windows_displays_parents_and_bounds(self):
+        xml_text = ui_windows([ui_text("도어 잠김", (0, 0, 10, 10))],
+                              [ui_button("비업무", (1540, 440, 1740, 540), sub="개인 용무")],
+                              cluster=[ui_text("비업무", (1, 1, 50, 50))])
+        nodes = rehearsal.parse_ui_dump(xml_text)
+        self.assertEqual([(n.window, n.display) for n in nodes], [(0, 0), (1, 0), (1, 0), (1, 0), (2, 1)])
+        button, label = nodes[1], nodes[2]
+        self.assertTrue(button.clickable)
+        self.assertEqual(label.parent, button.index)
+        self.assertEqual(rehearsal.clickable_ancestor(nodes, label), button)
+        self.assertEqual(button.center, (1640, 490))
+        # the cluster display is never a tap target: `input tap` goes to display 0
+        self.assertEqual([n.window for n in rehearsal.find_all(nodes, "비업무")], [1])
+
+    def test_a_single_window_dump_parses_too(self):
+        xml_text = '<?xml version="1.0"?><hierarchy rotation="0">%s</hierarchy>' % ui_text("오늘", (1, 2, 3, 4))
+        nodes = rehearsal.parse_ui_dump(xml_text)
+        self.assertEqual([(n.text, n.window, n.bounds) for n in nodes], [("오늘", 0, (1, 2, 3, 4))])
+
+    def test_a_broken_dump_is_an_error_not_an_empty_screen(self):
+        with self.assertRaises(rehearsal.UiDumpError):
+            rehearsal.parse_ui_dump("<hierarchy><node")
+
+    def test_text_matching_ignores_word_joiners_and_reads_merged_labels(self):
+        node = rehearsal.UiNode(0, None, "비⁠업⁠무, 개인 용무", "", (0, 0, 9, 9))
+        self.assertTrue(rehearsal.has_text(node, "비업무"))
+        self.assertTrue(rehearsal.has_text(node, "개인 용무"))
+        self.assertFalse(rehearsal.has_text(node, "업무"))
+        self.assertTrue(rehearsal.has_text(node, "업무", exact=False))
+
+    def test_below_an_anchor_means_its_window_from_its_top_nearest_first(self):
+        nodes = rehearsal.parse_ui_dump(ui_windows(
+            [ui_text("목적 고치기", (0, 0, 1, 1)), ui_text("비업무", (1600, 545, 1700, 585))],  # behind the dialog
+            [ui_text("목적 고치기", (1150, 520, 1400, 560)), ui_text("비업무", (1520, 300, 1680, 340)),
+             ui_text("비업무", (1520, 900, 1680, 976)), ui_text("비업무", (1520, 580, 1680, 656))],
+        ))
+        anchor = rehearsal.find_all(nodes, "목적 고치기")[1]
+        found = rehearsal.find_all(nodes, "비업무", below=anchor)
+        self.assertEqual([(n.window, n.bounds[1]) for n in found], [(1, 580), (1, 900)])
+
+    def test_rows_and_labels_are_read_from_the_tree(self):
+        app = FakeCarApp(None)
+        app.screen = "trips"
+        nodes = rehearsal.parse_ui_dump(app.render())
+        row = rehearsal.trip_row(nodes, "45,200.0 → 45,218.0")
+        self.assertIn("출퇴근", rehearsal.subtree_texts(nodes, row))
+        self.assertIsNone(rehearsal.amended_row(nodes, "45,200.0 → 45,218.0", "비업무"))
+        app.amended = True
+        nodes = rehearsal.parse_ui_dump(app.render())
+        self.assertEqual(rehearsal.amended_row(nodes, "45,200.0 → 45,218.0", "비업무"),
+                         ["45,200.0 → 45,218.0", "비업무", "화면 · 수정됨"])
+        self.assertEqual(rehearsal.app_ledger_code(nodes), "AD90-6338")
+        self.assertEqual(rehearsal.scroll_container(nodes, rehearsal.find_all(nodes, "45,200.0 → 45,218.0")[0]).bounds,
+                         (1020, 280, 2540, 1300))
+
+    def test_a_row_counts_as_amended_only_with_the_mark(self):
+        row = lambda chip, mark: rehearsal.parse_ui_dump(ui_windows([ui_node("", (1020, 500, 2540, 600), clickable=True, kids=[
+            ui_text("45,200.0 → 45,218.0", (1300, 510, 1620, 550)), ui_text(chip, (1820, 530, 1940, 570)),
+            ui_text(mark, (2000, 550, 2400, 590))])]))
+        self.assertIsNone(rehearsal.amended_row(row("비업무", "화면"), "45,200.0 → 45,218.0", "비업무"))
+        self.assertIsNone(rehearsal.amended_row(row("출퇴근", "화면 · 수정됨"), "45,200.0 → 45,218.0", "비업무"))
+        self.assertIsNotNone(rehearsal.amended_row(row("비업무", "화면 · 수정됨"), "45,200.0 → 45,218.0", "비업무"))
+
+    def test_report_form_values_and_the_saved_line(self):
+        app = FakeCarApp(None)
+        app.screen = "report"
+        nodes = rehearsal.parse_ui_dump(app.render())
+        values = rehearsal.form_values(nodes)
+        self.assertEqual({k: v["value"] for k, v in values.items()}, {"⑪": 9636.0, "⑫": 9117.0, "⑬": 94.6})
+        self.assertIsNone(rehearsal.saved_workbook(nodes))
+        app.saved_message = True
+        self.assertEqual(rehearsal.saved_workbook(rehearsal.parse_ui_dump(app.render())),
+                         ("운행기록부_2026-01-01_2026-12-31.xlsx", 487))
+
+    def test_home_last_trip_line(self):
+        app = FakeCarApp(None)
+        app.screen = "ready"
+        nodes = rehearsal.parse_ui_dump(app.render())
+        self.assertEqual(rehearsal.last_trip_line(nodes, "비업무", "7.0 km"), ["비업무", "10-27 19:25 · 7.0 km"])
+        self.assertIsNone(rehearsal.last_trip_line(nodes, "출퇴근", "7.0 km"))
+        self.assertIsNone(rehearsal.last_trip_line(nodes, "비업무", "17.0 km"))
+
+
+class RehearsalUiDriverTests(QuietTestCase):
+    def make(self, app=None):
+        self.tmp = tempfile.mkdtemp()
+        self.app = app or FakeCarApp(self.tmp)
+        self.clock = FakeClock()
+        self.events = []
+        return rehearsal.UiDriver(self.app, self.tmp, now=self.clock.now, sleep=self.clock.sleep, record=self.events.append)
+
+    def test_tap_presses_the_clickable_parent_of_the_text_under_the_anchor(self):
+        ui = self.make()
+        target = ui.tap_text("pick", "비업무", below="이번 운행의 목적을 골라 주세요")
+        self.assertEqual(self.app.actions, ["ask:PERSONAL"])  # not the pending card's 비업무 further down
+        self.assertEqual(target.center, (1640, 490))
+        self.assertIn("누름: '비업무'", self.events)
+
+    def test_a_text_on_two_buttons_without_an_anchor_fails_instead_of_guessing(self):
+        ui = self.make()
+        with self.assertRaises(rehearsal.StepFailed) as caught:
+            ui.tap_text("pick", "비업무")
+        self.assertEqual(self.app.actions, [])
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, caught.exception.evidence["screenshot"])))
+        with open(os.path.join(self.tmp, caught.exception.evidence["dump"]), encoding="utf-8") as handle:
+            self.assertIn("이번 운행의 목적을 골라 주세요", handle.read())
+
+    def test_a_state_that_never_appears_fails_loudly_after_the_wait(self):
+        ui = self.make()
+        with self.assertRaises(rehearsal.StepFailed) as caught:
+            ui.wait_text("dialog", "목적 고치기", timeout=5)
+        self.assertIn("목적 고치기", str(caught.exception))
+        self.assertGreaterEqual(self.clock.now(), 5)
+        self.assertTrue(caught.exception.evidence["screenshot"].startswith("FAIL_01_dialog"))
+
+    def test_a_disabled_button_is_waited_for_and_a_missing_one_scrolled_to(self):
+        ui = self.make()
+        self.app.screen, self.app.dialog = "trips", True
+        with self.assertRaises(rehearsal.StepFailed):
+            ui.tap_text("save", "저장", below="고치는 이유 (기록 원장에 남습니다)", scroll=True, timeout=3)
+        self.assertEqual(self.app.swipes, 1)  # scrolled once to find it, then waited (never tapped while disabled)
+        self.assertEqual(self.app.actions, [])
+
+    def test_a_failed_dump_is_retried(self):
+        ui = self.make()
+        calls = {"n": 0}
+        real = self.app.shell
+
+        def flaky(*args, timeout=None):
+            if args[:2] == ("uiautomator", "dump"):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return "ERROR: could not get idle state.\n"  # nothing written: the cat below fails
+            return real(*args, timeout=timeout)
+
+        self.app.shell = flaky
+        self.assertTrue(ui.dump())
+        self.assertEqual(calls["n"], 2)
+
+
+class RehearsalHelperTests(QuietTestCase):
+    def test_device_epoch(self):
+        self.assertEqual(rehearsal.parse_device_epoch("1793010211.250000000\n"), 1793010211.25)
+        self.assertEqual(rehearsal.parse_device_epoch("1793010211"), 1793010211.0)
+        with self.assertRaises(ValueError):
+            rehearsal.parse_device_epoch("1793010211.N")
+
+    def test_clock_sample(self):
+        walls = iter([100.0, 100.2])
+        sample = rehearsal.measure_clock(FakeCarApp(None), wall=lambda: next(walls))
+        self.assertAlmostEqual(sample["host"], 100.1)
+        self.assertAlmostEqual(sample["offset"], 1793010211.25 - 100.1)
+        self.assertAlmostEqual(sample["rtt"], 0.2)
+
+    def test_gleo_relay_goes_to_the_drivers_user(self):
+        args = rehearsal.gleo_broadcast_args(10)
+        self.assertEqual(args[:4], ["am", "broadcast", "--user", "10"])
+        self.assertIn("app.autobrief.car.debug.DEMO", args)
+        self.assertEqual(args[-6:], ["--es", "function", "GET_LOGBOOK_STATUS", "--es", "params", '{"period":"THIS_MONTH"}'])
+        line = ("10-27 19:40:01.000 10054 10054 I AutoBriefLog: GLEO_REPLY function=GET_LOGBOOK_STATUS "
+                "status=success message=This month: 39 trips, 735 km, business use 93.5 percent.")
+        reply = rehearsal.gleo_replies("noise\n" + line + "\n")[0]
+        self.assertEqual((reply["function"], reply["status"]), ("GET_LOGBOOK_STATUS", "success"))
+        self.assertTrue(reply["message"].startswith("This month: 39 trips"))
+
+    def test_export_dir_names_the_users_storage(self):
+        self.assertEqual(rehearsal.export_dir(10),
+                         "/storage/emulated/10/Android/data/app.autobrief.car/files/exports/demo")
+
+    def test_the_sample_workbook_totals_match_the_sample_summary(self):
+        book = rehearsal.read_xlsx_totals(SAMPLE_XLSX)
+        with open(SAMPLE_SUMMARY, encoding="utf-8") as handle:
+            summary = json.load(handle)
+        self.assertEqual(book["⑪"]["value"], summary["year_total_km"])
+        self.assertEqual(book["⑫"]["value"], summary["year_business_use_km"])
+        self.assertEqual("%.1f" % (book["⑬"]["value"] * 100), summary["year_ratio_pct"])
+        self.assertEqual((book["⑪"]["cell"], book["⑫"]["cell"], book["⑬"]["cell"]), ("D497", "G497", "I497"))
+
+    def screen(self, eleven=9636.0, twelve=9117.0, thirteen=94.6):
+        return {"⑪": {"text": "%s km" % eleven, "value": eleven}, "⑫": {"text": "%s km" % twelve, "value": twelve},
+                "⑬": {"text": "%s%%" % thirteen, "value": thirteen}}
+
+    def test_compare_totals_agrees_and_disagrees(self):
+        book = rehearsal.read_xlsx_totals(SAMPLE_XLSX)
+        self.assertEqual(rehearsal.compare_totals(self.screen(), book), [])
+        problems = rehearsal.compare_totals(self.screen(eleven=9700.0), book)
+        self.assertEqual(len(problems), 1)
+        self.assertTrue(problems[0].startswith("⑪"))
+        broken = {k: dict(v) for k, v in book.items()}
+        broken["⑬"]["value"] = 0.5
+        self.assertTrue(any("⑫/⑪" in p for p in rehearsal.compare_totals(self.screen(thirteen=50.0), broken)))
+
+    def test_a_workbook_without_the_totals_is_a_failure(self):
+        path = os.path.join(tempfile.mkdtemp(), "empty.xlsx")
+        with zipfile.ZipFile(path, "w") as book:
+            book.writestr("xl/worksheets/sheet1.xml", '<worksheet xmlns="http://schemas.openxmlformats.org/'
+                          'spreadsheetml/2006/main"><sheetData/></worksheet>')
+        with self.assertRaises(rehearsal.StepFailed):
+            rehearsal.read_xlsx_totals(path)
+
+    def test_console_readers(self):
+        state = console_state([("T1", 45200.0, 45218.0, "PERSONAL", True, "개인 용무를 겸했어요")])
+        self.assertIsNotNone(rehearsal.find_console_trip(state, 45200, 45218, "PERSONAL", amended=True))
+        self.assertIsNone(rehearsal.find_console_trip(state, 45200, 45218, "COMMUTE"))
+        self.assertIsNone(rehearsal.find_console_trip(state, 45200, 45218, "PERSONAL", amended=False))
+        self.assertEqual(rehearsal.ready_chain(state, "AD90-6338")["entries"], 972)
+        self.assertIsNone(rehearsal.ready_chain(state, "0000-0000"))
+        alert = {"text": rehearsal.TAMPER_ALERT % 975, "level": "bad", "seq": 975, "tripId": "T1"}
+        flagged = console_state([("T1", 45229.0, 45236.0, "PERSONAL", False, "")], status="변조 의심", alerts=[alert])
+        self.assertEqual(rehearsal.tamper_flag(flagged, 975)["row"]["id"], "T1")
+        self.assertIsNone(rehearsal.tamper_flag(flagged, 974))
+        self.assertIsNone(rehearsal.tamper_flag(state, 975))
+        self.assertEqual(rehearsal.parse_forge_seq("위조 기록을 보냈습니다: 순번 975, 개인 운행을 업무로"), 975)
+
+    def test_timeline_file_is_rewritten_on_every_change(self):
+        path = os.path.join(tempfile.mkdtemp(), "scenes.json")
+        walls = iter(float(t) for t in range(100, 200))
+        timeline = rehearsal.Timeline(path, wall=lambda: next(walls))
+        timeline.begin(rehearsal.SCENES[6])
+        timeline.event("Gleo 요청을 디버그 신호로 재현")
+        with open(path, encoding="utf-8") as handle:
+            mid = json.load(handle)
+        self.assertEqual(mid["scenes"][0]["events"][0]["text"], "Gleo 요청을 디버그 신호로 재현")
+        self.assertIsNone(mid["scenes"][0]["ok"])
+        timeline.end(True, "ok", {"reply": "x"})
+        timeline.console_shot(150.0, "console_07_gleo.png", 7)
+        timeline.finish()
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+        scene = data["scenes"][0]
+        self.assertEqual((scene["number"], scene["ok"], scene["start"] < scene["end"]), (7, True, True))
+        self.assertIn("Gleo 요청을 디버그 신호로 재현", scene["caption"])
+        self.assertEqual(data["result"], {"passed": 1, "total": 7, "played": 1})
+        self.assertEqual(data["console_shots"][0]["file"], "console_07_gleo.png")
+
+    def test_every_scene_has_a_caption_and_the_voice_scene_says_it_is_not_speech(self):
+        self.assertEqual([s.number for s in rehearsal.SCENES], list(range(1, 8)))
+        self.assertEqual([s.key for s in rehearsal.SCENES][:3], director.scenario_keys())
+        self.assertIn("Gleo 요청을 디버그 신호로 재현", rehearsal.SCENES[6].caption)
+        self.assertIn("실제 음성 아님", rehearsal.SCENES[6].caption)
+
+    def test_console_camera(self):
+        tmp = tempfile.mkdtemp()
+        timeline = rehearsal.Timeline(os.path.join(tmp, "scenes.json"), wall=lambda: 42.0)
+        commands = []
+
+        def chrome(cmd, **kwargs):
+            commands.append(cmd)
+            target = [a for a in cmd if a.startswith("--screenshot=")][0].split("=", 1)[1]
+            with open(target, "wb") as handle:
+                handle.write(PNG)
+            return mock.Mock(returncode=0, stderr=b"")
+
+        camera = rehearsal.ConsoleCamera("google-chrome", "http://127.0.0.1:8787", tmp, timeline, run=chrome,
+                                         wall=lambda: 42.0)
+        self.assertEqual(camera.shot("console_01_commute.png", 1), "console_01_commute.png")
+        self.assertIn("--headless=new", commands[0])
+        self.assertEqual(commands[0][-1], "http://127.0.0.1:8787/")
+        self.assertEqual(timeline.data["console_shots"], [{"t": 42.0, "file": "console_01_commute.png", "scene": 1}])
+        self.assertIsNone(rehearsal.ConsoleCamera(None, "http://x", tmp, timeline).shot("a.png", 1))
+
+
+class RehearsalSceneTests(QuietTestCase):
+    """The scenes against the fake app: the taps they make, the files they write and what they verify."""
+
+    def make(self, state=None, forge_out="위조 기록을 보냈습니다: 순번 975, 개인 운행을 업무로 바꾼 내용 (HTTP 200)\n"):
+        self.tmp = tempfile.mkdtemp()
+        self.app = FakeCarApp(self.tmp)
+        self.clock = FakeClock()
+        self.state = state or console_state()
+        self.forge_calls = []
+
+        def run(cmd, **kwargs):
+            self.forge_calls.append(cmd)
+            return mock.Mock(returncode=0, stdout=forge_out.encode("utf-8"))
+
+        self.timeline = rehearsal.Timeline(os.path.join(self.tmp, "scenes.json"), wall=lambda: 1000.0 + self.clock.now())
+        ui = rehearsal.UiDriver(self.app, self.tmp, now=self.clock.now, sleep=self.clock.sleep, record=self.timeline.event)
+        fleet = rehearsal.Fleet("http://fleet", "/fleet-data", self.tmp, fetch=lambda url: json.dumps(self.state),
+                                run=run, now=self.clock.now, sleep=self.clock.sleep)
+        camera = rehearsal.ConsoleCamera(None, "http://fleet", self.tmp, self.timeline)
+        self.rehearsal = rehearsal.Rehearsal(self.app, ui, fleet, camera, self.timeline, None, 10, self.tmp,
+                                             say_fn=lambda line: None, sleep=self.clock.sleep, now=self.clock.now,
+                                             wall=lambda: 1000.0 + self.clock.now())
+        return self.rehearsal
+
+    def test_personal_scene_answers_the_ask_card_on_screen(self):
+        r = self.make(console_state([("TRIP-P", 45229.0, 45236.0, "PERSONAL", False, "")]))
+        r.drive = lambda key: director.TripClosed("TRIP-P", 45229.0, 45236.0, 7.0, "UNCLASSIFIED", "TRIP_CLOSED id=TRIP-P")
+        evidence = r.scene_personal()
+        self.assertEqual(self.app.actions, ["ask:PERSONAL"])
+        self.assertEqual(evidence["home"], ["비업무", "10-27 19:25 · 7.0 km"])
+        self.assertTrue(evidence["log"].endswith("TRIP_CLASSIFIED id=TRIP-P purpose=PERSONAL by=화면"))
+
+    def test_correction_scene_opens_the_row_picks_purpose_and_reason_then_saves(self):
+        r = self.make(console_state([("TRIP-C", 45200.0, 45218.0, "PERSONAL", True, "개인 용무를 겸했어요")]))
+        r.trips["commute"] = director.TripClosed("TRIP-C", 45200.0, 45218.0, 18.0, "COMMUTE", "TRIP_CLOSED id=TRIP-C")
+        self.app.screen = "home"
+        evidence = r.scene_correction()
+        self.assertEqual(self.app.actions,
+                         ["tab:trips", "open:commute", "pick:PERSONAL", "reason:" + rehearsal.CORRECTION_REASON, "save"])
+        self.assertEqual(self.app.swipes, 1)  # the reason chips were below the fold
+        self.assertIn("화면 · 수정됨", evidence["row"])
+        self.assertTrue(evidence["log"].endswith("by=화면 amended"))
+
+    def test_correction_scene_fails_when_the_console_lacks_the_reason(self):
+        r = self.make(console_state([("TRIP-C", 45200.0, 45218.0, "PERSONAL", True, "기타 정정")]))
+        self.app.screen = "home"
+        with self.assertRaises(rehearsal.StepFailed):
+            r.scene_correction()
+
+    def test_tamper_scene_runs_forge_against_the_console_and_reads_the_flag(self):
+        alert = {"text": rehearsal.TAMPER_ALERT % 975, "level": "bad", "seq": 975, "tripId": "TRIP-P"}
+        r = self.make(console_state([("TRIP-P", 45229.0, 45236.0, "PERSONAL", False, "")], status="변조 의심",
+                                    alerts=[alert]))
+        r.trips["personal"] = director.TripClosed("TRIP-P", 45229.0, 45236.0, 7.0, "UNCLASSIFIED", "x")
+        evidence = r.scene_tamper()
+        self.assertEqual(self.forge_calls[0][1:], [rehearsal.FORGE_SCRIPT, "--console", "http://fleet", "--data",
+                                                   "/fleet-data"])
+        self.assertTrue(evidence["forged_scene3_trip"])
+        self.assertEqual(evidence["console"]["alert"]["seq"], 975)
+
+    def test_tamper_scene_fails_when_the_company_copy_changed(self):
+        alert = {"text": rehearsal.TAMPER_ALERT % 975, "level": "bad", "seq": 975, "tripId": "TRIP-P"}
+        r = self.make(console_state([("TRIP-P", 45229.0, 45236.0, "BUSINESS", False, "")], status="변조 의심",
+                                    alerts=[alert]))
+        with self.assertRaises(rehearsal.StepFailed):
+            r.scene_tamper()
+
+    def test_export_scene_reads_the_form_pulls_the_workbook_and_checks_it(self):
+        r = self.make()
+        self.app.screen = "home"
+        evidence = r.scene_export()
+        self.assertEqual(self.app.actions, ["tab:report", "year", "excel"])
+        self.assertEqual(evidence["pulled_with"], "adb pull")
+        self.assertEqual(evidence["xlsx"]["⑪"]["value"], 9636.0)
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "운행기록부_2026-01-01_2026-12-31.xlsx")))
+
+    def test_export_scene_reads_with_run_as_when_the_shell_may_not(self):
+        r = self.make()
+        self.app.screen, self.app.pull_refused = "home", True
+        self.assertEqual(r.scene_export()["pulled_with"], "run-as")
+
+    def test_export_scene_fails_when_the_workbook_and_the_screen_differ(self):
+        r = self.make()
+        self.app.screen, self.app.form = "home", ("9,700.0 km", "9,117.0 km", "94.6%")
+        with self.assertRaises(rehearsal.StepFailed) as caught:
+            r.scene_export()
+        self.assertIn("⑪", str(caught.exception))
+        self.assertEqual(caught.exception.evidence["pulled_with"], "adb pull")
+
+    def test_gleo_scene_sends_the_debug_relay_and_keeps_the_reply(self):
+        r = self.make()
+        self.app.screen = "trips"
+        evidence = r.scene_gleo()
+        self.assertEqual(self.app.actions, ["tab:home"])
+        self.assertIn("cmd", self.app.broadcast)
+        self.assertEqual(evidence["reply"]["status"], "success")
+        with open(os.path.join(self.tmp, "gleo_reply.txt"), encoding="utf-8") as handle:
+            self.assertIn("GLEO_REPLY function=GET_LOGBOOK_STATUS status=success", handle.read())
+
+    def test_prepare_waits_until_the_console_shows_the_apps_code(self):
+        r = self.make(console_state(last_hash="1111-2222", entries=577))
+        r.fleet.fetch = lambda url, seen=[]: (seen.append(1), json.dumps(
+            console_state(last_hash="AD90-6338" if len(seen) > 3 else "1111-2222")))[1]
+        ready = r.prepare()
+        self.assertEqual((ready["code"], ready["entries"]), ("AD90-6338", 972))
+        self.assertGreater(ready["waited_s"], 0)
+
+    def test_a_failed_scene_is_recorded_with_a_screenshot_and_the_next_one_still_plays(self):
+        r = self.make()
+        self.app.screen = "home"
+
+        def broken():
+            raise rehearsal.StepFailed("관리자 화면에 나타나지 않았습니다", {"console_state": "x.json"})
+
+        r.scene_commute = broken
+        r.scene_client = lambda: {"summary": "ok"}
+        self.assertEqual(r.run(rehearsal.SCENES[:2]), [False, True])
+        first, second = self.timeline.data["scenes"]
+        self.assertFalse(first["ok"])
+        self.assertEqual(first["evidence"]["console_state"], "x.json")
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, first["evidence"]["screenshot"])))
+        self.assertTrue(second["ok"])
+        self.assertEqual(len(self.timeline.data["clock"]), 2)  # one device-clock sample per scene
+
+    def test_cli_needs_the_output_and_the_fleet_data(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                rehearsal.build_parser().parse_args(["--out", "x"])
+        args = rehearsal.build_parser().parse_args(["--out", "x", "--fleet-data", "d", "--chrome", "google-chrome"])
+        self.assertEqual((args.fleet_url, args.km_interval), ("http://127.0.0.1:8787", director.DEFAULT_KM_INTERVAL))

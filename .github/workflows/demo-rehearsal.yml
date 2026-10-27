@@ -1,0 +1,170 @@
+# Full rehearsal of the 7-minute contest demo (docs/DEMO.md) on the official Pleos Connect v2.1.0 image.
+#
+# Same machine setup as emulator-e2e.yml (KVM, debug APK, fleet console on :8787, demo sample with the webhook), then
+# demo/rehearsal.py plays all seven scenes with real taps found in `uiautomator dump`: 출근, 거래처, 처음 가는 곳 (tap
+# 비업무), 정정 (trips list, reason chip, 저장), 위변조 (tools/fleet-console/forge_demo.py against the console),
+# 운행기록부 (엑셀 만들기, pull, ⑪⑫⑬ check) and the Gleo request through the debug relay (labelled as a reproduction,
+# never as speech). The emulator screen is recorded in 180 s segments and headless Chrome captures the console at every
+# scene; the artifact holds both plus scenes.json, which a local compositor turns into the rehearsal video.
+#
+# Run by hand only (Actions > demo-rehearsal > Run workflow, or the workflow_dispatch API): it never runs on push.
+# Pushing or editing a file under .github/workflows/ needs a token with the `workflow` scope.
+
+name: demo-rehearsal
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: demo-rehearsal
+  cancel-in-progress: false
+
+jobs:
+  rehearsal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    env:
+      PYTHONUNBUFFERED: "1"
+      OUT: rehearsal-out
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Free disk space (never the Android SDK)
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:?}/CodeQL"
+          df -h /
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+          # without KVM the image boots only to a black screen (the car service never starts), so stop early
+          test -r /dev/kvm && test -w /dev/kvm || { echo "no usable /dev/kvm on this runner"; exit 1; }
+
+      - name: Show runner resources and the browser
+        run: |
+          nproc
+          free -g
+          df -h /
+          ls -l /dev/kvm
+          google-chrome --version || echo "no google-chrome: the console screenshots will be missing"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Point Gradle at the Android SDK
+        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - name: Install the Android emulator and platform-tools
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install emulator platform-tools
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+
+      - name: Cache the Pleos system image zip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/autobrief-pleos
+          key: pleos-x86_64-b4f858d5bcc6c71506d7edfc872bcb9e5a11acaa
+
+      - name: Build the debug APK
+        # the debug build carries the demo hooks (sample load, the Gleo relay); the release APK has none
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Start the fleet console
+        run: |
+          mkdir -p /tmp/fleet
+          nohup python3 tools/fleet-console/fleet_console.py --port 8787 --data /tmp/fleet > /tmp/fleet-console.log 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8787/api/state > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "the fleet console did not answer on :8787" >&2
+          cat /tmp/fleet-console.log >&2
+          exit 1
+
+      - name: Start the logcat capture
+        run: |
+          mkdir -p "$OUT"
+          setsid nohup bash -c 'while true; do adb wait-for-device logcat -v time; sleep 1; done' \
+            > "$OUT/logcat-all.txt" 2>&1 < /dev/null &
+          echo $! > /tmp/logcat-all.pid
+          setsid nohup bash -c 'while true; do adb wait-for-device logcat -v time -s AutoBriefLog:V AutoBriefVehicle:V AutoBriefNavi:V ActivityManager:I ActivityTaskManager:I; sleep 1; done' \
+            > "$OUT/logcat-autobrief.txt" 2>&1 < /dev/null &
+          echo $! > /tmp/logcat-autobrief.pid
+
+      - name: Boot the emulator and install the app
+        run: >
+          python3 demo/setup_emulator.py --headless --no-browser
+          --apk app/build/outputs/apk/debug/app-debug.apk
+          --demo-sample --webhook http://10.0.2.2:8787/hook
+          --out "$OUT"
+
+      - name: Start screen recording
+        # 1280x720 (the 2560x1440 display is above what the software encoder takes). screenrecord stops after 180 s,
+        # so segments follow one another until the collect step stops them; each file carries its frames' device
+        # times (winscope metadata), which the compositor uses to place the captions. segments.txt keeps host times.
+        run: |
+          rm -f /tmp/stop-recording
+          nohup bash -c 'for i in $(seq 1 16); do echo "$i start $(date +%s.%N)" >> "$OUT/segments.txt"; adb shell screenrecord --size 1280x720 --time-limit 180 /sdcard/rehearsal-$i.mp4; echo "$i end $(date +%s.%N)" >> "$OUT/segments.txt"; [ -f /tmp/stop-recording ] && break; done' \
+            > "$OUT/screenrecord.log" 2>&1 < /dev/null &
+          for _ in $(seq 1 60); do
+            if adb shell pidof screenrecord > /dev/null 2>&1; then
+              sleep 3
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "screenrecord did not start" >&2
+          exit 1
+
+      - name: Rehearse the whole script
+        run: >
+          python3 demo/rehearsal.py --out "$OUT"
+          --fleet-url http://127.0.0.1:8787 --fleet-data /tmp/fleet
+          --chrome "$(command -v google-chrome || echo google-chrome)"
+
+      - name: Collect the recording, logcat and console state
+        if: always()
+        run: |
+          mkdir -p "$OUT"
+          touch /tmp/stop-recording
+          adb shell pkill -SIGINT screenrecord || echo "screenrecord was not running"
+          sleep 3
+          for i in $(seq 1 16); do
+            adb pull "/sdcard/rehearsal-$i.mp4" "$OUT/rehearsal-$i.mp4" 2>/dev/null || break
+          done
+          ls "$OUT"/rehearsal-*.mp4 > /dev/null 2>&1 || echo "no screen recording to pull"
+          adb logcat -d > "$OUT/logcat.txt" || echo "no logcat to dump"
+          {
+            echo "## am get-current-user"; adb shell am get-current-user
+            echo "## dumpsys activity activities (resumed)"; adb shell dumpsys activity activities | grep -E "ResumedActivity|topResumed"
+            echo "## app processes"; adb shell ps -A -o USER,PID,NAME | grep -E "autobrief|vehicle" || true
+            echo "## exports (user 10)"; adb shell ls -l /storage/emulated/10/Android/data/app.autobrief.car/files/exports/demo/ || true
+            echo "## console /vehicle/state"; curl -s http://127.0.0.1:8088/vehicle/state; echo
+          } > "$OUT/device-state-end.txt" 2>&1 || echo "device state incomplete"
+          curl -s http://127.0.0.1:8787/api/state > "$OUT/fleet_state.json" || echo "no fleet state"
+          cp /tmp/fleet-console.log "$OUT/fleet-console.log" || echo "no fleet console log"
+          for name in logcat-all logcat-autobrief; do
+            if [ -f "/tmp/$name.pid" ]; then kill -- "-$(cat "/tmp/$name.pid")" 2>/dev/null || true; fi
+          done
+
+      - name: Upload rehearsal-out
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rehearsal-out
+          path: rehearsal-out
+          retention-days: 14
+          if-no-files-found: warn

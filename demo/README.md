@@ -8,8 +8,10 @@
 |---|---|
 | `setup_emulator.py` | 이미지 내려받기(이어받기, 체크섬 확인), 설치, AVD 만들기, 콜드 부팅, APK 설치, 가상 콘솔 연결 |
 | `director.py` | 가상 콘솔 HTTP로 기어, 계기판, 속도, 좌석을 바꾸며 시나리오 재생. `--verify`로 앱 로그까지 확인 |
+| `rehearsal.py` | `docs/DEMO.md` 7분 대본 전체(장면 1~7)를 무인으로 리허설: 실제 탭(화면 글자로 찾음), 장면별 PASS/FAIL, 영상용 `scenes.json` |
 | `test_demo_kit.py` | 장치 없이 도는 단위 시험 (`python3 -m unittest discover -s demo -v`) |
 | `../.github/workflows/emulator-e2e.yml` | 같은 흐름을 GitHub 서버(KVM)에서 화면 없이 자동 시험하고 화면을 녹화 |
+| `../.github/workflows/demo-rehearsal.yml` | `rehearsal.py`로 7분 대본 전체를 GitHub 서버(KVM)에서 리허설하고 녹화 (손으로 실행할 때만) |
 
 ## 1. 준비물
 
@@ -187,6 +189,14 @@ python3 demo/setup_emulator.py --demo-sample --no-browser
 `logcat.txt`(끝에 남은 로그), `preflight.txt`, `device-state-end.txt`, `fleet_state.json`, `emulator.log`, `fleet-console.log`, 장면별 스크린샷. 14일 보관됩니다.
 이미지(약 4 GB)는 캐시에 보관되어 두 번째부터 다시 받지 않습니다.
 참고: 워크플로 파일을 올리려면 GitHub 토큰에 `workflow` 권한(scope)이 있어야 합니다.
+
+`.github/workflows/demo-rehearsal.yml`은 Actions 탭의 `Run workflow`(또는 workflow_dispatch API)로만 돕니다(push로는 돌지 않음).
+같은 준비 뒤 `rehearsal.py`가 대본 7장면을 실제 탭으로 재생합니다: 출근, 거래처, 처음 가는 곳('비업무' 누름), 정정(운행 목록, 이유 칩, 저장),
+위변조(`forge_demo.py`), 운행기록부(엑셀 만들기, 사용자 10 저장소에서 가져와 ⑪⑫⑬ 확인), Gleo 요청(디버그 신호로 재현, 음성 아님).
+시작 전에 관리자 화면이 앱의 원장 전체를 받을 때까지(검증 코드가 같아질 때까지) 기다립니다. 장면마다 화면 상태를 기다리고,
+나타나지 않으면 그 장면을 실패로 남기며 스크린샷과 화면 구조(`FAIL_*.png`, `FAIL_*.xml`)를 저장한 뒤 다음 장면으로 갑니다.
+결과물(`rehearsal-out`): `scenes.json`(장면 시각, 자막, 판정, 기기 시계), `rehearsal-*.mp4`(180초 조각), `console_*.png`(관리자 화면),
+가져온 엑셀, `gleo_reply.txt`, 로그. 노트북에서 직접 돌릴 때: `python3 demo/rehearsal.py --out rehearsal-out --fleet-data ./fleet-data`.
 
 ## 9. 장치 없이 시험하기
 
