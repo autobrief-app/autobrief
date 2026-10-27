@@ -5,20 +5,26 @@ Scenes 1-3 drive the car with director.Director (the plans of `director.py --sce
 used the way the presenter uses it: real taps on elements found in `uiautomator dump` by their visible text (no fixed
 coordinates). Every step waits for the screen state, log line or console record it expects; one that does not appear
 fails its scene loudly (a screenshot and the UI dump are saved) and the rehearsal goes on with the next scene. Nothing in
-the app is changed for the rehearsal. Scene 7 sends Gleo's request through the debug APK's relay (adb cannot hold Gleo's
+the app is changed for the rehearsal. Scene 6 sends the workbook with '지금 보내기' and downloads it from the console's
+운행기록부 보관함, the way the presenter gets it onto the laptop (adb may not read the driver user's app storage: on the
+Pleos image both `adb pull` and `run-as` are refused). With --pause-recording-flag (CI), the screen recording is
+stopped while the app writes the workbook, which it does on its main thread: on a 2-core runner the software video
+encoder starved that thread past Android's 5 s input limit, and car UI mode closes an app without a dialog. Scene 7 sends Gleo's request through the debug APK's relay (adb cannot hold Gleo's
 signature permission): it reproduces the request as a debug signal and is never speech.
 
 Before scene 1 it waits until the fleet console holds the app's whole ledger (the console shows the verification code the
 app shows), the state docs/DEMO.md prepares the day before.
 
 Writes into --out: scenes.json (the timeline for the video compositor: host epoch seconds, captions, events, verdicts,
-device-host clock samples, console screenshots), screenshots, failure dumps, the pulled workbook and gleo_reply.txt.
+device-host clock samples, console screenshots, recording pauses), screenshots, failure dumps, the downloaded workbook
+and gleo_reply.txt.
 
 Python 3.9+ standard library only. Exit codes: 0 every scene passed, 1 a scene failed, 2 adb/SDK missing or usage,
 3 the vehicle console or the fleet console is unreachable.
 """
 
 import argparse
+import contextlib
 import http.client
 import json
 import os
@@ -81,6 +87,8 @@ PREP_POLL_S = 5.0
 PREP_CODE_EVERY_S = 60.0  # re-read the app's verification code this often while waiting
 CAPTION_LEAD_S = 3.0  # a scene's caption is on screen this long before the scene acts
 HOLD_S = 4.0  # a scene's result stays on screen this long before the next caption
+RECORDER_WAIT_S = 20.0  # screenrecord closes its file after SIGINT; the CI loop starts the next one within a second
+RECORDER_POLL_S = 0.5
 CHROME_TIMEOUT_S = 90.0
 CONSOLE_SHOT_SIZE = (960, 1440)  # CSS px; the console's table needs 800 px
 CHROME_BUDGET_MS = (
@@ -93,6 +101,7 @@ EXIT_TOOLS = 2
 EXIT_CONSOLE = 3
 
 CORRECTION_REASON = "개인 용무를 겸했어요"  # one of the app's reason chips (ui/Components.kt CORRECTION_REASONS)
+SEND_BUTTON = "지금 보내기"  # ReportScreen: writes the workbook on the car and queues it for the console (보내기 주소)
 GLEO_FUNCTION = "GET_LOGBOOK_STATUS"
 GLEO_PARAMS = '{"period":"THIS_MONTH"}'
 CONSOLE_OK = "정상"
@@ -143,7 +152,7 @@ SCENES = (
         6,
         "export",
         "운행기록부",
-        "6. 운행기록부: 사업연도 엑셀을 만들고 ⑪ ⑫ ⑬을 확인합니다",
+        "6. 운행기록부: 사업연도 엑셀을 '지금 보내기'로 회사 서버에 보내고, 관리자 화면에서 받아 ⑪ ⑫ ⑬을 확인합니다",
     ),
     SceneSpec(
         7, "gleo", "음성", "7. 음성: Gleo 요청을 디버그 신호로 재현 (실제 음성 아님)"
@@ -468,15 +477,15 @@ def form_values(nodes: Sequence[UiNode]) -> Optional[Dict[str, dict]]:
     return out
 
 
-_SAVED = re.compile(r"차량에 저장했습니다: (\S+\.xlsx) \((\d+)행\)")
+_SENT = re.compile(r"저장하고 전송을 시작했습니다: (\S+\.xlsx)")
 
 
-def saved_workbook(nodes: Sequence[UiNode]) -> Optional[Tuple[str, int]]:
-    """(file name, rows) from the report screen's '차량에 저장했습니다: <file> (<n>행)' line."""
-    for node in find_all(nodes, "차량에 저장했습니다:", exact=False):
-        found = _SAVED.search(normalize(node.text))
+def sent_workbook(nodes: Sequence[UiNode]) -> Optional[str]:
+    """The file name from the report screen's '저장하고 전송을 시작했습니다: <file>' line ('지금 보내기')."""
+    for node in find_all(nodes, "저장하고 전송을 시작했습니다:", exact=False):
+        found = _SENT.search(normalize(node.text))
         if found:
-            return found.group(1), int(found.group(2))
+            return found.group(1)
     return None
 
 
@@ -548,12 +557,10 @@ def gleo_replies(logcat: str) -> List[dict]:
     return out
 
 
-def export_dir(user: int) -> str:
-    """Where the app writes the demo space's workbooks (getExternalFilesDir("exports")/demo) for Android user `user`."""
-    return "/storage/emulated/%d/Android/data/%s/files/exports/demo" % (
-        user,
-        APP_PACKAGE,
-    )
+def recorder_running(adb) -> bool:
+    """Whether the CI screen recording (`adb shell screenrecord`) runs on the device now."""
+    rc, out, _ = adb.run("shell", "pidof screenrecord", check=False, timeout=30)
+    return rc == 0 and bool(decode(out).strip())
 
 
 _XLSX_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
@@ -672,6 +679,27 @@ def find_console_trip(
                 "chainStatus": car.get("chainStatus"),
                 "trip": trip,
             }
+    return None
+
+
+def console_archives(state: dict, car: Optional[str] = None) -> List[dict]:
+    """The workbooks in the console's 운행기록부 보관함 (newest first), each with the key of its car."""
+    out = []
+    for entry in state.get("cars") or []:
+        if car is None or entry.get("key") == car:
+            out += [dict(item, car=entry.get("key")) for item in entry.get("archives") or []]
+    return out
+
+
+def archive_mark(item: dict) -> Tuple[str, str]:
+    return item.get("url") or "", item.get("receivedAt") or ""
+
+
+def new_archive(state: dict, file_name: str, seen, car: Optional[str] = None) -> Optional[dict]:
+    """The stored workbook named `file_name` that was not there before (`seen` = archive_mark of the earlier ones)."""
+    for item in console_archives(state, car):
+        if item.get("fileName") == file_name and archive_mark(item) not in seen:
+            return item
     return None
 
 
@@ -976,15 +1004,19 @@ class UiDriver:
 # --------------------------------------------------------------------------- the fleet console
 
 
-def fleet_get(url: str, timeout: float = 10.0) -> str:
+def fleet_download(url: str, timeout: float = 30.0) -> bytes:
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({})
     )  # loopback: never through a proxy
     try:
         with opener.open(url, timeout=timeout) as resp:
-            return resp.read().decode("utf-8", "replace")
+            return resp.read()
     except (OSError, http.client.HTTPException) as exc:
         raise ConsoleError("GET %s -> %s" % (url, exc))
+
+
+def fleet_get(url: str, timeout: float = 10.0) -> str:
+    return fleet_download(url, timeout).decode("utf-8", "replace")
 
 
 class Fleet:
@@ -999,9 +1031,10 @@ class Fleet:
         run=subprocess.run,
         now: Optional[Callable[[], float]] = None,
         sleep: Optional[Callable[[float], None]] = None,
+        download: Callable[[str], bytes] = fleet_download,
     ):
         self.url, self.data_dir, self.out_dir = url.rstrip("/"), data_dir, out_dir
-        self.fetch, self.run = fetch, run
+        self.fetch, self.run, self.download = fetch, run, download
         self.now = now or time.monotonic
         self.sleep = sleep or time.sleep
         self.last_state: Optional[dict] = None
@@ -1037,6 +1070,20 @@ class Fleet:
                     {"console_state": name},
                 )
             self.sleep(2.0)
+
+    def save_archive(self, item: dict, name: str) -> str:
+        """Download a stored workbook (its /archives/... link on the console page) into out_dir as `name`."""
+        url = self.url + item["url"]
+        data = self.download(url)
+        if not data.startswith(b"PK\x03\x04"):
+            raise StepFailed(
+                "관리자 화면에서 받은 파일이 xlsx가 아닙니다: %s (%d bytes)" % (url, len(data)),
+                {"archive": item},
+            )
+        local = os.path.join(self.out_dir, os.path.basename(name))
+        with open(local, "wb") as handle:
+            handle.write(data)
+        return local
 
     def forge(self) -> str:
         """Run tools/fleet-console/forge_demo.py against this console, as the presenter does."""
@@ -1146,7 +1193,9 @@ class Rehearsal:
         sleep: Optional[Callable[[float], None]] = None,
         now: Optional[Callable[[], float]] = None,
         wall: Callable[[], float] = time.time,
+        pause_flag: Optional[str] = None,
     ):
+        self.pause_flag = pause_flag  # CI: while this file exists the recording loop starts no new segment
         self.adb, self.ui, self.fleet, self.camera, self.timeline = (
             adb,
             ui,
@@ -1471,80 +1520,99 @@ class Rehearsal:
         self.ui.tap_text("open_report", "운행기록부", "'운행기록부' 탭")
         self.ui.wait_text("report", "업무용승용차 운행기록부")
         self.ui.tap_text("pick_year", "사업연도", "'사업연도'")
-        screen, _ = self.ui.wait_for("form_values", "⑪ ⑫ ⑬ 값", form_values)
+        screen, nodes = self.ui.wait_for("form_values", "⑪ ⑫ ⑬ 값", form_values)
+        code = app_ledger_code(nodes)
         self.record(
             "앱 화면: ⑪ %s, ⑫ %s, ⑬ %s"
             % (screen["⑪"]["text"], screen["⑫"]["text"], screen["⑬"]["text"])
         )
-        self.ui.tap_text("make_excel", "엑셀 만들기", "'엑셀 만들기'")
-        (name, rows), _ = self.ui.wait_for(
-            "saved", "'차량에 저장했습니다' 안내", saved_workbook
-        )
-        self.record("앱 화면: 차량에 저장했습니다 (%s, %d행)" % (name, rows))
+        seen = {archive_mark(item) for item in console_archives(self.fleet.state())}
+        with self.recording_paused("앱이 엑셀을 쓰는 동안"):
+            self.ui.tap_text("send", SEND_BUTTON, "'%s'" % SEND_BUTTON)
+            name, _ = self.ui.wait_for(
+                "sent", "'저장하고 전송을 시작했습니다' 안내", sent_workbook
+            )
+        self.record("앱 화면: 저장하고 전송을 시작했습니다 (%s)" % name)
         line = self.wait_log(
             "export_log",
-            r"EXPORT file=%s rows=%d queued=false" % (re.escape(name), rows),
-            "EXPORT",
+            r"EXPORT file=%s rows=\d+ queued=true" % re.escape(name),
+            "EXPORT ... queued=true",
         )
-        local, method = self.pull_export(name)
+        rows = int(re.search(r"rows=(\d+)", line).group(1))
+        archive = self.fleet.wait(
+            "console_archive",
+            "운행기록부 보관함의 %s" % name,
+            lambda state: new_archive(state, name, seen),
+        )
+        self.record(
+            "관리자 화면: 운행기록부 보관함에 도착 (%s, 검증 코드 %s)"
+            % (name, archive.get("verificationCode"))
+        )
+        local = self.fleet.save_archive(archive, name)
         book = read_xlsx_totals(local)
         problems = compare_totals(screen, book)
+        if code is not None and archive.get("verificationCode") != code:
+            problems.append(
+                "검증 코드: 앱 %s, 보관된 엑셀 %s" % (code, archive.get("verificationCode"))
+            )
         evidence = {
             "screen": screen,
             "xlsx": book,
             "file": os.path.basename(local),
-            "pulled_with": method,
+            "rows": rows,
+            "app_code": code,
+            "archive": archive,
             "log": line,
         }
         if problems:
             raise StepFailed(
-                "엑셀과 화면이 다릅니다: %s" % "; ".join(problems), evidence
+                "관리자 화면에서 받은 엑셀과 앱 화면이 다릅니다: %s" % "; ".join(problems),
+                evidence,
             )
         self.record(
-            "노트북: 엑셀 확인 ⑪ %.1f km, ⑫ %.1f km, ⑬ %.1f%% (= ⑫/⑪)"
+            "노트북: 관리자 화면에서 받은 엑셀 ⑪ %.1f km, ⑫ %.1f km, ⑬ %.1f%% (= ⑫/⑪)"
             % (book["⑪"]["value"], book["⑫"]["value"], book["⑬"]["value"] * 100)
         )
-        evidence["summary"] = "엑셀 %d행을 가져와 ⑪ ⑫ ⑬이 화면과 같고 ⑬ = ⑫/⑪" % rows
+        evidence["summary"] = (
+            "엑셀 %d행을 회사 서버로 보내 관리자 화면에서 받았고, ⑪ ⑫ ⑬과 검증 코드가 앱 화면과 같음" % rows
+        )
         return evidence
 
-    def pull_export(self, name: str) -> Tuple[str, str]:
-        """The workbook from user `self.user`'s storage: `adb pull` as docs/DEMO.md says; when the shell user may not
-        read another user's app storage on this image, the debuggable app's own uid reads it (`run-as --user`)."""
-        remote = "%s/%s" % (export_dir(self.user), name)
-        local = os.path.join(self.out_dir, name)
-        errors = []
+    @contextlib.contextmanager
+    def recording_paused(self, why: str):
+        """CI only (pause_flag): stop the screen recording around a step whose work runs on the app's main thread, so
+        the software encoder does not starve it past the 5 s input limit; the pause is recorded for the video."""
+        if not self.pause_flag:
+            yield
+            return
+        with open(self.pause_flag, "w", encoding="utf-8") as handle:
+            handle.write(why + "\n")
+        pause = {"why": why, "start": self.wall(), "end": None, "stopped": False, "resumed": False}
+        self.timeline.data.setdefault("recording_pauses", []).append(pause)
         try:
-            self.adb.run("pull", remote, local, timeout=120)
-            if zipfile.is_zipfile(local):
-                return local, "adb pull"
-            errors.append("adb pull: 받은 파일이 xlsx가 아닙니다")
-        except AdbError as exc:
-            errors.append("adb pull: %s" % exc)
-        self.say(
-            "  (adb pull 실패: %s) 앱 권한(run-as)으로 다시 읽습니다" % errors[-1][:200]
-        )
-        try:
-            data = self.adb.run(
-                "exec-out",
-                "run-as",
-                APP_PACKAGE,
-                "--user",
-                str(self.user),
-                "cat",
-                remote,
-                timeout=120,
-            )[1]
-        except AdbError as exc:
-            errors.append("run-as: %s" % exc)
-        else:
-            if data.startswith(b"PK\x03\x04"):
-                with open(local, "wb") as handle:
-                    handle.write(data)
-                return local, "run-as"
-            errors.append("run-as: %s" % decode(data[:200]).strip())
-        raise self.ui.fail(
-            "pull_xlsx", "엑셀 파일을 가져오지 못했습니다 (%s)" % " / ".join(errors)
-        )
+            self.adb.run("shell", "pkill -SIGINT screenrecord", check=False, timeout=30)
+            pause["stopped"] = self.wait_recorder(False)
+            pause["start"] = self.wall()
+            self.record("녹화 잠시 멈춤 (%s, CI 서버 부하 줄이기)" % why)
+            yield
+        finally:
+            os.remove(self.pause_flag)
+            pause["resumed"] = self.wait_recorder(True)
+            pause["end"] = self.wall()
+            self.timeline.save()
+            if pause["resumed"]:
+                self.record("녹화 다시 시작")
+            else:
+                self.say("  (경고) 녹화가 %.0f초 안에 다시 시작되지 않았습니다" % RECORDER_WAIT_S)
+                self.record("녹화가 다시 시작되지 않았습니다")
+
+    def wait_recorder(self, running: bool) -> bool:
+        deadline = self.now() + RECORDER_WAIT_S
+        while recorder_running(self.adb) != running:
+            if self.now() >= deadline:
+                return False
+            self.sleep(RECORDER_POLL_S)
+        return True
 
     def scene_gleo(self) -> dict:
         self.ensure_front()
@@ -1619,6 +1687,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--chrome",
         metavar="PATH",
         help="관리자 화면을 장면마다 캡처할 크롬 (없으면 캡처 안 함)",
+    )
+    parser.add_argument(
+        "--pause-recording-flag",
+        metavar="FILE",
+        help="CI 녹화 루프가 보는 파일: 앱이 엑셀을 쓰는 동안 이 파일을 만들고 screenrecord를 멈춥니다 (영상에 표시)",
     )
     parser.add_argument(
         "--km-interval",
@@ -1708,7 +1781,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             timeline.clock(measure_clock(adb))
         except (AdbError, ValueError) as exc:  # each scene samples the clock again; the video needs one sample
             say("  (경고) 기기 시계를 읽지 못했습니다: %s" % exc)
-        rehearsal = Rehearsal(adb, ui, fleet, camera, timeline, drive, user, args.out)
+        rehearsal = Rehearsal(
+            adb, ui, fleet, camera, timeline, drive, user, args.out,
+            pause_flag=args.pause_recording_flag,
+        )
         try:
             rehearsal.prepare()
         except StepFailed as exc:

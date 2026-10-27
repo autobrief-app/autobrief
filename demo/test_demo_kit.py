@@ -16,6 +16,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import signal
 import socket
 import sys
@@ -3953,10 +3954,14 @@ class FakeCarApp:
         self.picked = None
         self.reason = None
         self.amended = False
-        self.saved_message = False
+        self.sent_message = False
+        self.send_enabled = True
+        self.on_send = None  # what the console gets when '지금 보내기' is pressed (the test's console state)
         self.taps, self.swipes, self.shells, self.actions = [], 0, [], []
         self.log = []
-        self.pull_refused = False
+        self.recording = True  # the CI loop's screenrecord
+        self.pause_flag = None  # while this file exists the CI loop starts no new segment
+        self.recorder_events = []
         self.form = ("9,636.0 km", "9,117.0 km", "94.6%")
         self.dumped = None
         self.clickables = []
@@ -4004,16 +4009,19 @@ class FakeCarApp:
         return PNG
 
     def run(self, *args, timeout=None, check=True):
-        if args[0] == "pull":
-            if self.pull_refused:
-                raise se.AdbError("adb pull 실패 (rc=1): remote object '%s' does not exist" % args[1])
-            with open(SAMPLE_XLSX, "rb") as src, open(args[2], "wb") as dst:
-                dst.write(src.read())
-            return 0, b"", b""
-        if args[:2] == ("exec-out", "run-as"):
-            with open(SAMPLE_XLSX, "rb") as src:
-                return 0, src.read(), b""
+        if args == ("shell", "pkill -SIGINT screenrecord"):
+            self.recorder_events.append(("sigint", self.actions[-1:], self.flag_up()))
+            found, self.recording = self.recording, False
+            return (0 if found else 1), b"", b""
+        if args == ("shell", "pidof screenrecord"):
+            if not self.recording and self.pause_flag is not None and not self.flag_up():
+                self.recording = True  # the CI loop starts the next segment once the flag is gone
+                self.recorder_events.append(("restart", self.actions[-1:], False))
+            return (0, b"4242\n", b"") if self.recording else (1, b"", b"")
         raise AssertionError("unexpected adb %r" % (args,))
+
+    def flag_up(self):
+        return self.pause_flag is not None and os.path.exists(self.pause_flag)
 
     # --- taps -----------------------------------------------------------------------------
     def tap(self, x, y):
@@ -4042,9 +4050,11 @@ class FakeCarApp:
         elif kind == "save":
             self.dialog, self.amended = False, True
             self.log.append(self.CONSOLE_LOG + "TRIP_CLASSIFIED id=TRIP-C purpose=%s by=화면 amended" % self.picked)
-        elif kind == "excel":
-            self.saved_message = True
-            self.log.append(self.CONSOLE_LOG + "EXPORT file=운행기록부_2026-01-01_2026-12-31.xlsx rows=487 queued=false")
+        elif kind == "send":
+            self.sent_message = True
+            self.log.append(self.CONSOLE_LOG + "EXPORT file=운행기록부_2026-01-01_2026-12-31.xlsx rows=487 queued=true")
+            if self.on_send is not None:
+                self.on_send()
 
     # --- screens --------------------------------------------------------------------------
     def render(self):
@@ -4152,17 +4162,25 @@ class FakeCarApp:
             ui_text("⑧ 출·퇴근용", (1150, 520, 1400, 560)), ui_text("6,330.0 km", (1700, 520, 1900, 560)),
             ui_text("⑬ 업무사용비율 (⑫/⑪)", (1120, 640, 1500, 690)), ui_text(thirteen, (1700, 640, 1900, 690)),
             ui_button("엑셀 만들기", (1120, 800, 1500, 896), "excel", "국세청 서식 + 검증 기록"),
+            ui_button("지금 보내기", (1520, 800, 1900, 896), "send", "회사 서버, 메일 연동", enabled=self.send_enabled),
         ]
-        if self.saved_message:
-            nodes.append(ui_text("차량에 저장했습니다: 운행기록부_2026-01-01_2026-12-31.xlsx (487행)", (1120, 910, 2000, 950)))
+        if self.sent_message:
+            nodes.append(ui_text("저장하고 전송을 시작했습니다: 운행기록부_2026-01-01_2026-12-31.xlsx", (1120, 910, 2000, 950)))
         return nodes
 
 
-def console_state(trips=(), status="정상", alerts=(), last_hash="AD90-6338", entries=972):
+def console_state(trips=(), status="정상", alerts=(), last_hash="AD90-6338", entries=972, archives=()):
     rows = [{"id": tid, "startOdometerKm": so, "endOdometerKm": eo, "purpose": purpose, "purposeLabel": purpose,
              "amended": amended, "amendReason": reason} for tid, so, eo, purpose, amended, reason in trips]
     return {"cars": [{"key": "00가 0000#chain", "label": "시연", "chainStatus": status, "entries": entries,
-                      "lastSeq": entries, "lastHashShort": last_hash, "recentTrips": rows, "alerts": list(alerts)}]}
+                      "lastSeq": entries, "lastHashShort": last_hash, "recentTrips": rows, "alerts": list(alerts),
+                      "archives": list(archives)}]}
+
+
+def console_archive(name="운행기록부_2026-01-01_2026-12-31.xlsx", code="AD90-6338", received="2026-10-27T14:31:20+09:00"):
+    """One entry of the console's 운행기록부 보관함 as /api/state lists it (fleet_console.py ARCHIVE_PUBLIC + url)."""
+    return {"fileName": name, "periodStart": "2026-01-01", "periodEnd": "2026-12-31", "verificationCode": code,
+            "receivedAt": received, "url": "/archives/" + urllib.request.quote(name)}
 
 
 class RehearsalUiDumpTests(unittest.TestCase):
@@ -4237,16 +4255,16 @@ class RehearsalUiDumpTests(unittest.TestCase):
         app.dialog = False
         self.assertEqual(rehearsal.scroll_container(rehearsal.parse_ui_dump(app.render())).bounds, (1020, 280, 2540, 1300))
 
-    def test_report_form_values_and_the_saved_line(self):
+    def test_report_form_values_and_the_sent_line(self):
         app = FakeCarApp(None)
         app.screen = "report"
         nodes = rehearsal.parse_ui_dump(app.render())
         values = rehearsal.form_values(nodes)
         self.assertEqual({k: v["value"] for k, v in values.items()}, {"⑪": 9636.0, "⑫": 9117.0, "⑬": 94.6})
-        self.assertIsNone(rehearsal.saved_workbook(nodes))
-        app.saved_message = True
-        self.assertEqual(rehearsal.saved_workbook(rehearsal.parse_ui_dump(app.render())),
-                         ("운행기록부_2026-01-01_2026-12-31.xlsx", 487))
+        self.assertIsNone(rehearsal.sent_workbook(nodes))
+        app.sent_message = True
+        self.assertEqual(rehearsal.sent_workbook(rehearsal.parse_ui_dump(app.render())),
+                         "운행기록부_2026-01-01_2026-12-31.xlsx")
 
     def test_home_last_trip_line(self):
         app = FakeCarApp(None)
@@ -4340,9 +4358,18 @@ class RehearsalHelperTests(QuietTestCase):
         self.assertEqual((reply["function"], reply["status"]), ("GET_LOGBOOK_STATUS", "success"))
         self.assertTrue(reply["message"].startswith("This month: 39 trips"))
 
-    def test_export_dir_names_the_users_storage(self):
-        self.assertEqual(rehearsal.export_dir(10),
-                         "/storage/emulated/10/Android/data/app.autobrief.car/files/exports/demo")
+    def test_a_stored_workbook_counts_only_when_it_is_new(self):
+        old = console_archive(received="2026-10-27T10:00:00+09:00")
+        state = console_state(archives=[old])
+        seen = {rehearsal.archive_mark(a) for a in rehearsal.console_archives(state)}
+        self.assertIsNone(rehearsal.new_archive(state, old["fileName"], seen))  # the same name sent earlier
+        fresh = console_archive()
+        state = console_state(archives=[fresh, old])
+        self.assertEqual(rehearsal.new_archive(state, fresh["fileName"], seen)["receivedAt"], fresh["receivedAt"])
+        self.assertEqual(rehearsal.new_archive(state, fresh["fileName"], seen, "00가 0000#chain")["car"], "00가 0000#chain")
+        self.assertIsNone(rehearsal.new_archive(state, fresh["fileName"], seen, "other car"))
+        self.assertIsNone(rehearsal.new_archive(state, "운행기록부_2026-10-01_2026-10-31.xlsx", seen))
+        self.assertEqual(rehearsal.console_archives({"cars": [{"key": "k"}]}), [])
 
     def test_the_sample_workbook_totals_match_the_sample_summary(self):
         book = rehearsal.read_xlsx_totals(SAMPLE_XLSX)
@@ -4440,9 +4467,20 @@ class RehearsalHelperTests(QuietTestCase):
 class RehearsalSceneTests(QuietTestCase):
     """The scenes against the fake app: the taps they make, the files they write and what they verify."""
 
-    def make(self, state=None, forge_out="위조 기록을 보냈습니다: 순번 975, 개인 운행을 업무로 바꾼 내용 (HTTP 200)\n"):
+    def make(self, state=None, forge_out="위조 기록을 보냈습니다: 순번 975, 개인 운행을 업무로 바꾼 내용 (HTTP 200)\n",
+             pause=False):
         self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
         self.app = FakeCarApp(self.tmp)
+        self.flag = os.path.join(self.tmp, "pause-recording") if pause else None
+        self.app.pause_flag = self.flag
+        self.downloads = []
+
+        def download(url):
+            self.downloads.append(url)
+            with open(SAMPLE_XLSX, "rb") as src:
+                return src.read()
+
         self.clock = FakeClock()
         self.state = state or console_state()
         self.forge_calls = []
@@ -4454,12 +4492,16 @@ class RehearsalSceneTests(QuietTestCase):
         self.timeline = rehearsal.Timeline(os.path.join(self.tmp, "scenes.json"), wall=lambda: 1000.0 + self.clock.now())
         ui = rehearsal.UiDriver(self.app, self.tmp, now=self.clock.now, sleep=self.clock.sleep, record=self.timeline.event)
         fleet = rehearsal.Fleet("http://fleet", "/fleet-data", self.tmp, fetch=lambda url: json.dumps(self.state),
-                                run=run, now=self.clock.now, sleep=self.clock.sleep)
+                                run=run, now=self.clock.now, sleep=self.clock.sleep, download=download)
         camera = rehearsal.ConsoleCamera(None, "http://fleet", self.tmp, self.timeline)
         self.rehearsal = rehearsal.Rehearsal(self.app, ui, fleet, camera, self.timeline, None, 10, self.tmp,
                                              say_fn=lambda line: None, sleep=self.clock.sleep, now=self.clock.now,
-                                             wall=lambda: 1000.0 + self.clock.now())
+                                             wall=lambda: 1000.0 + self.clock.now(), pause_flag=self.flag)
         return self.rehearsal
+
+    def arrive_at_console(self, code="AD90-6338"):
+        """'지금 보내기' makes the outbox deliver the workbook: the console lists it in 운행기록부 보관함."""
+        self.app.on_send = lambda: self.state["cars"][0]["archives"].insert(0, console_archive(code=code))
 
     def test_personal_scene_answers_the_ask_card_on_screen(self):
         r = self.make(console_state([("TRIP-P", 45229.0, 45236.0, "PERSONAL", False, "")]))
@@ -4504,27 +4546,89 @@ class RehearsalSceneTests(QuietTestCase):
         with self.assertRaises(rehearsal.StepFailed):
             r.scene_tamper()
 
-    def test_export_scene_reads_the_form_pulls_the_workbook_and_checks_it(self):
+    NAME = "운행기록부_2026-01-01_2026-12-31.xlsx"
+
+    def test_export_scene_sends_the_workbook_and_reads_it_back_from_the_console(self):
         r = self.make()
         self.app.screen = "home"
+        self.arrive_at_console()
         evidence = r.scene_export()
-        self.assertEqual(self.app.actions, ["tab:report", "year", "excel"])
-        self.assertEqual(evidence["pulled_with"], "adb pull")
+        self.assertEqual(self.app.actions, ["tab:report", "year", "send"])
+        self.assertEqual(self.downloads, ["http://fleet/archives/" + urllib.request.quote(self.NAME)])
+        self.assertEqual((evidence["rows"], evidence["app_code"], evidence["archive"]["verificationCode"]),
+                         (487, "AD90-6338", "AD90-6338"))
         self.assertEqual(evidence["xlsx"]["⑪"]["value"], 9636.0)
-        self.assertTrue(os.path.exists(os.path.join(self.tmp, "운행기록부_2026-01-01_2026-12-31.xlsx")))
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, self.NAME)))
+        # a laptop run (no --pause-recording-flag) never touches a screen recording
+        self.assertEqual(self.app.recorder_events, [])
+        self.assertNotIn("recording_pauses", self.timeline.data)
 
-    def test_export_scene_reads_with_run_as_when_the_shell_may_not(self):
+    def test_export_scene_ignores_a_workbook_of_the_same_name_sent_before(self):
+        r = self.make(console_state(archives=[console_archive(received="2026-10-27T09:00:00+09:00")]))
+        self.app.screen = "home"
+        with self.assertRaises(rehearsal.StepFailed) as caught:  # nothing new arrives
+            r.scene_export()
+        self.assertIn("console_archive", str(caught.exception))
+        self.assertEqual(self.downloads, [])
+
+    def test_export_scene_fails_when_the_workbook_never_reaches_the_console(self):
         r = self.make()
-        self.app.screen, self.app.pull_refused = "home", True
-        self.assertEqual(r.scene_export()["pulled_with"], "run-as")
+        self.app.screen = "home"
+        with self.assertRaises(rehearsal.StepFailed) as caught:
+            r.scene_export()
+        self.assertIn("운행기록부 보관함", str(caught.exception))
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, caught.exception.evidence["console_state"])))
 
     def test_export_scene_fails_when_the_workbook_and_the_screen_differ(self):
         r = self.make()
         self.app.screen, self.app.form = "home", ("9,700.0 km", "9,117.0 km", "94.6%")
+        self.arrive_at_console()
         with self.assertRaises(rehearsal.StepFailed) as caught:
             r.scene_export()
         self.assertIn("⑪", str(caught.exception))
-        self.assertEqual(caught.exception.evidence["pulled_with"], "adb pull")
+        self.assertEqual(caught.exception.evidence["archive"]["fileName"], self.NAME)
+
+    def test_export_scene_fails_when_the_stored_workbook_carries_another_code(self):
+        r = self.make()
+        self.app.screen = "home"
+        self.arrive_at_console(code="FFFF-0000")
+        with self.assertRaises(rehearsal.StepFailed) as caught:
+            r.scene_export()
+        self.assertIn("검증 코드: 앱 AD90-6338, 보관된 엑셀 FFFF-0000", str(caught.exception))
+
+    def test_ci_stops_the_recording_only_while_the_app_writes_the_workbook(self):
+        r = self.make(pause=True)
+        self.app.screen = "home"
+        self.arrive_at_console()
+        r.scene_export()
+        # SIGINT after '사업연도' with the flag up (the loop waits), the next segment once '지금 보내기' was handled
+        self.assertEqual(self.app.recorder_events, [("sigint", ["year"], True), ("restart", ["send"], False)])
+        self.assertFalse(os.path.exists(self.flag))
+        (pause,) = self.timeline.data["recording_pauses"]
+        self.assertTrue(pause["stopped"] and pause["resumed"])
+        self.assertIsNotNone(pause["end"])
+        self.assertLessEqual(pause["start"], pause["end"])
+        self.assertEqual(json.load(open(os.path.join(self.tmp, "scenes.json"), encoding="utf-8"))["recording_pauses"],
+                         [pause])
+
+    def test_a_send_that_fails_still_lets_the_recording_go_on(self):
+        r = self.make(pause=True)
+        self.app.screen, self.app.send_enabled = "home", False  # shown but never enabled: the tap never happens
+        with self.assertRaises(rehearsal.StepFailed):
+            r.scene_export()
+        self.assertFalse(os.path.exists(self.flag))
+        self.assertEqual([e[0] for e in self.app.recorder_events], ["sigint", "restart"])
+        self.assertTrue(self.timeline.data["recording_pauses"][0]["resumed"])
+
+    def test_a_recording_that_does_not_come_back_is_reported_not_hidden(self):
+        r = self.make(pause=True)
+        self.app.screen = "home"
+        self.arrive_at_console()
+        self.app.pause_flag = os.path.join(self.tmp, "never-removed")  # the fake loop waits on another file
+        open(self.app.pause_flag, "w").close()
+        r.scene_export()
+        (pause,) = self.timeline.data["recording_pauses"]
+        self.assertEqual((pause["stopped"], pause["resumed"]), (True, False))
 
     def test_gleo_scene_sends_the_debug_relay_and_keeps_the_reply(self):
         r = self.make()

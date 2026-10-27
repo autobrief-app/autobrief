@@ -3,9 +3,15 @@
 # Same machine setup as emulator-e2e.yml (KVM, debug APK, fleet console on :8787, demo sample with the webhook), then
 # demo/rehearsal.py plays all seven scenes with real taps found in `uiautomator dump`: 출근, 거래처, 처음 가는 곳 (tap
 # 비업무), 정정 (trips list, reason chip, 저장), 위변조 (tools/fleet-console/forge_demo.py against the console),
-# 운행기록부 (엑셀 만들기, pull, ⑪⑫⑬ check) and the Gleo request through the debug relay (labelled as a reproduction,
-# never as speech). The emulator screen is recorded in 180 s segments and headless Chrome captures the console at every
-# scene; the artifact holds both plus scenes.json, which a local compositor turns into the rehearsal video.
+# 운행기록부 (지금 보내기, then the workbook downloaded from the console's 운행기록부 보관함 and its ⑪⑫⑬ checked) and the
+# Gleo request through the debug relay (labelled as a reproduction, never as speech). The emulator screen is recorded in
+# 180 s segments and headless Chrome captures the console at every scene; the artifact holds both plus scenes.json,
+# which a local compositor turns into the rehearsal video.
+#
+# The runner has 2 cores. The app writes the workbook on its main thread, and the software video encoder starved that
+# thread past Android's 5 s input limit (run 40453627285: ANR, and car UI mode closes the app without a dialog), so
+# rehearsal.py stops the recording for that one step: it creates /tmp/pause-recording and interrupts screenrecord; this
+# loop starts the next segment once the file is gone. scenes.json records the pause and the video labels it.
 #
 # Run by hand only (Actions > demo-rehearsal > Run workflow, or the workflow_dispatch API): it never runs on push.
 # Pushing or editing a file under .github/workflows/ needs a token with the `workflow` scope.
@@ -117,7 +123,8 @@ jobs:
         # times (winscope metadata), which the compositor uses to place the captions. segments.txt keeps host times.
         run: |
           rm -f /tmp/stop-recording
-          nohup bash -c 'for i in $(seq 1 16); do echo "$i start $(date +%s.%N)" >> "$OUT/segments.txt"; adb shell screenrecord --size 1280x720 --time-limit 180 /sdcard/rehearsal-$i.mp4; echo "$i end $(date +%s.%N)" >> "$OUT/segments.txt"; [ -f /tmp/stop-recording ] && break; done' \
+          rm -f /tmp/pause-recording
+          nohup bash -c 'for i in $(seq 1 24); do echo "$i start $(date +%s.%N)" >> "$OUT/segments.txt"; adb shell screenrecord --size 1280x720 --time-limit 180 /sdcard/rehearsal-$i.mp4; echo "$i end $(date +%s.%N)" >> "$OUT/segments.txt"; while [ -f /tmp/pause-recording ] && [ ! -f /tmp/stop-recording ]; do sleep 0.5; done; [ -f /tmp/stop-recording ] && break; done' \
             > "$OUT/screenrecord.log" 2>&1 < /dev/null &
           for _ in $(seq 1 60); do
             if adb shell pidof screenrecord > /dev/null 2>&1; then
@@ -135,6 +142,7 @@ jobs:
         run: >
           python3 demo/rehearsal.py --out "$OUT"
           --fleet-url http://127.0.0.1:8787 --fleet-data /tmp/fleet
+          --pause-recording-flag /tmp/pause-recording
           --chrome "$(command -v google-chrome || echo google-chrome)"
 
       - name: Collect the recording, logcat and console state
@@ -142,9 +150,10 @@ jobs:
         run: |
           mkdir -p "$OUT"
           touch /tmp/stop-recording
+          rm -f /tmp/pause-recording
           adb shell pkill -SIGINT screenrecord || echo "screenrecord was not running"
           sleep 3
-          for i in $(seq 1 16); do
+          for i in $(seq 1 24); do
             adb pull "/sdcard/rehearsal-$i.mp4" "$OUT/rehearsal-$i.mp4" 2>/dev/null || break
           done
           ls "$OUT"/rehearsal-*.mp4 > /dev/null 2>&1 || echo "no screen recording to pull"
@@ -153,7 +162,7 @@ jobs:
             echo "## am get-current-user"; adb shell am get-current-user
             echo "## dumpsys activity activities (resumed)"; adb shell dumpsys activity activities | grep -E "ResumedActivity|topResumed"
             echo "## app processes"; adb shell ps -A -o USER,PID,NAME | grep -E "autobrief|vehicle" || true
-            echo "## exports (user 10)"; adb shell ls -l /storage/emulated/10/Android/data/app.autobrief.car/files/exports/demo/ || true
+            echo "## console archives (the workbooks '지금 보내기' sent)"; ls -l /tmp/fleet/archives/ || true
             echo "## console /vehicle/state"; curl -s http://127.0.0.1:8088/vehicle/state; echo
           } > "$OUT/device-state-end.txt" 2>&1 || echo "device state incomplete"
           curl -s http://127.0.0.1:8787/api/state > "$OUT/fleet_state.json" || echo "no fleet state"
