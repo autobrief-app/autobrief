@@ -165,6 +165,28 @@ jobs:
             if [ -f "/tmp/$name.pid" ]; then kill -- "-$(cat "/tmp/$name.pid")" 2>/dev/null || true; fi
           done
 
+      - name: Keep a bug report after a failure
+        if: failure()
+        # An ANR's VM traces (every thread's stack when Android declared it) stay on the device: /data/anr is not
+        # readable on this user build, but the bug report carries it (FS/data/anr/*) with the CPU and event log of that
+        # moment. The zip is kept as it is; the traces are also unpacked so they can be read without it.
+        run: |
+          timeout 300 adb bugreport /tmp/bugreport.zip > e2e-out/bugreport.log 2>&1 || echo "bug report incomplete, see bugreport.log"
+          if [ -f /tmp/bugreport.zip ]; then
+            cp /tmp/bugreport.zip e2e-out/bugreport.zip
+            python3 - e2e-out/bugreport.zip e2e-out/anr-traces <<'PY'
+          import os, sys, zipfile
+          z = zipfile.ZipFile(sys.argv[1])
+          names = [n for n in z.namelist() if n.startswith("FS/data/anr/") and not n.endswith("/")]
+          os.makedirs(sys.argv[2], exist_ok=True)
+          for n in names:
+              with open(os.path.join(sys.argv[2], os.path.basename(n)), "wb") as out:
+                  out.write(z.read(n))
+          print("ANR traces:", len(names), [os.path.basename(n) for n in names])
+          PY
+            du -h e2e-out/bugreport.zip
+          fi
+
       - name: Upload e2e-out
         if: always()
         uses: actions/upload-artifact@v4
