@@ -4229,6 +4229,14 @@ class RehearsalUiDumpTests(unittest.TestCase):
         self.assertIsNone(rehearsal.amended_row(row("출퇴근", "화면 · 수정됨"), "45,200.0 → 45,218.0", "비업무"))
         self.assertIsNotNone(rehearsal.amended_row(row("비업무", "화면 · 수정됨"), "45,200.0 → 45,218.0", "비업무"))
 
+    def test_without_an_anchor_the_topmost_windows_panel_is_scrolled(self):
+        app = FakeCarApp(None)
+        app.screen, app.dialog = "trips", True
+        nodes = rehearsal.parse_ui_dump(app.render())
+        self.assertEqual(rehearsal.scroll_container(nodes).bounds, (1100, 150, 2400, 1250))  # the dialog, not the list
+        app.dialog = False
+        self.assertEqual(rehearsal.scroll_container(rehearsal.parse_ui_dump(app.render())).bounds, (1020, 280, 2540, 1300))
+
     def test_report_form_values_and_the_saved_line(self):
         app = FakeCarApp(None)
         app.screen = "report"

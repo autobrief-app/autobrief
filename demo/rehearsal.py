@@ -214,6 +214,7 @@ class UiNode:
     enabled: bool = True
     scrollable: bool = False
     window: int = 0  # the <window> it belongs to (0 for a single-window dump)
+    layer: int = 0  # that window's layer (z-order: higher is on top)
     display: int = MAIN_DISPLAY
 
     @property
@@ -250,12 +251,14 @@ def parse_ui_dump(xml_text: str) -> List[UiNode]:
     nodes: List[UiNode] = []
     windows = [-1]
 
-    def walk(element, parent: Optional[int], window: int, display: int) -> None:
+    def walk(element, parent: Optional[int], window: int, display: int, layer: int = 0) -> None:
         if element.tag == "display":
             display = int(element.get("id") or MAIN_DISPLAY)
         elif element.tag == "window":
             windows[0] += 1
             window = windows[0]
+            raw = element.get("layer") or ""
+            layer = int(raw) if raw.lstrip("-").isdigit() else 0
         elif element.tag == "node":
             node = UiNode(
                 index=len(nodes),
@@ -268,11 +271,12 @@ def parse_ui_dump(xml_text: str) -> List[UiNode]:
                 scrollable=element.get("scrollable") == "true",
                 window=window,
                 display=display,
+                layer=layer,
             )
             nodes.append(node)
             parent = node.index
         for child in element:
-            walk(child, parent, window, display)
+            walk(child, parent, window, display, layer)
 
     walk(root, None, 0, MAIN_DISPLAY)
     return nodes
@@ -379,11 +383,14 @@ def value_right_of(nodes: Sequence[UiNode], label: UiNode) -> Optional[UiNode]:
     return min(same_line, key=lambda n: n.bounds[0]) if same_line else None
 
 
-def scroll_container(nodes: Sequence[UiNode], anchor: UiNode) -> Optional[UiNode]:
-    for node in ancestors(nodes, anchor):
-        if node.scrollable:
-            return node
-    return None
+def scroll_container(nodes: Sequence[UiNode], anchor: Optional[UiNode] = None) -> Optional[UiNode]:
+    """The scrolling panel around `anchor`; without an anchor on screen, the largest one in the topmost window."""
+    if anchor is not None:
+        for node in ancestors(nodes, anchor):
+            if node.scrollable:
+                return node
+    panels = [n for n in nodes if n.scrollable and n.display == MAIN_DISPLAY and n.area > 0]
+    return max(panels, key=lambda n: (n.layer, n.window, n.area)) if panels else None
 
 
 # --------------------------------------------------------------------------- screen readers (one per screen state)
@@ -871,10 +878,12 @@ class UiDriver:
         what: str,
         find: Callable[[List[UiNode]], object],
         timeout: Optional[float] = None,
-        scroll_from: Optional[str] = None,
+        scroll: bool = False,
+        scroll_anchor: Optional[str] = None,
     ):
-        """Dump until `find(nodes)` returns something; with `scroll_from` (the text of a node inside a scrolling
-        panel), scroll that panel when the target is not on screen. Returns (found, nodes)."""
+        """Dump until `find(nodes)` returns something. With `scroll`, a target that is not on screen (the dumper
+        lists only what is) is scrolled to: the panel around `scroll_anchor` when it is on screen, else the largest
+        scrolling panel of the topmost window. Returns (found, nodes)."""
         timeout = UI_WAIT_S if timeout is None else timeout
         deadline = self.now() + timeout
         scrolls = 0
@@ -883,9 +892,9 @@ class UiDriver:
             found = find(nodes)
             if found is not None and found is not WAITING:
                 return found, nodes
-            if found is None and scroll_from and scrolls < MAX_SCROLLS:
-                anchors = find_all(nodes, scroll_from)
-                panel = scroll_container(nodes, anchors[0]) if anchors else None
+            if found is None and scroll and scrolls < MAX_SCROLLS:
+                anchors = find_all(nodes, scroll_anchor) if scroll_anchor else []
+                panel = scroll_container(nodes, anchors[0] if anchors else None)
                 if panel is not None:
                     self.swipe_up(panel)
                     scrolls += 1
@@ -951,7 +960,7 @@ class UiDriver:
             return targets[0] if targets[0].enabled else WAITING  # shown but disabled: wait, never scroll away
 
         found, _ = self.wait_for(
-            step, what, find, timeout, scroll_from=below if scroll else None
+            step, what, find, timeout, scroll=scroll, scroll_anchor=below
         )
         if ambiguous:
             raise self.fail(
@@ -1388,8 +1397,8 @@ class Rehearsal:
             scroll=True,
         )
         self.ui.tap_text(
-            "save", "저장", "'저장'", below=reasons, scroll=True
-        )  # enabled only once a reason is picked
+            "save", "저장", "'저장'", scroll=True
+        )  # enabled only once a reason is picked; the one 저장 on screen, so no heading is needed to find it
         texts, _ = self.ui.wait_for(
             "amended_mark",
             "출근 줄의 '비업무'와 '수정됨'",
