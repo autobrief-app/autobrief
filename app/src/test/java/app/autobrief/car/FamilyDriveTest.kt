@@ -145,21 +145,26 @@ class FamilyDriveTest {
         assertTrue(h.core.ledgerEntries.none { "집" in it.body || "회사" in it.body })
     }
 
-    @Test fun familyNeverAppliesToATripThatAlreadyEnded() {
+    @Test fun familyNeverLabelsATripThatAlreadyEndedButArmsTheNextDrive() {
         val h = Harness(base)
         h.drive(0.0, 12.0, null, null)
         h.advance(AutoBriefCore.AUTO_WAIT_MS + 1); h.core.tick()
+        // parked right after a drive that still has no purpose: the next drive is armed, the ended one is left alone
         val reply = h.core.gleo(GleoContract.LOG_TRIP_PURPOSE, family)
-        assertEquals("fail", reply.status)
-        assertEquals("Family drive can only start before or during a drive.", reply.message)
+        assertEquals("success", reply.status)
+        assertEquals(
+            "Family drive on: no location is read for the next drive. The drive that just ended still needs a purpose.",
+            reply.message,
+        )
         assertEquals(TripPurpose.UNCLASSIFIED, h.core.trips.value.single().purpose)
-        assertFalse(h.core.settings.value.familyNext)
-        assertFalse(h.core.locationPaused.value)
-        // once that trip is no longer the one just ended, parked with no open trip arms the next drive
+        assertFalse(h.core.trips.value.single().family)
+        assertTrue(h.core.settings.value.familyNext)
+        assertTrue(h.core.locationPaused.value)
+        // later, with no drive waiting for a purpose in the voice window, the reply is the plain one
         h.advance(AutoBriefCore.VOICE_CLASSIFY_WINDOW_MS + 1)
-        val armed = h.core.gleo(GleoContract.LOG_TRIP_PURPOSE, family)
-        assertEquals("success", armed.status)
-        assertEquals("Family drive on: no location is read for the next drive.", armed.message)
+        val again = h.core.gleo(GleoContract.LOG_TRIP_PURPOSE, family)
+        assertEquals("success", again.status)
+        assertEquals("Family drive on: no location is read for the next drive.", again.message)
         assertTrue(h.core.settings.value.familyNext)
     }
 

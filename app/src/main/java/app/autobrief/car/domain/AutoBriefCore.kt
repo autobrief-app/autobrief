@@ -1628,19 +1628,18 @@ class AutoBriefCore private constructor(
 
     /**
      * FAMILY turns on 가족 운행 for the drive under way, or parked for the next one. It never labels a drive that already
-     * ended: a trip that ended within the voice window and still has no purpose is the one such a request is about, so it
-     * is refused (its location was read; the purpose buttons or voice give it 비업무).
+     * ended (its location was read): a drive that just ended with no purpose keeps waiting for one, and the reply says so.
      */
     private fun gleoFamily(): GleoReply {
-        if (logbook.openTrip == null) {
-            val ended = logbook.lastTrip()?.takeIf { clock() - it.endEpochMs <= VOICE_CLASSIFY_WINDOW_MS }
-            if (ended != null && ended.purpose == TripPurpose.UNCLASSIFIED) {
-                return GleoReply("fail", "Family drive can only start before or during a drive.")
-            }
-        }
+        val waiting = logbook.openTrip == null &&
+            logbook.lastTrip()?.let { clock() - it.endEpochMs <= VOICE_CLASSIFY_WINDOW_MS && it.purpose == TripPurpose.UNCLASSIFIED } == true
         return when (startFamilyDrive()) {
             FamilyResult.CONVERTED -> GleoReply("success", "Family drive on: no location is read for this drive.")
-            FamilyResult.ARMED -> GleoReply("success", "Family drive on: no location is read for the next drive.")
+            FamilyResult.ARMED -> GleoReply(
+                "success",
+                "Family drive on: no location is read for the next drive." +
+                    if (waiting) " The drive that just ended still needs a purpose." else "",
+            )
         }
     }
 
