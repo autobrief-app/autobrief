@@ -47,6 +47,7 @@ from setup_emulator import (  # noqa: E402  (shared helpers live next to this sc
     configure_stdio,
     console_request,
     console_url,
+    demo_broadcast_args,
     find_sdk_tools,
     nmea_fix_sentences,
     parse_current_user,
@@ -135,6 +136,31 @@ UNREGISTERED = Place("미등록 장소", 37.5665, 126.9780, registered=False)
 
 
 @dataclass(frozen=True)
+class Relay:
+    """A debug signal to the app before the drive (debug APK only): `am broadcast` to its DemoReceiver in the driver's
+    user, `--es cmd <command>` plus the extras."""
+
+    command: str
+    extras: Tuple[Tuple[str, str], ...] = ()
+    note: str = ""
+
+
+# 가족 운행 the way Gleo turns it on (LOG_TRIP_PURPOSE with FAMILY), through the debug relay that docs/DEMO.md uses for
+# Gleo: a reproduction of the request, never speech
+FAMILY_ON = Relay(
+    "gleo",
+    (("function", "LOG_TRIP_PURPOSE"), ("params", '{"purpose":"FAMILY"}')),
+    "가족 운행 켜기 (Gleo 요청을 디버그 신호로 재현)",
+)
+FUEL_PRICE = 1650  # KRW per litre for the scripted scene (a round regional average, entered by hand in the app)
+
+
+def fuel_relay(price: int = FUEL_PRICE) -> Relay:
+    """내 차 mode with a fuel price (`--es cmd fuel`), as the owner would set them in the app's settings."""
+    return Relay("fuel", (("mode", "own"), ("price", str(price))), "내 차 모드, 유가 {:,}원/L".format(price))
+
+
+@dataclass(frozen=True)
 class Scenario:
     key: str
     title: str
@@ -144,6 +170,9 @@ class Scenario:
     km: int
     expected_purpose: str
     park_note: str  # tail of the last narration line
+    # 가족 운행: the app reads no position, so none is sent or waited for; its TRIP_CLOSED carries family=true
+    family: bool = False
+    prepare: Tuple[Relay, ...] = ()  # sent while parked, before the departure
 
     @property
     def odometer_end(self) -> int:
@@ -184,6 +213,34 @@ SCENARIOS = (
     ),
 )
 
+# Two optional scenes after the script's seven (docs/DEMO.md), never part of `all`: the CI run plays the three above.
+# Odometers go on from 45,236 (where `all` ends): 45,236 -> 45,248 -> 45,259.
+OPTIONAL_SCENARIOS = (
+    Scenario(
+        "family",
+        "가족 운행 (집 -> 미등록 장소)",
+        HOME,
+        UNREGISTERED,
+        45236,
+        12,
+        "PERSONAL",
+        "위치 없이 거리만 비업무로 남습니다",
+        family=True,
+        prepare=(FAMILY_ON,),
+    ),
+    Scenario(
+        "fuel",
+        "내 차 유류비 정산 (회사 -> 가상상사)",
+        OFFICE,
+        CLIENT,
+        45248,
+        11,
+        "BUSINESS",
+        "오늘 화면의 유류비 정산 카드에 이번 달 금액이 나옵니다",
+        prepare=(fuel_relay(),),
+    ),
+)
+
 # Korean particles are fixed on purpose: every demo place ends in a vowel (-에서 / -로 / -에)
 NARRATION = {
     "ready": "준비: {origin} 앞에 주차한 상태입니다 (기어 P, 계기판 {start} km, 운전석 착석)",
@@ -198,10 +255,14 @@ def scenario_keys() -> List[str]:
     return [s.key for s in SCENARIOS]
 
 
+def optional_scenario_keys() -> List[str]:
+    return [s.key for s in OPTIONAL_SCENARIOS]
+
+
 def select_scenarios(choice: str) -> List[Scenario]:
     if choice == "all":
         return list(SCENARIOS)
-    chosen = [s for s in SCENARIOS if s.key == choice]
+    chosen = [s for s in SCENARIOS + OPTIONAL_SCENARIOS if s.key == choice]
     if not chosen:
         raise ValueError("알 수 없는 시나리오: %s" % choice)
     return chosen
@@ -326,13 +387,16 @@ def plan_beats(
     origin, dest = scenario.origin, scenario.destination
     speeds = jitter_speeds(scenario.key, scenario.km)
 
+    # a family drive reads no position: none is sent and none is waited for (the app would never log one)
+    places = not scenario.family
     ready = (
-        GeoFix(origin.lat, origin.lon),
+        *((GeoFix(origin.lat, origin.lon),) if places else ()),
         ParkVehicle(),
         SetSeat("driver", True),
         SetOdometer(scenario.odometer_start),
         Pause(SETTLE_S * scale),
-        AwaitPosition(origin, POSITION_WAIT_PARKED_S),
+        *scenario.prepare,
+        *((AwaitPosition(origin, POSITION_WAIT_PARKED_S),) if places else ()),
         ShowApp(),
     )
 
@@ -343,24 +407,25 @@ def plan_beats(
             Pause(RAMP_UP_S / RAMP_STEPS * scale),
         ]
 
-    drive = [ShowNavigation()]
+    drive = [ShowNavigation()] if places else []
     for tick in range(1, scenario.km + 1):
         # strictly between origin and destination: the arrival fix is the beat's own step
         lat, lon = lerp_point(origin, dest, tick / (scenario.km + 1))
         drive += [
             SetControls(speeds[tick - 1], accelerator=20, brake=0, steering=0),
             SetOdometer(scenario.odometer_start + tick),
-            GeoFix(lat, lon),
+            *((GeoFix(lat, lon),) if places else ()),
             Pause(km_interval),
         ]
 
-    arrive = [GeoFix(dest.lat, dest.lon)]
+    arrive = [GeoFix(dest.lat, dest.lon)] if places else []
     for speed in ramp_speeds(CRUISE_KPH, 0, RAMP_STEPS):
         arrive += [
             SetControls(speed, accelerator=0, brake=30, steering=0),
             Pause(RAMP_DOWN_S / RAMP_STEPS * scale),
         ]
-    arrive.append(AwaitPosition(dest, POSITION_WAIT_DRIVING_S))
+    if places:
+        arrive.append(AwaitPosition(dest, POSITION_WAIT_DRIVING_S))
 
     park = (ParkVehicle(), ShowApp(), Pause(SETTLE_S * scale))
 
@@ -392,6 +457,7 @@ class TripClosed:
     km: Optional[float]
     purpose: str
     line: str
+    family: bool = False  # `family=true`: a 가족 운행 row (no location read)
 
 
 _POSITION = re.compile(r"\bPOSITION place=(\S+)")
@@ -431,7 +497,8 @@ def parse_trip_closed(line: str) -> Optional[TripClosed]:
             None  # a TRIP_CLOSED line without usable start/end can match no expectation
         )
     return TripClosed(
-        fields.get("id", ""), start, end, km, fields.get("purpose", ""), line.strip()
+        fields.get("id", ""), start, end, km, fields.get("purpose", ""), line.strip(),
+        fields.get("family") == "true",
     )
 
 
@@ -447,6 +514,7 @@ def matches_expected(
         abs(trip.start - scenario.odometer_start) <= tolerance
         and abs(trip.end - scenario.odometer_end) <= tolerance
         and trip.purpose == scenario.expected_purpose
+        and trip.family == scenario.family
     )
 
 
@@ -491,10 +559,11 @@ def verify_scenario(
 
 
 def expectation_text(scenario: Scenario) -> str:
-    return "start=%.1f end=%.1f purpose=%s" % (
+    return "start=%.1f end=%.1f purpose=%s%s" % (
         scenario.odometer_start,
         scenario.odometer_end,
         scenario.expected_purpose,
+        " family=true" if scenario.family else "",
     )
 
 
@@ -885,8 +954,19 @@ class Director:
                 self.show_navigation()
         elif isinstance(step, ParkVehicle):
             self.park()
+        elif isinstance(step, Relay):
+            self.relay(step)
         else:
             raise TypeError("unknown step: %r" % (step,))
+
+    def relay(self, step: Relay) -> None:
+        """The debug signal, to the driver's user (the app's copy the screen shows); the APK must be a debug build."""
+        user = parse_current_user(self.adb.shell("am", "get-current-user"))
+        args = demo_broadcast_args(step.command, user=user)
+        for key, value in step.extras:
+            args += ["--es", key, value]
+        self.say("  - %s" % (step.note or step.command))
+        self.adb.shell(*args, timeout=90)
 
     def park(self) -> None:
         self.console.set_controls(0, accelerator=0, brake=0)
@@ -1039,6 +1119,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "시나리오: commute 집->회사 18km(출퇴근), client 회사->가상상사 11km(업무), "
             "personal 가상상사->미등록 장소 7km(미분류). "
+            "선택 장면(디버그 APK): family 가족 운행 12km(비업무, 위치 안 읽음), "
+            "fuel 내 차 모드와 유가 1,650원/L를 넣고 회사->가상상사 11km(업무). "
             "종료 코드: 0 성공, 1 --verify 실패, 2 adb/SDK 없음 또는 사용법 오류, 3 콘솔 연결/요청 실패, "
             "4 앱을 화면 앞에 띄우지 못함"
         ),
@@ -1046,8 +1128,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--scenario",
         required=True,
-        choices=scenario_keys() + ["all"],
-        help="재생할 시나리오 (all = 순서대로 전부, 계기판은 이어짐)",
+        choices=scenario_keys() + ["all"] + optional_scenario_keys(),
+        help="재생할 시나리오 (all = 순서대로 전부, 계기판은 이어짐. family, fuel = 대본 뒤 선택 장면, all에 들어가지 않음)",
     )
     parser.add_argument(
         "--mode",

@@ -4817,3 +4817,63 @@ class LogcatClearTests(unittest.TestCase):
         with self.assertRaises(se.AdbError):
             adb.logcat_clear(sleep=lambda s: None)
         self.assertEqual(len(calls), 1)
+
+
+class OptionalScenesTests(unittest.TestCase):
+    """The two scenes after the script's seven (docs/DEMO.md): 가족 운행 and 내 차 유류비 정산. Never part of `all`."""
+
+    def steps(self, key):
+        return [step for beat in director.plan_beats(director.select_scenarios(key)[0], 0.3) for step in beat.steps]
+
+    def test_all_still_plays_the_three_ci_scenarios_and_the_optional_ones_go_on_from_45236(self):
+        self.assertEqual([s.key for s in director.select_scenarios("all")], ["commute", "client", "personal"])
+        self.assertEqual(director.optional_scenario_keys(), ["family", "fuel"])
+        family, fuel = director.OPTIONAL_SCENARIOS
+        self.assertEqual((family.odometer_start, family.odometer_end, fuel.odometer_start), (45236, 45248, 45248))
+        args = director.build_parser().parse_args(["--scenario", "family"])
+        self.assertEqual(args.scenario, "family")
+
+    def test_the_family_scene_turns_it_on_before_departing_and_sends_no_position(self):
+        steps = self.steps("family")
+        self.assertFalse([s for s in steps if isinstance(s, (director.GeoFix, director.AwaitPosition, director.ShowNavigation))])
+        relay = steps.index(director.FAMILY_ON)
+        depart = steps.index(director.SetGear("Drive"))
+        self.assertLess(relay, depart)
+        self.assertEqual(dict(director.FAMILY_ON.extras), {"function": "LOG_TRIP_PURPOSE", "params": '{"purpose":"FAMILY"}'})
+        self.assertEqual(sum(isinstance(s, director.SetOdometer) for s in steps), 1 + 12)
+
+    def test_the_fuel_scene_sets_own_car_mode_and_the_price_and_still_learns_its_places(self):
+        steps = self.steps("fuel")
+        relay = next(s for s in steps if isinstance(s, director.Relay))
+        self.assertEqual((relay.command, dict(relay.extras)), ("fuel", {"mode": "own", "price": "1650"}))
+        self.assertLess(steps.index(relay), steps.index(director.SetGear("Drive")))
+        self.assertEqual(sum(isinstance(s, director.AwaitPosition) for s in steps), 2)
+
+    def test_the_relay_is_one_broadcast_to_the_drivers_user(self):
+        adb = FakeAdb()
+        said = []
+        runner = director.Director(FakeConsole(), adb, sleep=lambda s: None, clock=lambda: 0.0, say_fn=said.append)
+        runner.run_step(director.FAMILY_ON)
+        self.assertEqual(adb.shells[0], "am get-current-user")
+        self.assertEqual(
+            adb.shells[1],
+            "am broadcast --user 10 -a app.autobrief.car.debug.DEMO -p app.autobrief.car --es cmd gleo "
+            '--es function LOG_TRIP_PURPOSE --es params {"purpose":"FAMILY"}',
+        )
+        self.assertIn("  - 가족 운행 켜기 (Gleo 요청을 디버그 신호로 재현)", said)
+        # adb hands the device shell one string: the JSON survives its quoting
+        self.assertIn("""'{"purpose":"FAMILY"}'""", se.device_shell_command(adb.shells[1].split(" ")))
+
+    def test_a_family_row_needs_its_mark_to_pass(self):
+        family = director.select_scenarios("family")[0]
+        line = "I AutoBriefLog: TRIP_CLOSED id=TRIP-1 start=45236.0 end=45248.0 km=12.0 purpose=PERSONAL by=가족 reason=- family=true"
+        trip = director.parse_trip_closed(line)
+        self.assertTrue(trip.family)
+        self.assertTrue(director.matches_expected(trip, family))
+        plain = director.parse_trip_closed(line.replace(" family=true", ""))
+        self.assertFalse(director.matches_expected(plain, family), "an ordinary 비업무 row is not a family drive")
+        self.assertEqual(director.expectation_text(family), "start=45236.0 end=45248.0 purpose=PERSONAL family=true")
+        # the CI scenarios keep their expectations: no family mark asked for, none given
+        personal = director.select_scenarios("personal")[0]
+        self.assertTrue(director.matches_expected(director.parse_trip_closed(
+            "TRIP_CLOSED id=TRIP-2 start=45229.0 end=45236.0 km=7.0 purpose=UNCLASSIFIED by=- reason=-"), personal))
