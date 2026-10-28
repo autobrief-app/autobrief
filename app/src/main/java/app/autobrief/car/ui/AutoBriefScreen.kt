@@ -193,6 +193,7 @@ private fun StatusBar(core: AutoBriefCore) {
     val p = LocalPalette.current
     val v by core.vehicle.collectAsState()
     val position by core.positionSource.collectAsState()
+    val paused by core.locationPaused.collectAsState()
     val check by core.integrity.collectAsState()
     val space by core.activeSpace.collectAsState()
     FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -204,14 +205,18 @@ private fun StatusBar(core: AutoBriefCore) {
         else StatusPill("기어 ${gearLabel(v.gear)}", if (v.gear == Gear.PARK) p.muted else p.accent)
         StatusPill(v.odometerKm?.let { "계기판 ${km1(it)} km" } ?: "계기판 확인 중", if (v.odometerKm != null) p.commute else p.muted)
         // navigation's position, else the car's own GPS (the fallback when navigation does not follow the car)
-        StatusPill(
-            when (position) {
-                AutoBriefCore.PositionSource.NAVIGATION -> "내비 위치 받는 중"
-                AutoBriefCore.PositionSource.GPS -> "차량 GPS 위치 받는 중"
-                null -> "위치 정보 없음"
-            },
-            if (position != null) p.ok else p.muted,
-        )
+        if (paused) {
+            StatusPill("위치 읽지 않음 (가족 운행)", p.personal, filled = true)
+        } else {
+            StatusPill(
+                when (position) {
+                    AutoBriefCore.PositionSource.NAVIGATION -> "내비 위치 받는 중"
+                    AutoBriefCore.PositionSource.GPS -> "차량 GPS 위치 받는 중"
+                    null -> "위치 정보 없음"
+                },
+                if (position != null) p.ok else p.muted,
+            )
+        }
         StatusPill(
             when {
                 !check.ok -> "기록 확인 필요"
@@ -248,6 +253,10 @@ fun DrivingView(core: AutoBriefCore) {
         Gap(28.dp)
         val o = open
         if (o != null) {
+            if (o.family) {
+                StatusPill(FAMILY_BADGE, p.personal, filled = true)
+                Gap(16.dp)
+            }
             Txt("운행 기록 중", Type.title, p.accent)
             Gap(8.dp)
             val delta = (v.odometerKm ?: o.startOdometerKm) - o.startOdometerKm
@@ -260,7 +269,7 @@ fun DrivingView(core: AutoBriefCore) {
         }
         Gap(36.dp)
         Box(Modifier.widthIn(max = 1100.dp).clip(RoundedCornerShape(20.dp)).background(p.panel).padding(horizontal = 36.dp, vertical = 24.dp)) {
-            Txt("도착해서 P에 두면 목적을 여쭙니다", Type.heading, p.muted)
+            Txt(if (o?.family == true) "도착해서 P에 두면 거리만 비업무로 남깁니다" else "도착해서 P에 두면 목적을 여쭙니다", Type.heading, p.muted)
         }
         Spacer(Modifier.height(1.dp).fillMaxWidth())
     }

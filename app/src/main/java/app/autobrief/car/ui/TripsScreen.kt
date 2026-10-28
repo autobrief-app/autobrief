@@ -89,7 +89,7 @@ private fun TripRow(t: TripRecord, onClick: () -> Unit) {
         }
         Column(Modifier.width(320.dp)) {
             Txt("${km1(t.startOdometerKm)} → ${km1(t.endOdometerKm)}", Type.body)
-            Muted(listOfNotNull(t.startPlace, t.endPlace).joinToString(" → ").ifBlank { "장소 미등록" })
+            Muted(listOfNotNull(t.startPlace, t.endPlace).joinToString(" → ").ifBlank { if (t.family) "위치 기록 안 함" else "장소 미등록" })
         }
         Txt("${km1(TripLogbook.printedKm(t))} km", Type.heading, modifier = Modifier.width(170.dp))
         // a fixed box, so the user column starts at the same x whatever the chip says
@@ -110,9 +110,11 @@ private fun marks(t: TripRecord): String = buildList {
         t.classifiedBy == ClassifiedBy.AUTO && t.autoReason != null -> add("자동(${t.autoReason})")
         t.classifiedBy == ClassifiedBy.VOICE -> add("음성")
         t.classifiedBy == ClassifiedBy.SCREEN -> add("화면")
+        t.classifiedBy == ClassifiedBy.FAMILY -> add("가족 운행")
     }
+    if (t.family && t.classifiedBy != ClassifiedBy.FAMILY) add("위치 기록 안 함")
     if (t.amended) add("수정됨")
-    if (t.memo.isNotBlank() && t.purpose != TripPurpose.UNLOGGED_GAP) add(t.memo)
+    if (t.memo.isNotBlank() && t.purpose != TripPurpose.UNLOGGED_GAP && !(t.family && t.memo == AutoBriefCore.FAMILY_MEMO)) add(t.memo)
 }.joinToString(" · ")
 
 @Composable
@@ -138,7 +140,10 @@ private fun TripDialog(core: AutoBriefCore, t: TripRecord, onClose: () -> Unit) 
             KeyValue("⑤ 주행 전 계기판", "${km1(t.startOdometerKm)} km")
             KeyValue("⑥ 주행 후 계기판", "${km1(t.endOdometerKm)} km")
             KeyValue("⑦ 주행거리", "${km1(TripLogbook.printedKm(t))} km", strong = true)
-            KeyValue("출발 → 도착 장소", listOfNotNull(t.startPlace, t.endPlace).joinToString(" → ").ifBlank { "등록된 장소 아님" })
+            KeyValue(
+                "출발 → 도착 장소",
+                listOfNotNull(t.startPlace, t.endPlace).joinToString(" → ").ifBlank { if (t.family) "위치 기록 안 함 (가족 운행)" else "등록된 장소 아님" },
+            )
             t.routeTollEstimateKrw?.takeIf { it > 0 }?.let { KeyValue("내비 예상 통행료", "%,d원".format(it)) }
             if (t.purpose == TripPurpose.UNLOGGED_GAP) {
                 Muted("앱이 꺼져 있던 동안 계기판이 움직인 구간입니다. 업무로 바꿀 수 없고 비업무로 계산합니다.", Type.body)

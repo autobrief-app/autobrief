@@ -91,6 +91,20 @@ class PlatformLocationTest {
         gps.stop()
     }
 
+    @Test fun familyDrivePausesTheUpdatesAndAStartCommandMeanwhileDoesNotRestartThem() {
+        grant()
+        val gps = source()
+        assertTrue(gps.start())
+        gps.setPaused(true) // the core's locationPaused (가족 운행), applied by the monitor
+        assertTrue(shadowOf(lm).getLocationUpdateListeners(LocationManager.GPS_PROVIDER).isEmpty())
+        assertFalse("the service's next start command asks for nothing", gps.start())
+        assertTrue(shadowOf(lm).getLocationUpdateListeners(LocationManager.GPS_PROVIDER).isEmpty())
+        gps.setPaused(false) // the family trip closed
+        assertTrue(gps.running)
+        assertEquals(1, shadowOf(lm).getLocationUpdateListeners(LocationManager.GPS_PROVIDER).size)
+        gps.stop()
+    }
+
     @Test fun theFirstLaunchExplainsWhyAndAsksOnceOnly() {
         val first = Robolectric.buildActivity(MainActivity::class.java).setup()
         idle()

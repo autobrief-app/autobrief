@@ -63,12 +63,14 @@ class VehicleMonitorService : Service() {
         navi = PleosNaviSource(this) { e -> dispatch("navigation event") { it.onNavi(e) } }
         car = CarServices(this) { r -> dispatch("driving restrictions") { it.setRestricted(r) } }
         gps = PlatformLocationSource(this) { fix -> dispatch("gnss fix") { it.onPlatformFix(fix) } }
+        // no position is asked for until the logbook is read: 가족 운행 may be on (see attach)
+        navi.setLocationPaused(true)
+        gps.setPaused(true)
         // ticks and sending rounds run once the core is there (started in attach); a flush asked for before waits
         loops = MonitorLoops(scope, Dispatchers.IO, TICK_MS, FLUSH_EVERY_MS, ::logError, ::onTick) { sender.flush() }
         vehicle.start()
         navi.start()
         car.start()
-        gps.start()
         scope.launch { attach(autoBrief.awaitCore()) }
     }
 
@@ -80,6 +82,13 @@ class VehicleMonitorService : Service() {
         c.naviControl = AutoBriefCore.NaviControl { navi.requestLocation() }
         inputs.open(c)
         loops.start()
+        scope.launch {
+            // 가족 운행: navigation is asked for no position and the GNSS updates stop until the family trip closes
+            c.locationPaused.collect { paused ->
+                navi.setLocationPaused(paused)
+                gps.setPaused(paused)
+            }
+        }
         scope.launch {
             // new ledger entries reach the company endpoint within seconds of being written, not at the next periodic round
             core.sendable

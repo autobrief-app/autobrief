@@ -31,6 +31,10 @@ class PlatformLocationSource(context: Context, private val emit: (PlatformFix) -
     var running = false
         private set
 
+    /** While true no update is asked for and [start] does nothing (가족 운행, or the logbook is not read yet). */
+    @Volatile var paused = false
+        private set
+
     // every callback spelled out: on API 28-29 LocationListener has no default methods
     private val listener = object : LocationListener {
         override fun onLocationChanged(location: Location) = deliver(location)
@@ -45,7 +49,7 @@ class PlatformLocationSource(context: Context, private val emit: (PlatformFix) -
     @SuppressLint("MissingPermission") // checked just before; a revoked grant is a SecurityException, caught below
     fun start(): Boolean {
         val lm = manager ?: return false
-        if (running || !permitted(app)) return running
+        if (running || paused || !permitted(app)) return running
         val providers = buildList {
             if (LocationManager.GPS_PROVIDER in lm.allProviders) add(LocationManager.GPS_PROVIDER)
             if (Build.VERSION.SDK_INT >= 31 && lm.hasProvider(LocationManager.FUSED_PROVIDER)) add(LocationManager.FUSED_PROVIDER)
@@ -72,6 +76,12 @@ class PlatformLocationSource(context: Context, private val emit: (PlatformFix) -
     fun stop() {
         if (running) runCatching { manager?.removeUpdates(listener) }
         running = false
+    }
+
+    /** Pausing stops the updates at once; resuming starts them again when the permission is there. */
+    fun setPaused(on: Boolean) {
+        paused = on
+        if (on) stop() else start()
     }
 
     private fun deliver(location: Location) {

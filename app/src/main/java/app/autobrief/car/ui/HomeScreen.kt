@@ -51,6 +51,7 @@ fun HomeScreen(core: AutoBriefCore, wide: Boolean, vehicleStalled: Boolean, onOp
             last != null -> AutoConfirmCard(core, last)
             else -> ReadyCard(core, trips.lastOrNull { it.purpose != TripPurpose.UNLOGGED_GAP }, vehicleStalled)
         }
+        if (open == null) FamilyCard(core)
         if (pending.isNotEmpty()) PendingCard(core, pending, onOpen)
         if (todays.isNotEmpty()) TodayCard(todays)
     }
@@ -111,7 +112,11 @@ private fun TodayCard(todays: List<TripRecord>) {
                 Muted(
                     listOfNotNull(
                         listOfNotNull(t.startPlace, t.endPlace).joinToString("→").ifBlank { null },
-                        when (t.classifiedBy) { ClassifiedBy.AUTO -> "자동"; ClassifiedBy.VOICE -> "음성"; ClassifiedBy.SCREEN -> "화면"; else -> null },
+                        when (t.classifiedBy) {
+                            ClassifiedBy.AUTO -> "자동"; ClassifiedBy.VOICE -> "음성"; ClassifiedBy.SCREEN -> "화면"; ClassifiedBy.FAMILY -> "가족 운행"
+                            else -> null
+                        },
+                        if (t.family && t.classifiedBy != ClassifiedBy.FAMILY) "위치 기록 안 함" else null,
                         if (t.amended) "수정됨" else null,
                     ).joinToString(" · "),
                     Type.body,
@@ -128,11 +133,37 @@ private fun InProgressCard(core: AutoBriefCore) {
     val v by core.vehicle.collectAsState()
     val o = open ?: return
     val delta = (v.odometerKm ?: o.startOdometerKm) - o.startOdometerKm
-    Panel(border = p.accent) {
-        StatusPill("운행 기록 중", p.accent, filled = true)
+    Panel(border = if (o.family) p.personal else p.accent) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            StatusPill("운행 기록 중", p.accent, filled = true)
+            if (o.family) StatusPill(FAMILY_BADGE, p.personal, filled = true)
+        }
         Txt("+${km1(delta)} km", Type.hero)
         Txt("출발 ${hm(o.startEpochMs)} · 계기판 ${km1(o.startOdometerKm)} km" + (o.startPlace?.let { " · $it" } ?: ""), Type.body, p.muted)
-        Muted("도착해서 기어를 P로 바꾸면 운행기록부에 한 줄이 생깁니다. 집, 회사, 거래처로 등록한 곳이면 목적도 자동으로 적습니다.", Type.body)
+        Muted(
+            if (o.family) "도착해서 기어를 P로 바꾸면 거리만 비업무로 한 줄 남깁니다. 이번 운행은 위치를 읽지 않습니다."
+            else "도착해서 기어를 P로 바꾸면 운행기록부에 한 줄이 생깁니다. 집, 회사, 거래처로 등록한 곳이면 목적도 자동으로 적습니다.",
+            Type.body,
+        )
+    }
+}
+
+/** What the screen says while a family trip is driven (the home card and the driving view). */
+const val FAMILY_BADGE = "가족 운행 중 (위치 기록 안 함)"
+
+/**
+ * 가족 운행 for the next drive, switched while parked (the driving layout never shows it). Voice can also turn it on, for
+ * the drive under way too.
+ */
+@Composable
+private fun FamilyCard(core: AutoBriefCore) {
+    val p = LocalPalette.current
+    val settings by core.settings.collectAsState()
+    Panel(border = if (settings.familyNext) p.personal else null) {
+        ToggleRow("다음 운행은 가족 운행", settings.familyNext, trackColor = p.personal) { on ->
+            if (on) core.startFamilyDrive() else core.cancelFamilyDrive()
+        }
+        Muted("위치를 읽지 않고 거리만 비업무로 남깁니다", Type.body)
     }
 }
 
@@ -170,7 +201,15 @@ private fun AutoConfirmCard(core: AutoBriefCore, trip: TripRecord) {
     var reason by remember(trip.id) { mutableStateOf<String?>(null) }
     val auto = trip.classifiedBy == ClassifiedBy.AUTO
     Panel(border = p.purpose(trip.purpose)) {
-        StatusPill(if (auto) "자동 분류" else "기록 완료", p.purpose(trip.purpose), filled = true)
+        StatusPill(
+            when {
+                trip.family -> "가족 운행 (위치 기록 안 함)"
+                auto -> "자동 분류"
+                else -> "기록 완료"
+            },
+            p.purpose(trip.purpose),
+            filled = true,
+        )
         Txt("${withRo(trip.purpose.label)} 기록했습니다", Type.title)
         Txt(
             listOfNotNull(

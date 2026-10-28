@@ -39,6 +39,10 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
     @Volatile private var stopped = false
     private val quiet = QuietWatch(QUIET_MS, SystemClock::elapsedRealtime)
 
+    /** While true no position is asked for (가족 운행, or the logbook is not read yet); set by the monitor. */
+    @Volatile var locationPaused = false
+        private set
+
     private val listener = object : NaviHelperEventListener {
         override fun onRouteStarted(info: RouteStartInfo) {
             quiet.heard()
@@ -105,9 +109,15 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
         if (!stopped) main.postDelayed({ initialize(attempt + 1) }, Backoff.delayMs(attempt))
     }
 
-    /** The answer comes back through onCurrentLocationInfo. */
+    /** Resuming asks for the position at once (the requests skipped meanwhile are not made up later). */
+    fun setLocationPaused(on: Boolean) {
+        locationPaused = on
+        if (!on) requestLocation()
+    }
+
+    /** The answer comes back through onCurrentLocationInfo; nothing is asked while [locationPaused]. */
     fun requestLocation() {
-        if (!ready) return
+        if (!ready || locationPaused) return
         runCatching { navi.getCurrentLocationInfo() }.onFailure { Log.w(TAG, "location: ${it.message}") }
     }
 
