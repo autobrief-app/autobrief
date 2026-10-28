@@ -28,6 +28,9 @@ object ClassifiedBy {
     const val SCREEN = "화면"
     const val VOICE = "음성"
     const val AUTO = "자동"
+
+    /** 가족 운행: the purpose (비업무) came with family drive, turned on before or during the trip. One word: logs keep it. */
+    const val FAMILY = "가족"
 }
 
 /** Column ④ 사용자: the person who used the car. */
@@ -65,6 +68,8 @@ data class TripRecord(
     /** The purpose changed after it was first set; the ledger keeps every version. */
     val amended: Boolean = false,
     val source: String = TripSource.SDK,
+    /** 가족 운행: no location was read for this trip, so it has no places; only its distance is recorded. */
+    val family: Boolean = false,
 ) {
     val distanceKm: Double get() = endOdometerKm - startOdometerKm
 }
@@ -143,6 +148,11 @@ data class AppSettings(
      * it set queues them again. 0 = nothing pending.
      */
     val ledgerBackfillThroughSeq: Long = 0,
+    /**
+     * 가족 운행 is on for the next trip (the home switch, or voice while parked): that trip reads no location and is written
+     * as 비업무 without places. It stays on until such a row is written or the switch turns it off.
+     */
+    val familyNext: Boolean = false,
 )
 
 data class VehicleSnapshot(
@@ -178,4 +188,6 @@ data class OpenTripRecord(
     val startOdometerKm: Double,
     val tollEstimateKrw: Int? = null,
     val startPlace: String? = null,
+    /** A family trip (가족 운행): no location is read until it closes, and it has no start place. */
+    val family: Boolean = false,
 )

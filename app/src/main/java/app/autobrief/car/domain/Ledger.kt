@@ -7,6 +7,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
@@ -106,11 +107,14 @@ class Ledger(initial: List<LedgerEntry> = emptyList()) {
             put("vin", vin)
             put("source", r.source)
             put("toll", r.routeTollEstimateKrw)
-            if (r.purpose == TripPurpose.UNLOGGED_GAP) {
-                put("reason", r.memo)
-            } else {
-                put("startPlace", r.startPlace)
-                put("endPlace", r.endPlace)
+            when {
+                r.purpose == TripPurpose.UNLOGGED_GAP -> put("reason", r.memo)
+                // a family trip read no location: it has no place fields at all, only the mark
+                r.family -> put("family", true)
+                else -> {
+                    put("startPlace", r.startPlace)
+                    put("endPlace", r.endPlace)
+                }
             }
         }
 
@@ -122,8 +126,10 @@ class Ledger(initial: List<LedgerEntry> = emptyList()) {
             put("memo", r.memo)
             put("by", r.classifiedBy)
             put("autoReason", r.autoReason)
-            put("startPlace", r.startPlace)
-            put("endPlace", r.endPlace)
+            if (!r.family) {
+                put("startPlace", r.startPlace)
+                put("endPlace", r.endPlace)
+            }
         }
 
         fun amendBody(r: TripRecord, previous: TripPurpose, reason: String): JsonObject = buildJsonObject {
@@ -159,6 +165,7 @@ class Ledger(initial: List<LedgerEntry> = emptyList()) {
                         endPlace = b.str("endPlace"),
                         source = b.str("source") ?: "",
                         routeTollEstimateKrw = b.long("toll")?.toInt(),
+                        family = b.bool("family") ?: false,
                     )
                     LedgerKind.CLASSIFY, LedgerKind.AMEND -> {
                         val t = states[e.tripId]?.last() ?: continue
@@ -191,7 +198,7 @@ class Ledger(initial: List<LedgerEntry> = emptyList()) {
                 t.startEpochMs == r.startEpochMs && t.endEpochMs == r.endEpochMs &&
                 t.purpose == r.purpose && t.user == r.user && t.memo == r.memo &&
                 t.classifiedBy == r.classifiedBy && t.amended == r.amended && t.autoReason == r.autoReason &&
-                t.source == r.source && t.routeTollEstimateKrw == r.routeTollEstimateKrw &&
+                t.source == r.source && t.routeTollEstimateKrw == r.routeTollEstimateKrw && t.family == r.family &&
                 (t.startPlace == null || t.startPlace == r.startPlace) && (t.endPlace == null || t.endPlace == r.endPlace)
 
         /**
@@ -248,5 +255,6 @@ class Ledger(initial: List<LedgerEntry> = emptyList()) {
         private fun JsonObject.str(k: String) = (this[k] as? JsonPrimitive)?.takeIf { it.isString }?.content
         private fun JsonObject.long(k: String) = (this[k] as? JsonPrimitive)?.longOrNull
         private fun JsonObject.double(k: String) = (this[k] as? JsonPrimitive)?.doubleOrNull
+        private fun JsonObject.bool(k: String) = (this[k] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull
     }
 }

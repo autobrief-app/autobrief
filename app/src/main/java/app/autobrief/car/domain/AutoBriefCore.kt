@@ -137,7 +137,10 @@ class AutoBriefCore private constructor(
     /** Where the position the place rules would use now comes from (see [positionSource]). */
     enum class PositionSource { NAVIGATION, GPS }
 
-    data class OpenTripView(val startEpochMs: Long, val startOdometerKm: Double, val startPlace: String?)
+    data class OpenTripView(val startEpochMs: Long, val startOdometerKm: Double, val startPlace: String?, val family: Boolean = false)
+
+    /** What turning on 가족 운행 did: the open trip became a family trip, or the next trip will be one. */
+    enum class FamilyResult { CONVERTED, ARMED }
 
     data class Notice(val text: String, val fileName: String?)
 
@@ -218,6 +221,9 @@ class AutoBriefCore private constructor(
     /** The full check of the chain against the rows (see [refreshCheck]); a test wraps it to see where it runs. */
     internal var verify: (List<LedgerEntry>, List<TripRecord>) -> LedgerCheck = { entries, rows -> Ledger.check(entries, rows) }
 
+    /** The place rules a closed trip goes through ([AutoClassifier.classify]); a test wraps it to count the calls. */
+    internal var placeRules: (GeoPoint?, GeoPoint?, List<Place>) -> AutoClassifier.Result = AutoClassifier::classify
+
     private val _space = MutableStateFlow(space)
     private val _settings = MutableStateFlow(AppSettings())
     private val _vehicle = MutableStateFlow(VehicleSnapshot())
@@ -232,6 +238,7 @@ class AutoBriefCore private constructor(
     private val _notice = MutableStateFlow<Notice?>(null)
     private val _lastClosedId = MutableStateFlow<String?>(null)
     private val _workbook = MutableStateFlow<WorkbookRequest?>(null)
+    private val _locationPaused = MutableStateFlow(false)
 
     val activeSpace: StateFlow<Space> = _space.asStateFlow()
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
@@ -264,6 +271,12 @@ class AutoBriefCore private constructor(
     /** The report screen's workbook (see [requestWorkbook]); null = none asked for, or its message was cleared. */
     val workbook: StateFlow<WorkbookRequest?> = _workbook.asStateFlow()
 
+    /**
+     * 가족 운행 is on (armed for the next trip, or the open trip is a family trip): the monitor asks navigation for no
+     * position and stops the GNSS updates, and the core drops any position that still arrives.
+     */
+    val locationPaused: StateFlow<Boolean> = _locationPaused.asStateFlow()
+
     val demoMode: Boolean get() = space == Space.DEMO
 
     private var routeToll: Int? = null
@@ -273,6 +286,12 @@ class AutoBriefCore private constructor(
     private var openStartLabel: String? = null
     private var openTripSaved = false
     private var connectedLogged = false
+
+    /** The open trip is a family trip (가족 운행): no position is asked for or used until it closes. */
+    private var openFamily = false
+
+    /** Family drive is on: for the open trip, or armed for the next one. */
+    private val familyOn: Boolean get() = openFamily || _settings.value.familyNext
 
     /** The running PIN lock's end on the [monotonic] clock; null = not locked. */
     private var pinLockUntilMono: Long? = null
@@ -349,10 +368,12 @@ class AutoBriefCore private constructor(
         pendingAuto = null
         openStartPoint = null
         openStartLabel = null
+        openFamily = false
         openTripSaved = d.openTrip != null
         pinLockUntilMono = null
         pinLockRestored = false
         d.openTrip?.let(::resumeOpenTrip)
+        updateLocationPaused()
         checkRound++ // a check of the logbook left behind must not land on this one
         _check.value = o.check
         // the new logbook needs the car's current state to detect the next departure correctly
@@ -364,9 +385,10 @@ class AutoBriefCore private constructor(
     /** The trip that was open when the app stopped goes on (it closes at the next P); one already written is dropped. */
     private fun resumeOpenTrip(t: OpenTripRecord) {
         if (logbook.resume(TripLogbook.OpenTrip(t.startEpochMs, t.startOdometerKm, t.tollEstimateKrw))) {
-            _open.value = OpenTripView(t.startEpochMs, t.startOdometerKm, t.startPlace)
-            openStartLabel = t.startPlace
-            log("TRIP_RESUMED odo=${t.startOdometerKm}")
+            openFamily = t.family
+            openStartLabel = t.startPlace.takeUnless { t.family }
+            _open.value = OpenTripView(t.startEpochMs, t.startOdometerKm, openStartLabel, t.family)
+            log("TRIP_RESUMED odo=${t.startOdometerKm}" + if (t.family) " family=true" else "")
         } else {
             saveOpenTrip(null)
         }
@@ -380,7 +402,7 @@ class AutoBriefCore private constructor(
     /** The open trip as saved: its start values, the toll estimate known so far and the start place label. */
     private fun saveOpenTripNow() {
         val o = logbook.openTrip ?: return
-        saveOpenTrip(OpenTripRecord(o.startEpochMs, o.startOdometerKm, o.tollEstimateKrw, openStartLabel))
+        saveOpenTrip(OpenTripRecord(o.startEpochMs, o.startOdometerKm, o.tollEstimateKrw, openStartLabel, openFamily))
     }
 
     /**
@@ -456,7 +478,8 @@ class AutoBriefCore private constructor(
             }
             is NaviEvent.Arrived -> Unit
             NaviEvent.RouteEnded -> routeToll = null
-            is NaviEvent.Location -> {
+            // family drive: a position that still arrives is not kept, not used and not logged
+            is NaviEvent.Location -> if (!familyOn) {
                 val now = clock()
                 _navi.update { it.copy(ready = true, location = e.point, locationEpochMs = now) }
                 updatePositionSource(now)
@@ -486,6 +509,7 @@ class AutoBriefCore private constructor(
      * and precise enough to tell places apart. Like navigation's position it stays in memory.
      */
     fun onPlatformFix(fix: PlatformFix) {
+        if (familyOn) return // family drive: dropped unread, like navigation's
         val p = fix.point
         if (!p.lat.isFinite() || !p.lon.isFinite() || p.lat !in -90.0..90.0 || p.lon !in -180.0..180.0) return
         if (p.lat == 0.0 && p.lon == 0.0) return
@@ -554,21 +578,27 @@ class AutoBriefCore private constructor(
             _open.value = null
             openStartPoint = null
             openStartLabel = null
+            // a family trip that moved nowhere wrote no row; an armed family drive stays armed for the next one
+            openFamily = false
+            updateLocationPaused()
             if (openTripSaved) saveOpenTrip(null)
         }
-        if (gear == Gear.PARK || gear == Gear.DRIVE) naviControl?.requestLocation()
+        if ((gear == Gear.PARK || gear == Gear.DRIVE) && !familyOn) naviControl?.requestLocation()
     }
 
     /** The last trip's card stays until it is handled: a gear shuffle that writes no row must not hide it. */
     private fun openTripStarted() {
         val open = logbook.openTrip ?: return
         val now = clock()
-        openStartPoint = freshLocation(now, START_LOCATION_MAX_AGE_MS)
+        // a trip that opens while family drive is armed is a family trip: no start position, no start place
+        if (_settings.value.familyNext) openFamily = true
+        openStartPoint = if (openFamily) null else freshLocation(now, START_LOCATION_MAX_AGE_MS)
         val label = openStartPoint?.let { AutoClassifier.nearest(it, allPlaces()) }?.label
         openStartLabel = label
-        _open.value = OpenTripView(open.startEpochMs, open.startOdometerKm, label)
+        _open.value = OpenTripView(open.startEpochMs, open.startOdometerKm, label, openFamily)
         saveOpenTripNow()
-        log("TRIP_OPENED odo=${open.startOdometerKm}")
+        updateLocationPaused()
+        log("TRIP_OPENED odo=${open.startOdometerKm}" + if (openFamily) " family=true" else "")
     }
 
     /** Rows just produced by the logbook: gap rows and closed trips go into the ledger as they are. */
@@ -587,6 +617,10 @@ class AutoBriefCore private constructor(
     }
 
     private fun tripClosed(row: TripRecord) {
+        if (openFamily) {
+            familyTripClosed(row)
+            return
+        }
         val now = clock()
         _open.value = null
         _lastClosedId.value = row.id
@@ -606,6 +640,26 @@ class AutoBriefCore private constructor(
         applyPlaces(row, start, arrival, writeTrip = true)
     }
 
+    /**
+     * A family trip parks: its row is 비업무 with the memo "가족 운행", marked family in the ledger, with no place fields and
+     * without the place rules. Family drive ends with it: positions are asked for and used again from here.
+     */
+    private fun familyTripClosed(row: TripRecord) {
+        _open.value = null
+        _lastClosedId.value = row.id
+        openFamily = false
+        openStartPoint = null
+        openStartLabel = null
+        val marked = logbook.markFamily(row.id) ?: row
+        appendLedger(LedgerKind.TRIP, marked, Ledger.tripBody(marked, currentVin()))
+        val (_, updated) = logbook.classify(marked.id, TripPurpose.PERSONAL, defaultUser(), FAMILY_MEMO, ClassifiedBy.FAMILY) ?: return
+        appendLedger(LedgerKind.CLASSIFY, updated, Ledger.classifyBody(updated))
+        if (_settings.value.familyNext) writeSettings(_settings.value.copy(familyNext = false))
+        updateLocationPaused()
+        logClosed(updated)
+        closeMonthIfDue()
+    }
+
     private fun resolvePendingAuto(arrival: GeoPoint?) {
         val p = pendingAuto ?: return
         pendingAuto = null
@@ -616,7 +670,7 @@ class AutoBriefCore private constructor(
 
     /** Place labels for the row; when a place rule decides the purpose, the trip is classified automatically. */
     private fun applyPlaces(row: TripRecord, start: GeoPoint?, end: GeoPoint?, writeTrip: Boolean) {
-        val result = AutoClassifier.classify(start, end, allPlaces())
+        val result = placeRules(start, end, allPlaces())
         val placed = logbook.setPlaces(row.id, result.startLabel, result.endLabel) ?: row
         if (writeTrip) appendLedger(LedgerKind.TRIP, placed, Ledger.tripBody(placed, currentVin()))
         val purpose = result.purpose
@@ -635,7 +689,8 @@ class AutoBriefCore private constructor(
     private fun logClosed(r: TripRecord) {
         log(
             "TRIP_CLOSED id=${r.id} start=${r.startOdometerKm} end=${r.endOdometerKm} km=${TripLogbook.round1(r.distanceKm)} " +
-                "purpose=${r.purpose.name} by=${r.classifiedBy ?: "-"} reason=${logReason(r.autoReason)}",
+                "purpose=${r.purpose.name} by=${r.classifiedBy ?: "-"} reason=${logReason(r.autoReason)}" +
+                if (r.family) " family=true" else "",
         )
     }
 
@@ -644,6 +699,57 @@ class AutoBriefCore private constructor(
         reason == null -> "-"
         detailLogs -> reason
         else -> "hidden"
+    }
+
+    // ---------------------------------------------------------------- family drive (가족 운행)
+
+    /**
+     * Turns on 가족 운행 (the home switch, or voice): a trip already open becomes a family trip and the start place it
+     * captured is dropped; parked with no open trip, the next trip will be one. From now until that trip closes no
+     * position is asked for or used, and the positions held so far are forgotten.
+     */
+    fun startFamilyDrive(): FamilyResult {
+        if (logbook.openTrip != null) {
+            if (!openFamily) {
+                openFamily = true
+                openStartPoint = null
+                openStartLabel = null
+                _open.value = _open.value?.copy(startPlace = null, family = true)
+                saveOpenTripNow()
+                updateLocationPaused()
+                log("FAMILY_DRIVE on=open")
+            }
+            return FamilyResult.CONVERTED
+        }
+        if (!_settings.value.familyNext) {
+            writeSettings(_settings.value.copy(familyNext = true))
+            updateLocationPaused()
+            log("FAMILY_DRIVE on=next")
+        }
+        return FamilyResult.ARMED
+    }
+
+    /** The home switch turned off before the drive: the next trip is an ordinary one again. A family trip under way stays one. */
+    fun cancelFamilyDrive() {
+        if (!_settings.value.familyNext) return
+        writeSettings(_settings.value.copy(familyNext = false))
+        updateLocationPaused()
+        log("FAMILY_DRIVE off")
+    }
+
+    /**
+     * Follows [familyOn]. When it turns on, a trip whose place rules still wait for the arrival position (the drive before
+     * this one) is settled with what is held now, then every position held is forgotten.
+     */
+    private fun updateLocationPaused() {
+        val on = familyOn
+        if (on && !_locationPaused.value) {
+            pendingAuto?.let { resolvePendingAuto(freshLocation(clock(), LOCATION_FRESH_MS)) }
+            _navi.update { it.copy(location = null, locationEpochMs = 0) }
+            gnssFix = null
+            _positionSource.value = null
+        }
+        _locationPaused.value = on
     }
 
     // ---------------------------------------------------------------- places
@@ -1036,6 +1142,7 @@ class AutoBriefCore private constructor(
             adminPinLockedUntilMs = current.adminPinLockedUntilMs,
             lastMonthlyCloseYm = current.lastMonthlyCloseYm,
             vin = current.vin,
+            familyNext = current.familyNext,
             ledgerBackfillThroughSeq = if (firstAddress) ledger.headSeq else current.ledgerBackfillThroughSeq,
             fiscalYearStartMonth = new.fiscalYearStartMonth.coerceIn(1, 12),
             defaultUserIndex = new.defaultUserIndex.coerceIn(0, (new.users.size - 1).coerceAtLeast(0)),
@@ -1392,6 +1499,7 @@ class AutoBriefCore private constructor(
     }
 
     private fun gleoLogPurpose(params: JsonObject): GleoReply {
+        if (params.str("purpose")?.uppercase() == "FAMILY") return gleoFamily()
         val purpose = when (params.str("purpose")?.uppercase()) {
             "COMMUTE" -> TripPurpose.COMMUTE
             "BUSINESS" -> TripPurpose.BUSINESS
@@ -1418,6 +1526,24 @@ class AutoBriefCore private constructor(
             "The last trip of ${"%.0f".format(km)} km was logged as ${purpose.name.lowercase()} use.",
             JsonArray(listOf(buildJsonObject { put("distanceKm", km); put("purpose", purpose.label) })),
         )
+    }
+
+    /**
+     * FAMILY turns on 가족 운행 for the drive under way, or parked for the next one. It never labels a drive that already
+     * ended: a trip that ended within the voice window and still has no purpose is the one such a request is about, so it
+     * is refused (its location was read; the purpose buttons or voice give it 비업무).
+     */
+    private fun gleoFamily(): GleoReply {
+        if (logbook.openTrip == null) {
+            val ended = logbook.lastTrip()?.takeIf { clock() - it.endEpochMs <= VOICE_CLASSIFY_WINDOW_MS }
+            if (ended != null && ended.purpose == TripPurpose.UNCLASSIFIED) {
+                return GleoReply("fail", "Family drive can only start before or during a drive.")
+            }
+        }
+        return when (startFamilyDrive()) {
+            FamilyResult.CONVERTED -> GleoReply("success", "Family drive on: no location is read for this drive.")
+            FamilyResult.ARMED -> GleoReply("success", "Family drive on: no location is read for the next drive.")
+        }
     }
 
     private fun gleoStatus(params: JsonObject): GleoReply {
@@ -1528,6 +1654,9 @@ class AutoBriefCore private constructor(
         const val GLEO_PACKAGE = "ai.umos.ambientai"
         const val GLEO_SENDER_PERMISSION = "ai.umos.gleo.permission.APP_ACTION"
         private const val MEMO_MAX = 80
+
+        /** The memo of a family trip's row (가족 운행). */
+        const val FAMILY_MEMO = "가족 운행"
 
         /** [payloadJson] with [vin] in its car block when the block has none; every other field stays as queued. */
         fun fillMissingVin(payloadJson: String, vin: String?): String {

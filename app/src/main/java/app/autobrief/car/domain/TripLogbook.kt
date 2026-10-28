@@ -198,6 +198,14 @@ class TripLogbook(initial: List<TripRecord> = emptyList()) {
         return before to updated
     }
 
+    /** Marks [id] as a family trip (가족 운행): no location was read for it, so it keeps no places. */
+    fun markFamily(id: String): TripRecord? {
+        val index = rows.indexOfFirst { it.id == id }
+        if (index < 0) return null
+        rows[index] = rows[index].copy(family = true, startPlace = null, endPlace = null)
+        return rows[index]
+    }
+
     fun setPlaces(id: String, startPlace: String?, endPlace: String?): TripRecord? {
         val index = rows.indexOfFirst { it.id == id }
         if (index < 0) return null

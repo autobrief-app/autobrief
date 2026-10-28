@@ -126,7 +126,7 @@ object LogbookExport {
         return Sheet(title, header, COLUMNS, rows, totals, note, "자동차등록번호 ${settings.plateNumber}" to pagePeriod)
     }
 
-    private fun remarks(r: TripRecord): String = buildList {
+    private fun remarks(r: TripRecord): String = if (r.family) familyRemarks(r) else buildList {
         when (r.purpose) {
             TripPurpose.PERSONAL -> add("비업무")
             TripPurpose.UNCLASSIFIED -> add("미분류")
@@ -140,6 +140,19 @@ object LogbookExport {
         if (r.amended) add("수정됨")
         if (r.memo.isNotBlank() && r.purpose != TripPurpose.UNLOGGED_GAP) add(r.memo)
     }.joinToString(", ")
+
+    /**
+     * ⑩ of a family trip (가족 운행): no location was read for it. As recorded it is 개인 운행; corrected to a business purpose
+     * (⑧ or ⑨ then holds the distance) it still says that no location was recorded. The default memo is not repeated.
+     */
+    private fun familyRemarks(r: TripRecord): String = buildList {
+        add(if (r.purpose == TripPurpose.PERSONAL) FAMILY_REMARK else NO_LOCATION_REMARK)
+        if (r.amended) add("수정됨")
+        if (r.memo.isNotBlank() && r.memo != AutoBriefCore.FAMILY_MEMO) add(r.memo)
+    }.joinToString(", ")
+
+    const val FAMILY_REMARK = "개인 운행(위치 기록 안 함)"
+    const val NO_LOCATION_REMARK = "위치 기록 안 함"
 
     /** A gap row is dated by its start in ③; when the unlogged stretch runs over days, ⑩ gives the whole range. */
     private fun gapLabel(r: TripRecord): String {
@@ -188,11 +201,13 @@ object LogbookExport {
         fun s(k: String) = (b[k] as? JsonPrimitive)?.takeIf { it.isString }?.content
         fun d(k: String) = (b[k] as? JsonPrimitive)?.content?.toDoubleOrNull()
         fun purpose(k: String) = s(k)?.let { runCatching { TripPurpose.valueOf(it).label }.getOrNull() } ?: "-"
+        val family = (b["family"] as? JsonPrimitive)?.takeIf { !it.isString }?.content == "true"
         val user = s("userName")?.let { n -> " · $n" + (s("userDept")?.takeIf { it.isNotBlank() }?.let { "($it)" } ?: "") } ?: ""
         return when (e.kind) {
             LedgerKind.TRIP, LedgerKind.GAP -> "계기판 ${"%,.1f".format(d("startOdometerKm") ?: 0.0)} → ${"%,.1f".format(d("endOdometerKm") ?: 0.0)} km" +
                 (s("source")?.takeIf { it != TripSource.SDK }?.let { " · $it" } ?: "") +
-                (d("toll")?.takeIf { it > 0 }?.let { " · 내비 예상 통행료 ${"%,d".format(it.toLong())}원" } ?: "")
+                (d("toll")?.takeIf { it > 0 }?.let { " · 내비 예상 통행료 ${"%,d".format(it.toLong())}원" } ?: "") +
+                (if (family) ", family=true(가족 운행, 위치 기록 안 함)" else "")
             LedgerKind.CLASSIFY -> purpose("purpose") + user + " · ${s("by") ?: "-"}" + (s("autoReason")?.let { "($it)" } ?: "")
             LedgerKind.AMEND -> "${purpose("previousPurpose")} → ${purpose("purpose")}$user · ${s("by") ?: "-"} · 사유: ${s("reason") ?: "-"}"
             else -> e.body
