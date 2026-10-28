@@ -49,6 +49,8 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 .chip.commute{background:var(--commute)}.chip.business{background:var(--business)}
 .chip.personal{background:var(--personal)}.chip.pending{background:var(--pending)}.chip.gap{background:var(--gap)}
 .tag{margin-left:6px;padding:0 6px;border:1px solid var(--pending);border-radius:6px;color:var(--pending);font-size:16px}
+.tag.family{border-color:var(--personal);color:var(--personal)}
+.fuel{margin:6px 0 0;font-size:20px;font-weight:700}
 small{margin-left:6px;color:var(--muted)}
 .none{padding:18px;color:var(--muted)}
 .files{display:flex;flex-direction:column;gap:6px}
@@ -130,7 +132,8 @@ tr.tampered.flash td{animation-name:flashbad}   /* the fade ends on the tamper t
     purpose.appendChild(el('span', 'chip ' + (CHIP[t.purpose] || 'pending'), t.purposeLabel));
     tr.appendChild(purpose);
     tr.appendChild(el('td', '', t.user || '-'));
-    var how = el('td', '', t.by || '-');
+    var how = el('td', '', t.family ? '' : (t.by || '-'));
+    if (t.family) how.appendChild(el('span', 'tag family', '가족 운행 (위치 기록 안 함)'));   // no location was read for it
     if (t.autoReason) how.appendChild(el('small', '', t.autoReason));
     if (t.amended) {
       var tag = el('span', 'tag', '수정됨');
@@ -190,6 +193,7 @@ tr.tampered.flash td{animation-name:flashbad}   /* the fade ends on the tamper t
     band.appendChild(ratio);
     band.appendChild(stats);
     sec.appendChild(band);
+    if (car.fuelReimbursement) sec.appendChild(el('div', 'fuel', car.fuelReimbursement.text));   // an own car used for work
 
     sec.appendChild(el('div', 'sect', '최근 운행 (최신순, 최대 30건)'));
     var box = el('div', 'tablebox');

@@ -125,6 +125,21 @@ def car_key(car):
     return next((car[k].strip() for k in ("vin", "plate") if isinstance(car.get(k), str) and car[k].strip()), None)
 
 CHAIN_ID = re.compile(r"[0-9A-Za-z_-]{1,64}")
+MONTH = re.compile(r"\d{4}-\d{2}")
+
+def fuel_line(p):
+    """An own car's month workbook carries its fuel reimbursement (fuelReimbursement.months): the newest month that has an
+    amount, as the one line the page shows, else None. Anything malformed is ignored, never a reason to refuse the file."""
+    f = p.get("fuelReimbursement")
+    best = None
+    for m in (f.get("months") if isinstance(f, dict) else None) or []:
+        if not isinstance(m, dict) or not isinstance(m.get("month"), str) or not MONTH.fullmatch(m["month"]):
+            continue
+        amount = num(m.get("amountKrw"))
+        if amount is None or amount < 0 or (best is not None and m["month"] < best["month"]):
+            continue
+        best = {"month": m["month"], "amountKrw": int(amount), "text": "유류비 정산 {:,}원 ({})".format(int(amount), m["month"])}
+    return best
 
 SPACES = ("live", "demo")
 
@@ -167,6 +182,12 @@ class Car:
         self.last_seq, self.last_hash = 0, GENESIS
         self.status, self.alerts, self.view = OK, [], None        # view None = projection stale
         self.idem_q, self.idem_s = deque(), set()
+        self.fuel = None                                          # an own car: the newest month's fuel reimbursement line
+
+    def take_fuel(self, p):
+        line = fuel_line(p)
+        if line and (self.fuel is None or line["month"] >= self.fuel["month"]):
+            self.fuel = line
 
     def update_meta(self, car):
         self.meta.update({k: v for k, v in car.items() if k in self.meta and isinstance(v, str) and v})
@@ -239,10 +260,11 @@ def project(entries):
         b, bad = e["bodyObj"] or {}, e["status"] in BAD_ENTRY
         if e["kind"] in ("TRIP", "GAP"):
             start, gap = epoch(b.get("startEpochMs"), e["epochMs"]), e["kind"] == "GAP"
+            family = not gap and b.get("family") is True     # 가족 운행: no location was read; non-business from the start
             trips[e["tripId"]] = {
                 "id": e["tripId"], "start": start, "end": epoch(b.get("endEpochMs"), start),
-                "so": num(b.get("startOdometerKm")), "eo": num(b.get("endOdometerKm")),
-                "purpose": "UNLOGGED_GAP" if gap else "UNCLASSIFIED", "user": "",
+                "so": num(b.get("startOdometerKm")), "eo": num(b.get("endOdometerKm")), "family": family,
+                "purpose": "UNLOGGED_GAP" if gap else ("PERSONAL" if family else "UNCLASSIFIED"), "user": "",
                 "memo": txt(b.get("reason")) if gap else "", "by": "", "autoReason": "",
                 "amended": False, "amendReason": "", "bad": bad}
             continue
@@ -290,7 +312,7 @@ def build_view(car):
             "time": "%s~%s" % (a.strftime("%H:%M"), b.strftime("%H:%M")),
             "startOdometerKm": t["so"], "endOdometerKm": t["eo"], "distanceKm": t["dist"],
             "purpose": t["purpose"], "purposeLabel": LABELS[t["purpose"]], "user": t["user"],
-            "memo": t["memo"], "by": t["by"], "autoReason": t["autoReason"], "amended": t["amended"],
+            "memo": t["memo"], "by": t["by"], "autoReason": t["autoReason"], "amended": t["amended"], "family": t["family"],
             "amendReason": t["amendReason"], "status": TAMPER if t["bad"] else OK})
     return {"month": stats([t for t in rows if t["dt"].strftime("%Y-%m") == ym], ym),
             "year": stats([t for t in rows if t["dt"].year == rows[0]["dt"].year], ym[:4]),
@@ -366,6 +388,7 @@ class Store:
             raise ValueError("car")
         car.update_meta(p["car"])
         if p.get("type") == "logbook_archive":
+            car.take_fuel(p)
             name = sanitize(p["savedAs"])
             if os.path.isfile(os.path.join(self.arch_dir, name)):
                 pending.append(self._rec(car.key, p, name, txt(p["receivedAt"])))
@@ -412,6 +435,7 @@ class Store:
             f.write(data)
         os.replace(path + ".tmp", path)
         rec = self._rec(car.key, p, name, now_iso())
+        car.take_fuel(p)
         line = {k: v for k, v in p.items() if k != "xlsxBase64"}
         self._append(car_key(p["car"]), dict(line, savedAs=name, receivedAt=rec["receivedAt"]))
         self._register(rec)
@@ -432,6 +456,7 @@ class Store:
                 arch = [dict({k: a[k] for k in ARCHIVE_PUBLIC}, url="/archives/" + quote(a["savedAs"]))
                         for a in reversed(self.archives) if a["key"] == car.key]
                 cars.append({"key": car.key, **car.meta, "chainId": car.chain, "label": car.label, "chainStatus": car.status, "entries": len(car.by_seq),
+                             "fuelReimbursement": car.fuel,
                              "lastSeq": car.last_seq, "lastHashShort": (h[:4] + "-" + h[4:8]).upper() if h else "",
                              **car.view, "archives": arch, "alerts": list(car.alerts)})
             return {"generatedAt": now_iso(), "cars": cars}

@@ -165,6 +165,48 @@ class ChainTests(Base):
         self.assertIn("중간 기록 누락 (순번 1~1)", self.texts(key="12가 3456"))
         self.assertTrue(os.path.isfile(os.path.join(self.tmp, "12가_3456.jsonl")))
 
+class FamilyAndFuelTests(Base):
+    """A family trip (가족 운행) arrives without places; an own car's month workbook carries its fuel reimbursement."""
+
+    def family_trip(self, ch, n, start, so, eo):
+        return ch.add("TRIP", "TRIP-%d" % n, {"id": "TRIP-%d" % n, "startEpochMs": start, "endEpochMs": start + 1800000,
+                      "startOdometerKm": so, "endOdometerKm": eo, "vin": ch.car["vin"], "source": "SDK", "toll": None, "family": True}, start)
+
+    def test_a_family_trip_is_shown_as_such_and_counted_as_non_business(self):
+        ch = Chain()
+        self.feed(ch.trip(1, T, 1000.0, 1010.0), ch.classify(1, "BUSINESS"), self.family_trip(ch, 2, T + H, 1010.0, 1022.0))
+        trip = self.car()["recentTrips"][0]
+        # the TRIP entry alone already counts as non-business, before its CLASSIFY arrives
+        self.assertEqual((trip["id"], trip["family"], trip["purpose"], trip["purposeLabel"]), ("TRIP-2", True, "PERSONAL", "비업무"))
+        self.assertEqual(self.car()["month"]["unclassifiedCount"], 0)
+        self.feed(ch.add("CLASSIFY", "TRIP-2", {"id": "TRIP-2", "purpose": "PERSONAL", "userName": "홍길동", "userDept": "영업팀",
+                                                "memo": "가족 운행", "by": "가족", "autoReason": None}))
+        car = self.car()
+        trip, plain = car["recentTrips"][0], car["recentTrips"][1]
+        self.assertEqual((trip["family"], trip["purpose"], plain["family"]), (True, "PERSONAL", False))
+        m = car["month"]
+        self.assertEqual((m["totalKm"], m["businessKm"], m["personalKm"], m["ratioPct"]), (22.0, 10.0, 12.0, 45.5))
+        page = open(os.path.join(fc.HERE, "dashboard.html"), encoding="utf-8").read()
+        self.assertIn("가족 운행 (위치 기록 안 함)", page)
+
+    def test_the_month_workbook_of_an_own_car_shows_one_fuel_line(self):
+        self.feed(Chain().trip(1, T, 1000.0, 1010.0))
+        self.assertIsNone(self.car()["fuelReimbursement"])
+        fuel = {"basis": "BUSINESS", "totalKrw": 42580, "months": [
+            {"month": "2026-09", "businessKm": 100.0, "amountKrw": 13630},
+            {"month": "2026-10", "businessKm": 312.4, "litersPer100Km": 8.26, "kmPerLiter": 12.1,
+             "economySource": "차량 누적 연비", "priceKrwPerLiter": 1650, "amountKrw": 42580}]}
+        self.assertEqual(self.store.ingest(dict(archive_payload(), fuelReimbursement=fuel))[0], 200)
+        self.assertEqual(self.car()["fuelReimbursement"], {"month": "2026-10", "amountKrw": 42580, "text": "유류비 정산 42,580원 (2026-10)"})
+        # a later workbook without an amount (no economy yet) does not hide the last one; junk is ignored, never a 400
+        junk = {"months": [{"month": "2026-11", "amountKrw": None}, "x", {"month": 5, "amountKrw": "9"}]}
+        self.assertEqual(self.store.ingest(dict(archive_payload(name="b.xlsx"), fuelReimbursement=junk))[0], 200)
+        self.assertEqual(self.store.ingest(dict(archive_payload(name="c.xlsx"), fuelReimbursement="nonsense"))[0], 200)
+        self.assertEqual(self.car()["fuelReimbursement"]["amountKrw"], 42580)
+        again = fc.Store(self.tmp)                                                 # restored from the stored lines
+        self.assertEqual({**self.store.state(), "generatedAt": 0}, {**again.state(), "generatedAt": 0})
+        self.assertIn("fuelReimbursement", open(os.path.join(fc.HERE, "dashboard.html"), encoding="utf-8").read())
+
 class LimitTests(Base):
     def test_idempotency_keys_are_deduped_and_bounded(self):
         ch = Chain()
