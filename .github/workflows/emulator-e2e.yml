@@ -132,6 +132,12 @@ jobs:
       - name: Play the scenarios and verify
         run: python3 demo/director.py --scenario all --mode auto --fast --verify --out e2e-out
 
+      - name: Play the optional family and fuel scenes and verify
+        # docs/DEMO.md scenes 8 and 9; they go on from the odometer where `all` ends
+        run: |
+          python3 demo/director.py --scenario family --mode auto --fast --verify --out e2e-out/family
+          python3 demo/director.py --scenario fuel --mode auto --fast --verify --out e2e-out/fuel
+
       - name: Collect the recording, logcat and fleet state
         if: always()
         # Best effort: when an earlier step failed the emulator or the console may not exist.
