@@ -64,7 +64,7 @@ class FuelSettlementTest {
         assertEquals(FuelReimbursement.Source.VEHICLE, m.economySource)
         assertEquals(312.4, m.result.businessKm, 1e-9)
         assertEquals(42_580L, m.result.amountKrw)
-        assertEquals("이번 달 업무 312.4km, 평균 연비 12.1km/L(차량 누적 연비), 유가 1,650원/L, 정산 42,580원", fuelLine(m, withCommute = false))
+        assertEquals("이번 달 업무 312.4km, 평균 연비 12.1km/L(100km당 8.26L, 차량 누적 연비), 유가 1,650원/L, 정산 42,580원", fuelLine(m, withCommute = false))
         // 출퇴근 포함: the commute's 18 km counts too
         h.core.saveSettings(h.core.settings.value.copy(fuelBasis = FuelBasis.WITH_COMMUTE), null, null)
         assertEquals(330.4, h.core.fuelSettlement(october)!!.result.businessKm, 1e-9)
@@ -86,7 +86,7 @@ class FuelSettlementTest {
         val manual = h.core.fuelSettlement(october)!!
         assertEquals(FuelReimbursement.Source.MANUAL, manual.economySource)
         assertEquals(42_580L, manual.result.amountKrw)
-        assertEquals("이번 달 업무 312.4km, 평균 연비 12.1km/L(직접 입력), 유가 1,650원/L, 정산 42,580원", fuelLine(manual, withCommute = false))
+        assertEquals("이번 달 업무 312.4km, 평균 연비 12.1km/L(100km당 8.26L, 직접 입력), 유가 1,650원/L, 정산 42,580원", fuelLine(manual, withCommute = false))
         // a valid reading from the car wins over the owner's figure, and a later invalid one does not undo it
         h.core.onVehicle(VehicleEvent.FuelEconomy(7.0))
         h.core.onVehicle(VehicleEvent.FuelEconomy(0.0))

@@ -80,7 +80,7 @@ class FamilyAndFuelUiTest {
         h.core.classifyTrip(h.core.trips.value.single().id, TripPurpose.BUSINESS, null, "", ClassifiedBy.SCREEN)
         compose.waitForIdle()
         compose.onNodeWithText("42,580원").assertExists()
-        compose.onNodeWithText("이번 달 업무 312.4km, 평균 연비 12.1km/L(차량 누적 연비), 유가 1,650원/L, 정산 42,580원").assertExists()
+        compose.onNodeWithText("이번 달 업무 312.4km, 평균 연비 12.1km/L(100km당 8.26L, 차량 누적 연비), 유가 1,650원/L, 정산 42,580원").assertExists()
     }
 
     @Test fun anElectricCarIsToldItsSettlementComesLater() {

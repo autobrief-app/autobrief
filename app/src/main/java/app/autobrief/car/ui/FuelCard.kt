@@ -12,13 +12,16 @@ import java.time.YearMonth
 
 /**
  * The settlement in one sentence, every number from the calculation:
- * "이번 달 업무 312.4km, 평균 연비 12.1km/L(차량 누적 연비), 유가 1,650원/L, 정산 42,580원". Only for a month with an amount.
+ * "이번 달 업무 312.4km, 평균 연비 12.1km/L(100km당 8.26L, 차량 누적 연비), 유가 1,650원/L, 정산 42,580원". Only for a
+ * month with an amount. The amount is computed from L/100km to two decimals, so the line prints that figure too: from
+ * the km/L figure alone the sum would not come out (312.4 ÷ 12.1 × 1,650 rounds to 42,600).
  */
 fun fuelLine(m: FuelReimbursement.Month, withCommute: Boolean, label: String = "이번 달"): String {
     val r = m.result
     val economy = r.litersPer100Km?.let { "%.1f".format(FuelReimbursement.kmPerLiter(it)) } ?: "-"
+    val per100 = r.litersPer100Km?.let { "100km당 ${"%.2f".format(it)}L, " } ?: ""
     return "$label 업무${if (withCommute) "(출퇴근 포함)" else ""} ${km1(r.businessKm)}km, " +
-        "평균 연비 ${economy}km/L(${m.economySource?.label ?: "-"}), " +
+        "평균 연비 ${economy}km/L($per100${m.economySource?.label ?: "-"}), " +
         "유가 ${r.priceKrwPerLiter?.let { "%,d".format(it) } ?: "-"}원/L, 정산 ${r.amountKrw?.let { "%,d".format(it) } ?: "-"}원"
 }
 
