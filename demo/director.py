@@ -153,11 +153,18 @@ FAMILY_ON = Relay(
     "가족 운행 켜기 (Gleo 요청을 디버그 신호로 재현)",
 )
 FUEL_PRICE = 1650  # KRW per litre for the scripted scene (a round regional average, entered by hand in the app)
+# The Pleos emulator reports no cumulative fuel economy (e2e 2026-10-28: "property ID is not in carProperty"), so the
+# scene enters one by hand; the card then names its source "직접 입력".
+FUEL_KMPL = "12.1"
 
 
-def fuel_relay(price: int = FUEL_PRICE) -> Relay:
-    """내 차 mode with a fuel price (`--es cmd fuel`), as the owner would set them in the app's settings."""
-    return Relay("fuel", (("mode", "own"), ("price", str(price))), "내 차 모드, 유가 {:,}원/L".format(price))
+def fuel_relay(price: int = FUEL_PRICE, kmpl: str = FUEL_KMPL) -> Relay:
+    """내 차 mode with a fuel price and a hand-entered economy (`--es cmd fuel`), as the owner sets them in settings."""
+    return Relay(
+        "fuel",
+        (("mode", "own"), ("price", str(price)), ("kmpl", kmpl)),
+        "내 차 모드, 유가 {:,}원/L, 연비 {}km/L 직접 입력".format(price, kmpl),
+    )
 
 
 @dataclass(frozen=True)

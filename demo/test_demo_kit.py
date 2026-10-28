@@ -4845,7 +4845,7 @@ class OptionalScenesTests(unittest.TestCase):
     def test_the_fuel_scene_sets_own_car_mode_and_the_price_and_still_learns_its_places(self):
         steps = self.steps("fuel")
         relay = next(s for s in steps if isinstance(s, director.Relay))
-        self.assertEqual((relay.command, dict(relay.extras)), ("fuel", {"mode": "own", "price": "1650"}))
+        self.assertEqual((relay.command, dict(relay.extras)), ("fuel", {"mode": "own", "price": "1650", "kmpl": "12.1"}))
         self.assertLess(steps.index(relay), steps.index(director.SetGear("Drive")))
         self.assertEqual(sum(isinstance(s, director.AwaitPosition) for s in steps), 2)
 
