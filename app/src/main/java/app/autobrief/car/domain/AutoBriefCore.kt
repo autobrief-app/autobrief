@@ -431,7 +431,8 @@ class AutoBriefCore private constructor(
     /** The open trip as saved: its start values, the toll estimate known so far and the start place label. */
     private fun saveOpenTripNow() {
         val o = logbook.openTrip ?: return
-        saveOpenTrip(OpenTripRecord(o.startEpochMs, o.startOdometerKm, o.tollEstimateKrw, openStartLabel, openFamily))
+        // a family trip keeps only its distance: no toll estimate either
+        saveOpenTrip(OpenTripRecord(o.startEpochMs, o.startOdometerKm, o.tollEstimateKrw.takeUnless { openFamily }, openStartLabel, openFamily))
     }
 
     /**

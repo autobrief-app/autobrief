@@ -68,6 +68,7 @@ class FamilyDriveTest {
 
         h.here(SampleHistory.HOME.point) // still arriving: dropped
         h.advance(60_000); h.gear(Gear.DRIVE)
+        h.core.onNavi(NaviEvent.RouteStarted("가상 목적지", 1_800)) // a route on the map: its toll estimate is not kept either
         val open = h.core.openTrip.value!!
         assertTrue(open.family)
         assertNull(open.startPlace)
@@ -89,6 +90,7 @@ class FamilyDriveTest {
         assertEquals(ClassifiedBy.FAMILY, row.classifiedBy)
         assertEquals(user, row.user)
         assertNull(row.startPlace); assertNull(row.endPlace); assertNull(row.autoReason)
+        assertNull("only the distance: no route toll estimate", row.routeTollEstimateKrw)
         assertEquals("the place rules never ran", 0, rules())
         assertEquals(listOf(LedgerKind.TRIP, LedgerKind.CLASSIFY), h.core.ledgerFor(row.id).map { it.kind })
         val trip = body(h, row.id, LedgerKind.TRIP)
