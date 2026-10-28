@@ -2,6 +2,7 @@ package app.autobrief.car.domain
 
 import app.autobrief.car.model.AppSettings
 import app.autobrief.car.model.ClassifiedBy
+import app.autobrief.car.model.FuelBasis
 import app.autobrief.car.model.TripPurpose
 import app.autobrief.car.model.TripRecord
 import app.autobrief.car.model.TripSource
@@ -50,8 +51,11 @@ object LogbookExport {
         val ratioText: String get() = ratio?.let { "%.1f%%".format(it * 100) } ?: "-"
     }
 
-    /** A plain table sheet (the ledger listing). */
-    data class Table(val name: String, val columns: List<String>, val rows: List<List<Any?>>, val widths: List<Int>)
+    /** A plain table sheet (the ledger listing); [note] is printed under the rows across the whole width. */
+    data class Table(val name: String, val columns: List<String>, val rows: List<List<Any?>>, val widths: List<Int>, val note: String? = null)
+
+    /** A number printed with two decimals (the settlement's L/100 km, which the amount is computed from). */
+    data class Fixed2(val value: Double)
 
     val COLUMNS = listOf(
         "③사용일자(요일)", "④사용자 부서", "④사용자 성명",
@@ -188,6 +192,60 @@ object LogbookExport {
         )
     }
 
+    const val FUEL_SHEET = "유류비 정산"
+
+    /**
+     * 유류비 정산 (내 차 mode): one row per calendar month, its business distance, the economy in L/100km (two decimals, the
+     * figure the amount is computed from) and km/L, where the economy came from, the fuel price and the amount; a total
+     * row under them. A month without an economy or a price shows "-" and the note says why: no figure is assumed.
+     */
+    fun fuelTable(
+        months: List<FuelReimbursement.Month>,
+        basis: FuelBasis,
+        economy: FuelReimbursement.Economy?,
+        economyAtMs: Long?,
+        exportDate: LocalDate,
+    ): Table {
+        fun dash(v: Any?): Any = v ?: "-"
+        val rows: List<List<Any?>> = months.map { m ->
+            val r = m.result
+            listOf(
+                m.month.toString(),
+                r.businessKm,
+                dash(r.litersPer100Km?.let(::Fixed2)),
+                dash(r.litersPer100Km?.let { TripLogbook.round1(FuelReimbursement.kmPerLiter(it)) }),
+                m.economySource?.label ?: "없음",
+                dash(r.priceKrwPerLiter),
+                dash(r.amountKrw),
+            )
+        }
+        val complete = months.isNotEmpty() && months.all { it.result.amountKrw != null }
+        val total = listOf(
+            "합계", TripLogbook.round1(months.sumOf { it.result.businessKm }), null, null, null, null,
+            if (complete) months.sumOf { it.result.amountKrw!! } else "-",
+        )
+        val note = buildString {
+            append(if (basis == FuelBasis.WITH_COMMUTE) "정산 거리: 출퇴근(⑧)과 일반 업무(⑨). " else "정산 거리: 일반 업무(⑨)만. ")
+            append("유류비 = 업무 거리 × 연비(L/100km) ÷ 100 × 유가, 연비는 소수 둘째 자리, 금액은 10원 단위로 반올림합니다. ")
+            append("연비와 유가는 이 파일을 만든 $exportDate 앱에 있던 값입니다")
+            when (economy?.source) {
+                FuelReimbursement.Source.VEHICLE -> append(
+                    economyAtMs?.let { "(차량 누적 연비, ${STAMP.format(Instant.ofEpochMilli(it).atZone(KST))} 차량이 알려 준 값)." } ?: "(차량 누적 연비).",
+                )
+                FuelReimbursement.Source.MANUAL -> append("(연비는 직접 입력한 값).")
+                null -> append(". 차량 연비 값을 받지 못했고 직접 입력한 연비도 없어 금액을 비워 두었습니다.")
+            }
+            if (economy != null && months.any { it.result.missing == FuelReimbursement.Missing.PRICE }) append(" 유가를 넣지 않아 금액을 비워 두었습니다.")
+        }
+        return Table(
+            FUEL_SHEET,
+            listOf("월", "업무 거리(km)", "연비(L/100km)", "연비(km/L)", "연비 출처", "유가(원/L)", "정산 금액(원)"),
+            rows + listOf(total),
+            listOf(10, 14, 14, 12, 16, 12, 16),
+            note,
+        )
+    }
+
     private fun kindLabel(kind: String) = when (kind) {
         LedgerKind.TRIP -> "운행 기록"
         LedgerKind.GAP -> "미기록 구간"
@@ -251,6 +309,7 @@ object LogbookExport {
         const val TOTAL_PCT = 9
         const val TOTAL_TEXT = 10
         const val TD_INT = 11
+        const val TD_NUM2 = 12
     }
 
     /** Column widths of the form sheet, ③ to ⑩. */
@@ -351,6 +410,7 @@ object LogbookExport {
     }
 
     private fun bodyStyle(value: Any?): Int = when (value) {
+        is Fixed2 -> Style.TD_NUM2
         is Int, is Long -> Style.TD_INT
         is Number -> Style.TD_NUM
         else -> Style.TD
@@ -402,6 +462,7 @@ object LogbookExport {
         val g = Grid(t.columns.size)
         g.row(t.columns) { Style.TH }
         t.rows.forEach { g.row(it, ::bodyStyle) }
+        t.note?.let { g.line(it, Style.NOTE, t.widths) }
         return Part(worksheet(t.widths, g, frozenRows = 1, page), 1..1)
     }
 
@@ -438,6 +499,7 @@ object LogbookExport {
     private fun cellXml(ref: String, value: Any?, style: Int): String = when (value) {
         null -> "<c r=\"$ref\" s=\"$style\"/>"
         is Formula -> "<c r=\"$ref\" s=\"$style\"><f>${xml(value.expr)}</f><v>${value.cached}</v></c>"
+        is Fixed2 -> "<c r=\"$ref\" s=\"$style\"><v>${value.value}</v></c>"
         is Number -> "<c r=\"$ref\" s=\"$style\"><v>$value</v></c>"
         else -> "<c r=\"$ref\" s=\"$style\" t=\"inlineStr\"><is><t xml:space=\"preserve\">${xml(value.toString())}</t></is></c>"
     }
@@ -459,7 +521,7 @@ object LogbookExport {
 
     /** cellXfs order matches [Style]: 0 default, then title … integer cell. */
     private val STYLES = HEAD + "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">" +
-        "<numFmts count=\"2\"><numFmt numFmtId=\"164\" formatCode=\"#,##0.0\"/><numFmt numFmtId=\"165\" formatCode=\"0.0%\"/></numFmts>" +
+        "<numFmts count=\"3\"><numFmt numFmtId=\"164\" formatCode=\"#,##0.0\"/><numFmt numFmtId=\"165\" formatCode=\"0.0%\"/><numFmt numFmtId=\"166\" formatCode=\"#,##0.00\"/></numFmts>" +
         "<fonts count=\"3\"><font><sz val=\"10\"/><name val=\"맑은 고딕\"/></font><font><b/><sz val=\"10\"/><name val=\"맑은 고딕\"/></font><font><b/><sz val=\"14\"/><name val=\"맑은 고딕\"/></font></fonts>" +
         "<fills count=\"4\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill>" +
         "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFEEF1F6\"/><bgColor indexed=\"64\"/></patternFill></fill>" +
@@ -467,7 +529,7 @@ object LogbookExport {
         "<borders count=\"2\"><border><left/><right/><top/><bottom/><diagonal/></border>" +
         "<border><left style=\"thin\"><color rgb=\"FF8A94A6\"/></left><right style=\"thin\"><color rgb=\"FF8A94A6\"/></right><top style=\"thin\"><color rgb=\"FF8A94A6\"/></top><bottom style=\"thin\"><color rgb=\"FF8A94A6\"/></bottom><diagonal/></border></borders>" +
         "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>" +
-        "<cellXfs count=\"12\">" +
+        "<cellXfs count=\"13\">" +
         "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>" +
         "<xf numFmtId=\"0\" fontId=\"2\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>" +
         "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\"><alignment vertical=\"center\" wrapText=\"1\"/></xf>" +
@@ -480,5 +542,6 @@ object LogbookExport {
         "<xf numFmtId=\"165\" fontId=\"1\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>" +
         "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>" +
         "<xf numFmtId=\"3\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment vertical=\"center\"/></xf>" +
+        "<xf numFmtId=\"166\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment vertical=\"center\"/></xf>" +
         "</cellXfs><cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles></styleSheet>"
 }

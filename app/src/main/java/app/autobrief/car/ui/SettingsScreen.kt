@@ -22,7 +22,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import app.autobrief.car.domain.AutoBriefCore
 import app.autobrief.car.domain.TaxPeriods
+import app.autobrief.car.model.CarUse
 import app.autobrief.car.model.CarUser
+import app.autobrief.car.model.FuelBasis
 import app.autobrief.car.model.PlaceKind
 import app.autobrief.car.model.TaxRate
 
@@ -48,6 +50,12 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
     var dep by remember(formKey) { mutableStateOf(if (settings.annualDepreciationKrw > 0) (settings.annualDepreciationKrw / 10_000).toString() else "") }
     var taxRate by remember(formKey) { mutableStateOf(settings.taxRate) }
     var webhook by remember(formKey) { mutableStateOf(settings.archiveWebhookUrl) }
+    var carUse by remember(formKey, settings.carUse) { mutableStateOf(settings.carUse) }
+    var fuelPrice by remember(formKey, settings.fuelPriceKrwPerLiter) { mutableStateOf(settings.fuelPriceKrwPerLiter.takeIf { it > 0 }?.toString() ?: "") }
+    var fuelBasis by remember(formKey, settings.fuelBasis) { mutableStateOf(settings.fuelBasis) }
+    var manualKmPerLiter by remember(formKey, settings.manualKmPerLiter) {
+        mutableStateOf(settings.manualKmPerLiter.takeIf { it > 0 }?.let { "%.1f".format(java.util.Locale.ROOT, it) } ?: "")
+    }
     var newPin by remember { mutableStateOf("") }
     var currentPin by remember { mutableStateOf("") }
     var placeName by remember { mutableStateOf("") }
@@ -91,6 +99,22 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                         val yearStart = TaxPeriods.businessYearOf(core.today(), fyStart.toIntOrNull()?.takeIf { it in 1..12 } ?: settings.fiscalYearStartMonth).start
                         ChipRow { TaxRate.values().forEach { r -> Choice(TaxRate.pctText(r.ratePctFor(yearStart)), r == taxRate) { taxRate = r } } }
                         Muted("${taxRate.labelFor(yearStart)} · ${yearStart.year}년 ${yearStart.monthValue}월 시작 사업연도 세율")
+                    }
+                    Panel {
+                        Txt("차량 구분", Type.heading)
+                        ChipRow { CarUse.values().forEach { u -> Choice(u.label, u == carUse) { carUse = u } } }
+                        if (carUse == CarUse.OWN) {
+                            Muted("내 차를 업무에 쓰면 절세 계기판 대신 유류비 정산을 보여 줍니다. 업무 거리에 차량의 평균 연비와 유가를 곱해 계산합니다.")
+                            Field("유가(원/L)", fuelPrice, Modifier.fillMaxWidth(), numeric = true) { fuelPrice = it.filter(Char::isDigit).take(5) }
+                            Muted("오피넷 지역 평균가를 넣으세요. 예: 1,650")
+                            ChipRow(lead = "정산 거리") { FuelBasis.values().forEach { b -> Choice(b.label, b == fuelBasis) { fuelBasis = b } } }
+                            Field("연비 직접 입력(km/L)", manualKmPerLiter, Modifier.fillMaxWidth(), decimal = true) { v ->
+                                manualKmPerLiter = v.filter { it.isDigit() || it == '.' }.take(5)
+                            }
+                            Muted("차량이 누적 연비를 알려 주지 않을 때만 씁니다. 차량 값이 오면 그 값을 씁니다.")
+                        } else {
+                            Muted("회사 차는 절세 계기판을 보여 줍니다(지금까지와 같음).")
+                        }
                     }
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
@@ -201,6 +225,8 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                     users = users, defaultUserIndex = defaultUser, autoClassify = autoClassify,
                     annualCarCostKrw = (cost.toLongOrNull() ?: 0) * 10_000, annualDepreciationKrw = (dep.toLongOrNull() ?: 0) * 10_000,
                     taxRate = taxRate, archiveWebhookUrl = webhook,
+                    carUse = carUse, fuelPriceKrwPerLiter = fuelPrice.toIntOrNull() ?: 0, fuelBasis = fuelBasis,
+                    manualKmPerLiter = manualKmPerLiter.toDoubleOrNull() ?: 0.0,
                 )
                 message = when (core.saveSettings(next, newPin.takeIf { it.length >= 4 }, currentPin.ifBlank { null })) {
                     AutoBriefCore.SettingsResult.SAVED -> "저장했습니다."

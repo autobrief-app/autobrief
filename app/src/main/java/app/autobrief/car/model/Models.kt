@@ -112,6 +112,20 @@ enum class TaxRate(val bracket: String, val ratePct: Double, val earlierRatePct:
     }
 }
 
+/** 차량 구분: the company's car (the tax meter shows) or an employee's own car used for work (유류비 정산 shows). */
+@Serializable
+enum class CarUse(val label: String) {
+    COMPANY("회사 차"),
+    OWN("내 차(업무에 사용)"),
+}
+
+/** 정산 거리: the distance the fuel is paid for. */
+@Serializable
+enum class FuelBasis(val label: String) {
+    BUSINESS("일반 업무만"),
+    WITH_COMMUTE("출퇴근 포함"),
+}
+
 @Serializable
 data class AppSettings(
     val entityName: String = "",
@@ -153,6 +167,18 @@ data class AppSettings(
      * as 비업무 without places. It stays on until such a row is written or the switch turns it off.
      */
     val familyNext: Boolean = false,
+    val carUse: CarUse = CarUse.COMPANY,
+    /** 유가 the owner entered (KRW per litre, e.g. the Opinet regional average); 0 = not entered. */
+    val fuelPriceKrwPerLiter: Int = 0,
+    val fuelBasis: FuelBasis = FuelBasis.BUSINESS,
+    /** 연비 직접 입력 (km/L), used only while the car gives no fuel economy; 0 = not entered. */
+    val manualKmPerLiter: Double = 0.0,
+    /**
+     * The car's cumulative fuel economy as last read (Vehicle Fuel, L/100 km; 0 = none yet) and when (epoch ms): kept so a
+     * restart, and a month close at the first tick, settle with it before the car answers again.
+     */
+    val fuelEconomyL100: Double = 0.0,
+    val fuelEconomyAtMs: Long = 0,
 )
 
 data class VehicleSnapshot(

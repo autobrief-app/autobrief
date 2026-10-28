@@ -50,6 +50,14 @@ class VehicleSdkThreadTest {
             call("vin")
             onValue("\"KMHXX81AXRU000001\"")
         }
+        override fun fuelEconomy(onValue: (Float?) -> Unit, onFailed: (Exception) -> Unit) {
+            call("fuelEconomy")
+            onValue(8.26f)
+        }
+        override fun evEfficiency(onValue: (Float?) -> Unit, onFailed: (Exception) -> Unit) {
+            call("evEfficiency")
+            onFailed(IllegalStateException("not an electric car"))
+        }
         override fun listen(onDistance: (Float?) -> Unit, onGear: (Gear) -> Unit, onFailed: (String, Exception) -> Unit) {
             call("listen")
             this.onGear = onGear
@@ -72,13 +80,21 @@ class VehicleSdkThreadTest {
         }
     }
 
-    private val connect = listOf("initialize", "currentDistance", "listen", "currentGear", "vin")
+    private val connect = listOf("initialize", "currentDistance", "listen", "currentGear", "vin", "fuelEconomy", "evEfficiency")
 
     @Test fun theProbeTheRegistrationAReconnectAndTheReleaseAllRunOffTheMainThread() {
         val vehicle = source()
         vehicle.start()
-        passTimeUntil("the probe's answer and the registration") { events.any { it is VehicleEvent.Vin } }
+        passTimeUntil("the probe's answer and the registration") { events.any { it is VehicleEvent.EvEfficiency } }
         assertEquals(connect, calls.toList())
+        // the figures go on as the decimals the car printed; a call that failed reports no value
+        assertTrue(events.toString(), VehicleEvent.FuelEconomy(8.26) in events && VehicleEvent.EvEfficiency(null) in events)
+
+        // after a trip the core asks for the figures again: read on the source's thread too
+        calls.clear()
+        vehicle.requestEnergy()
+        passTimeUntil("the figures read again") { calls.size == 2 }
+        assertEquals(listOf("fuelEconomy", "evEfficiency"), calls.toList())
         // what the core is told stays the same: connected, the odometer, the gear, the VIN
         assertEquals(
             listOf(VehicleEvent.Connection(true), VehicleEvent.Odometer(45_200.0), VehicleEvent.GearChanged(Gear.PARK)),
@@ -90,7 +106,7 @@ class VehicleSdkThreadTest {
         passTime(Duration.ofMillis(PleosVehicleSource.QUIET_MS + 1_000))
         calls.clear()
         vehicle.checkQuiet()
-        passTimeUntil("the second link") { calls.count { it.startsWith("vin") } == 1 }
+        passTimeUntil("the second link") { calls.count { it.startsWith("evEfficiency") } == 1 }
         assertEquals(listOf("release") + connect, calls.toList())
 
         calls.clear()

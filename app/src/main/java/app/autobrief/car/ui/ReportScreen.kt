@@ -29,6 +29,7 @@ import app.autobrief.car.domain.AutoBriefCore
 import app.autobrief.car.domain.LogbookExport
 import app.autobrief.car.domain.TaxPeriods
 import app.autobrief.car.domain.TripLogbook
+import app.autobrief.car.model.CarUse
 import app.autobrief.car.model.TripPurpose
 import app.autobrief.car.model.TripRecord
 import java.time.LocalDate
@@ -116,6 +117,7 @@ fun ReportScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                                 check.problems.take(5).forEach { Txt("• $it", Type.body, p.danger) }
                             }
                         }
+                        if (settings.carUse == CarUse.OWN) FuelCard(core, opt.range, "유류비 정산 ($unit ${opt.range.start} ~ ${opt.range.endInclusive})")
                         Panel {
                             Txt("보내기 상태", Type.heading)
                             val pending = outbox.count { it.deliveredEpochMs == null }

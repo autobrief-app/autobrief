@@ -10,7 +10,8 @@ import app.autobrief.car.model.Gear
 
 /**
  * Pleos Connect Vehicle SDK 2.3.2 (`ai.pleos.playground:Vehicle`), read APIs only:
- * Odometer (dashboard total distance, km) and Gear (CAR_DRIVE), CarInfo VIN (CAR_INFO).
+ * Odometer (dashboard total distance, km) and Gear (CAR_DRIVE), CarInfo VIN (CAR_INFO), the cumulative fuel economy and
+ * EV efficiency (CAR_ENERGY, read when connected and again after every trip, see [requestEnergy]).
  *
  * The vehicle service may not be up when the app starts: initialising and the first query are tried again with a
  * growing pause until they succeed. Once connected, listeners that went quiet outside P ([checkQuiet], called by the
@@ -105,6 +106,40 @@ class PleosVehicleSource(
     }.onFailure {
         issue("register", it)
         emit(VehicleEvent.Connection(false, it.message))
+    }.also { readEnergy(l) }
+
+    /** The cumulative fuel economy and EV efficiency once more (the core asks after every trip); off the main thread. */
+    fun requestEnergy() {
+        sdk.post {
+            val l = link
+            if (!stopped && registered && l != null) readEnergy(l)
+        }
+    }
+
+    /**
+     * Both figures, each reported as it comes; a call that fails (a car without that value, or no CAR_ENERGY grant) reports
+     * no value, so the log shows what the car answered either way. A Float goes on as the decimal it prints as.
+     */
+    private fun readEnergy(l: VehicleLink) {
+        fun decimal(v: Float?): Double? = v?.toString()?.toDoubleOrNull()
+        runCatching {
+            l.fuelEconomy({ emit(VehicleEvent.FuelEconomy(decimal(it))) }) {
+                issue("fuel economy", it)
+                emit(VehicleEvent.FuelEconomy(null))
+            }
+        }.onFailure {
+            issue("fuel economy", it)
+            emit(VehicleEvent.FuelEconomy(null))
+        }
+        runCatching {
+            l.evEfficiency({ emit(VehicleEvent.EvEfficiency(decimal(it))) }) {
+                issue("ev efficiency", it)
+                emit(VehicleEvent.EvEfficiency(null))
+            }
+        }.onFailure {
+            issue("ev efficiency", it)
+            emit(VehicleEvent.EvEfficiency(null))
+        }
     }
 
     /**

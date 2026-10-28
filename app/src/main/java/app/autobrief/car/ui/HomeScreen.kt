@@ -20,6 +20,7 @@ import app.autobrief.car.domain.AutoBriefCore
 import app.autobrief.car.domain.TaxBenefit
 import app.autobrief.car.domain.TaxPeriods
 import app.autobrief.car.domain.TripLogbook
+import app.autobrief.car.model.CarUse
 import app.autobrief.car.model.CarUser
 import app.autobrief.car.model.ClassifiedBy
 import app.autobrief.car.model.Gear
@@ -66,7 +67,8 @@ fun HomeScreen(core: AutoBriefCore, wide: Boolean, vehicleStalled: Boolean, onOp
             }
         }
         MonthCard(core)
-        TaxCard(core, onOpen)
+        // an employee's own car used for work: the fuel reimbursement replaces the company car's tax meter
+        if (settings.carUse == CarUse.OWN) FuelCard(core, TaxPeriods.month(YearMonth.from(today)), "유류비 정산", onOpen) else TaxCard(core, onOpen)
     }
     if (wide) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(28.dp)) {

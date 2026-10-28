@@ -10,6 +10,12 @@ sealed interface VehicleEvent {
     data class Odometer(val km: Double) : VehicleEvent
     data class GearChanged(val gear: Gear) : VehicleEvent
     data class Vin(val vin: String?) : VehicleEvent
+
+    /** Vehicle Fuel.getCumulativeFuelEconomy in L/100 km (CAR_ENERGY); null = no value, or the call failed. */
+    data class FuelEconomy(val litersPer100Km: Double?) : VehicleEvent
+
+    /** Vehicle EvBattery.getCumulativeEvEfficiency in km/kWh (CAR_ENERGY); null = no value, or the call failed. */
+    data class EvEfficiency(val kmPerKwh: Double?) : VehicleEvent
 }
 
 /** Values coming from the Pleos NaviHelper SDK (results always arrive through its listener). */

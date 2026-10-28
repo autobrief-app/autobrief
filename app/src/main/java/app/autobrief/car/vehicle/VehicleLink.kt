@@ -23,13 +23,22 @@ interface VehicleLink {
     /** The VIN as the SDK sends it (JSON-quoted; the emulator sends "invalid"). */
     fun vin(onValue: (String?) -> Unit, onFailed: (Exception) -> Unit)
 
+    /** Fuel: the cumulative fuel economy (L/100 km; null = no value). CAR_ENERGY. */
+    fun fuelEconomy(onValue: (Float?) -> Unit, onFailed: (Exception) -> Unit)
+
+    /** EvBattery: the cumulative EV efficiency (km/kWh; null = no value). CAR_ENERGY. */
+    fun evEfficiency(onValue: (Float?) -> Unit, onFailed: (Exception) -> Unit)
+
     /** Odometer and gear updates from now on, until [release]; [onFailed] names the listener that failed. */
     fun listen(onDistance: (Float?) -> Unit, onGear: (Gear) -> Unit, onFailed: (String, Exception) -> Unit)
 
     fun release()
 }
 
-/** Pleos Connect Vehicle SDK 2.3.2 (`ai.pleos.playground:Vehicle`): Odometer, Gear (CAR_DRIVE) and CarInfo VIN (CAR_INFO). */
+/**
+ * Pleos Connect Vehicle SDK 2.3.2 (`ai.pleos.playground:Vehicle`): Odometer, Gear (CAR_DRIVE), CarInfo VIN (CAR_INFO), and
+ * Fuel and EvBattery's cumulative figures (CAR_ENERGY).
+ */
 class PleosVehicleLink(context: Context) : VehicleLink {
     private val vehicle = Vehicle(context.applicationContext)
     private var odometerListener: DistanceDrivenListener? = null
@@ -45,6 +54,12 @@ class PleosVehicleLink(context: Context) : VehicleLink {
 
     override fun vin(onValue: (String?) -> Unit, onFailed: (Exception) -> Unit) =
         vehicle.getCarInfo().getVINInfo(onValue, onFailed)
+
+    override fun fuelEconomy(onValue: (Float?) -> Unit, onFailed: (Exception) -> Unit) =
+        vehicle.getFuel().getCumulativeFuelEconomy(onValue, onFailed)
+
+    override fun evEfficiency(onValue: (Float?) -> Unit, onFailed: (Exception) -> Unit) =
+        vehicle.getEvBattery().getCumulativeEvEfficiency(onValue, onFailed)
 
     override fun listen(onDistance: (Float?) -> Unit, onGear: (Gear) -> Unit, onFailed: (String, Exception) -> Unit) {
         val odometer = object : DistanceDrivenListener {

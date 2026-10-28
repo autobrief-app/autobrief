@@ -149,6 +149,8 @@ class GleoSchemaTest {
         assertEquals(
             setOf(
                 "pleos.car.permission.CAR_DRIVE", "pleos.car.permission.CAR_INFO", "pleos.car.permission.NAVI_ROUTE",
+                // the car's cumulative fuel economy for 유류비 정산 (Vehicle Fuel, normal protection level)
+                "pleos.car.permission.CAR_ENERGY",
                 "android.permission.INTERNET", "android.permission.FOREGROUND_SERVICE",
                 "android.permission.FOREGROUND_SERVICE_SPECIAL_USE", "android.permission.RECEIVE_BOOT_COMPLETED",
                 // the car's GPS when navigation has no fresh position (optional, asked once)

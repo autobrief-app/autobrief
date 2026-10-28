@@ -116,6 +116,26 @@ class Harness(
         ),
     )
 
+    /**
+     * Park → drive [km] → park, the odometer reported every 50 km on the way (a single jump of more than 100 km waits for
+     * a reading that confirms it), no positions.
+     */
+    fun longDrive(fromKm: Double, km: Double, minutes: Long = 240) {
+        odo(fromKm)
+        gear(Gear.PARK)
+        advance(60_000)
+        gear(Gear.DRIVE)
+        var done = 0.0
+        while (done + 50.0 < km) {
+            done += 50.0
+            advance(minutes * 60_000 / (km / 50.0 + 1).toLong().coerceAtLeast(1))
+            odo(fromKm + done)
+        }
+        advance(60_000)
+        odo(fromKm + km)
+        gear(Gear.PARK)
+    }
+
     /** Park → drive [km] → park, with positions at both ends when given (arrival position before P). */
     fun drive(fromKm: Double, km: Double, from: GeoPoint?, to: GeoPoint?, minutes: Long = 30) {
         from?.let { at(it) }

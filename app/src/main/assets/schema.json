@@ -35,7 +35,7 @@
       "type": "function",
       "function": {
         "name": "GET_LOGBOOK_STATUS",
-        "description": "Tell the user the logbook totals: number of trips, distance, business-use ratio and how many trips still need a purpose. Use for questions such as '이번 달 업무 비율 얼마야', '운행기록부 상태 알려줘', '올해 업무용으로 몇 퍼센트 탔어', '목적 안 정한 운행 있어?'.",
+        "description": "Tell the user the logbook totals: number of trips, distance, business-use ratio, how many trips still need a purpose and, for an employee's own car used for work, the fuel reimbursement. Use for questions such as '이번 달 업무 비율 얼마야', '운행기록부 상태 알려줘', '올해 업무용으로 몇 퍼센트 탔어', '목적 안 정한 운행 있어?'.",
         "parameters": {
           "type": "object",
           "properties": {

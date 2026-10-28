@@ -200,7 +200,7 @@ fun Choice(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-fun Field(label: String, value: String, modifier: Modifier = Modifier, numeric: Boolean = false, onChange: (String) -> Unit) {
+fun Field(label: String, value: String, modifier: Modifier = Modifier, numeric: Boolean = false, decimal: Boolean = false, onChange: (String) -> Unit) {
     val p = LocalPalette.current
     OutlinedTextField(
         value = value,
@@ -208,7 +208,11 @@ fun Field(label: String, value: String, modifier: Modifier = Modifier, numeric: 
         label = { Text(label, style = Type.small) },
         singleLine = true,
         textStyle = Type.body.copy(color = p.text),
-        keyboardOptions = if (numeric) KeyboardOptions(keyboardType = KeyboardType.Number) else KeyboardOptions.Default,
+        keyboardOptions = when {
+            decimal -> KeyboardOptions(keyboardType = KeyboardType.Decimal)
+            numeric -> KeyboardOptions(keyboardType = KeyboardType.Number)
+            else -> KeyboardOptions.Default
+        },
         colors = OutlinedTextFieldDefaults.colors(
             focusedBorderColor = p.accent, unfocusedBorderColor = p.line,
             focusedLabelColor = p.accent, unfocusedLabelColor = p.muted, cursorColor = p.accent,

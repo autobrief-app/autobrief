@@ -80,6 +80,8 @@ class VehicleMonitorService : Service() {
         core = c
         sender = WebhookSender(c)
         c.naviControl = AutoBriefCore.NaviControl { navi.requestLocation() }
+        // the car's fuel economy again after every trip (off the main thread, on the vehicle source's own)
+        c.energyControl = AutoBriefCore.EnergyControl { vehicle.requestEnergy() }
         inputs.open(c)
         loops.start()
         scope.launch {
@@ -147,6 +149,7 @@ class VehicleMonitorService : Service() {
             core.onVehicle(VehicleEvent.Connection(false, "monitor stopped"))
             core.setRestricted(null)
             core.naviControl = null
+            core.energyControl = null
         }
         super.onDestroy()
     }

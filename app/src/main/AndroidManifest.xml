@@ -8,6 +8,8 @@
     <!-- Pleos Connect Vehicle SDK (read scope): odometer and gear (CAR_DRIVE), VIN (CAR_INFO) -->
     <uses-permission android:name="pleos.car.permission.CAR_DRIVE" />
     <uses-permission android:name="pleos.car.permission.CAR_INFO" />
+    <!-- Vehicle SDK Fuel and EvBattery (read scope): the cumulative fuel economy for 유류비 정산 (normal protection level) -->
+    <uses-permission android:name="pleos.car.permission.CAR_ENERGY" />
     <!-- Pleos NaviHelper: destination, toll estimate, home/office bookmarks, current position -->
     <uses-permission android:name="pleos.car.permission.NAVI_ROUTE" />
     <!-- The car's own GPS when navigation has no fresh position (asked once, at the first launch; optional):

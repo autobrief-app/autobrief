@@ -1,8 +1,10 @@
 package app.autobrief.car.domain
 
 import app.autobrief.car.model.AppSettings
+import app.autobrief.car.model.CarUse
 import app.autobrief.car.model.CarUser
 import app.autobrief.car.model.ClassifiedBy
+import app.autobrief.car.model.FuelBasis
 import app.autobrief.car.model.Gear
 import app.autobrief.car.model.GeoPoint
 import app.autobrief.car.model.OpenTripRecord
@@ -36,6 +38,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
 import java.util.Base64
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executor
 import java.util.concurrent.LinkedBlockingQueue
@@ -144,7 +147,14 @@ class AutoBriefCore private constructor(
 
     data class Notice(val text: String, val fileName: String?)
 
-    data class ExportResult(val fileName: String, val savedTo: String, val queued: Boolean, val rows: Int)
+    data class ExportResult(
+        val fileName: String,
+        val savedTo: String,
+        val queued: Boolean,
+        val rows: Int,
+        /** The fuel settlement the workbook holds, month by month (내 차 mode); empty for a company car. */
+        val fuel: List<FuelReimbursement.Month> = emptyList(),
+    )
 
     /**
      * Where the work too slow for the core's own thread runs. The core's state belongs to the thread that calls it (the
@@ -188,6 +198,25 @@ class AutoBriefCore private constructor(
     }
 
     var naviControl: NaviControl? = null
+
+    /** Lets the core ask the car for its energy figures again (the answers arrive as [VehicleEvent.FuelEconomy] etc.). */
+    fun interface EnergyControl {
+        fun requestEnergy()
+    }
+
+    /** Asked after every trip that closes; the vehicle source also reads the figures once when it connects. */
+    var energyControl: EnergyControl? = null
+
+    /** A usable reading of the car's cumulative fuel economy (L/100 km) and when it arrived (epoch ms). */
+    data class EconomyReading(val litersPer100Km: Double, val atMs: Long)
+
+    /** The car's energy figures as last read in this process: fuel economy and, on an electric car, km per kWh. */
+    data class Energy(val fuel: EconomyReading? = null, val evKmPerKwh: Double? = null)
+
+    private val _energy = MutableStateFlow(Energy())
+
+    /** Usable readings only: a value outside 0..50 (or none) never replaces one. */
+    val energy: StateFlow<Energy> = _energy.asStateFlow()
 
     private var space: Space = stored.space
     private var logbook = TripLogbook()
@@ -444,7 +473,28 @@ class AutoBriefCore private constructor(
             }
             is VehicleEvent.GearChanged -> onGear(e.gear, now)
             is VehicleEvent.Vin -> onVin(e.vin)
+            is VehicleEvent.FuelEconomy -> onFuelEconomy(e.litersPer100Km, now)
+            is VehicleEvent.EvEfficiency -> onEvEfficiency(e.kmPerKwh)
         }
+    }
+
+    /**
+     * The car's cumulative fuel economy, logged as it came (one line, so an emulator run shows what the image reports).
+     * A usable one (0 < v < 50 L/100 km) is kept with its time, in memory and in the settings of the space in use.
+     */
+    private fun onFuelEconomy(l100: Double?, now: Long) {
+        val valid = FuelReimbursement.validEconomy(l100)
+        log("FUEL_ECONOMY l100=${l100 ?: "-"} valid=$valid")
+        if (!valid || l100 == null) return
+        _energy.update { it.copy(fuel = EconomyReading(l100, now)) }
+        writeSettings(_settings.value.copy(fuelEconomyL100 = l100, fuelEconomyAtMs = now))
+    }
+
+    /** The car's cumulative EV efficiency (km/kWh), logged as it came; only used to tell an electric car apart. */
+    private fun onEvEfficiency(kmPerKwh: Double?) {
+        val valid = kmPerKwh != null && kmPerKwh.isFinite() && kmPerKwh > 0 && kmPerKwh < FuelReimbursement.MAX_LITERS_PER_100KM
+        log("EV_EFFICIENCY kmkwh=${kmPerKwh ?: "-"} valid=$valid")
+        if (valid) _energy.update { it.copy(evKmPerKwh = kmPerKwh) }
     }
 
     /**
@@ -617,6 +667,7 @@ class AutoBriefCore private constructor(
     }
 
     private fun tripClosed(row: TripRecord) {
+        energyControl?.requestEnergy()
         if (openFamily) {
             familyTripClosed(row)
             return
@@ -1143,6 +1194,10 @@ class AutoBriefCore private constructor(
             lastMonthlyCloseYm = current.lastMonthlyCloseYm,
             vin = current.vin,
             familyNext = current.familyNext,
+            fuelEconomyL100 = current.fuelEconomyL100,
+            fuelEconomyAtMs = current.fuelEconomyAtMs,
+            fuelPriceKrwPerLiter = new.fuelPriceKrwPerLiter.coerceIn(0, FUEL_PRICE_MAX),
+            manualKmPerLiter = new.manualKmPerLiter.takeIf { FuelReimbursement.litersPer100Km(it) != null } ?: 0.0,
             ledgerBackfillThroughSeq = if (firstAddress) ledger.headSeq else current.ledgerBackfillThroughSeq,
             fiscalYearStartMonth = new.fiscalYearStartMonth.coerceIn(1, 12),
             defaultUserIndex = new.defaultUserIndex.coerceIn(0, (new.users.size - 1).coerceAtLeast(0)),
@@ -1319,6 +1374,28 @@ class AutoBriefCore private constructor(
         return TaxBenefit.compute(s.annualCarCostKrw, s.annualDepreciationKrw, ratio, s.taxRate.ratePctFor(currentBusinessYear().start))
     }
 
+    // ---------------------------------------------------------------- fuel reimbursement (내 차 mode)
+
+    /** The car's latest usable fuel economy: read in this process, else the one kept in the settings, the newer of the two. */
+    fun fuelReading(): EconomyReading? {
+        val s = _settings.value
+        val stored = if (FuelReimbursement.validEconomy(s.fuelEconomyL100)) EconomyReading(s.fuelEconomyL100, s.fuelEconomyAtMs) else null
+        return listOfNotNull(_energy.value.fuel, stored).maxByOrNull { it.atMs }
+    }
+
+    /** The economy a settlement uses: the car's own reading, else the owner's figure (연비 직접 입력), else none. */
+    fun fuelEconomyInUse(): FuelReimbursement.Economy? = economyOf(_settings.value, fuelReading())
+
+    /** The car reports an EV efficiency and no fuel economy: its settlement (전비, 원/kWh) is not in this version. */
+    val electricOnly: Boolean get() = fuelReading() == null && _energy.value.evKmPerKwh != null
+
+    /** [month]'s settlement in 내 차 mode; null for a company car. */
+    fun fuelSettlement(month: YearMonth): FuelReimbursement.Month? = fuelSettlements(TaxPeriods.month(month)).firstOrNull()
+
+    /** Every calendar month of [period] up to this one, settled with the economy and price in use now; empty for a company car. */
+    fun fuelSettlements(period: ClosedRange<LocalDate>): List<FuelReimbursement.Month> =
+        settleFuel(logbook.records, _settings.value, fuelEconomyInUse(), period, today())
+
     /** The form for [period] as of today: a business year still running is labelled as the total to today. */
     fun exportSheet(period: ClosedRange<LocalDate>, businessYear: Boolean): LogbookExport.Sheet =
         LogbookExport.build(logbook.records, _settings.value, period, _check.value.code, businessYear, exportDate = today())
@@ -1337,12 +1414,24 @@ class AutoBriefCore private constructor(
         val car: JsonObject,
         val today: LocalDate,
         val ledgerSize: Int,
+        val economy: FuelReimbursement.Economy?,
+        val economyAtMs: Long?,
     )
 
     private fun workbookInput() =
-        WorkbookInput(space, chainId, _settings.value, logbook.records, ledger.all, _check.value.code, carJson(), today(), ledger.size)
+        WorkbookInput(
+            space, chainId, _settings.value, logbook.records, ledger.all, _check.value.code, carJson(), today(), ledger.size,
+            fuelEconomyInUse(), fuelReading()?.atMs,
+        )
 
-    private class MadeWorkbook(val name: String, val xlsx: ByteArray, val csv: ByteArray, val rows: Int, val archive: Queued?)
+    private class MadeWorkbook(
+        val name: String,
+        val xlsx: ByteArray,
+        val csv: ByteArray,
+        val rows: Int,
+        val archive: Queued?,
+        val fuel: List<FuelReimbursement.Month>,
+    )
 
     /**
      * Writes the period workbook (form + ledger sheet) and queues it for the sending address when one is set. Call it on
@@ -1363,13 +1452,20 @@ class AutoBriefCore private constructor(
         }
         made.archive?.let { enqueueAll(listOf(it), input.space) } // back on the core's thread, which owns the queue
         log("EXPORT file=${made.name} rows=${made.rows} queued=${made.archive != null}")
-        return ExportResult(made.name, savedTo, made.archive != null, made.rows)
+        return ExportResult(made.name, savedTo, made.archive != null, made.rows, made.fuel)
     }
 
     private fun buildWorkbook(i: WorkbookInput, period: ClosedRange<LocalDate>, businessYear: Boolean, send: Boolean): MadeWorkbook {
         val sheet = LogbookExport.build(i.records, i.settings, period, i.code, businessYear, exportDate = i.today)
         val table = LogbookExport.ledgerTable(i.entries, i.records, period, i.code)
-        val xlsx = LogbookExport.toXlsx(sheet, listOf(table))
+        // 내 차 mode: the settlement sheet, month by month, and the same figures in the sending copy
+        val fuel = settleFuel(i.records, i.settings, i.economy, period, i.today)
+        val fuelTable = if (i.settings.carUse == CarUse.OWN) {
+            LogbookExport.fuelTable(fuel, i.settings.fuelBasis, i.economy, i.economyAtMs, i.today)
+        } else {
+            null
+        }
+        val xlsx = LogbookExport.toXlsx(sheet, listOfNotNull(table, fuelTable))
         val name = "운행기록부_${period.start}_${period.endInclusive}.xlsx"
         val archive = if (send && i.settings.archiveWebhookUrl.isNotBlank()) {
             val payload = buildJsonObject {
@@ -1381,13 +1477,14 @@ class AutoBriefCore private constructor(
                 put("periodStart", period.start.toString())
                 put("periodEnd", period.endInclusive.toString())
                 put("verificationCode", i.code)
+                if (i.settings.carUse == CarUse.OWN) put("fuelReimbursement", fuelJson(fuel, i.settings.fuelBasis))
                 put("xlsxBase64", Base64.getEncoder().encodeToString(xlsx))
             }
             Queued("archive-${i.space.dir}-${i.chainId?.let { "$it-" } ?: ""}$name-${i.ledgerSize}", "archive", payload.toString())
         } else {
             null
         }
-        return MadeWorkbook(name, xlsx, LogbookExport.toCsv(sheet), sheet.rows.size, archive)
+        return MadeWorkbook(name, xlsx, LogbookExport.toCsv(sheet), sheet.rows.size, archive, fuel)
     }
 
     /**
@@ -1477,7 +1574,7 @@ class AutoBriefCore private constructor(
                 val sum = TripLogbook.summarize(rows)
                 _notice.value = Notice(
                     "${month.monthValue}월 운행기록부를 만들었습니다: ${rows.size}건, 업무사용비율 ${sum.businessUseRatio?.let { "%.1f%%".format(it * 100) } ?: "-"}" +
-                        if (result.queued) ", 보내기 주소로 전송 대기" else "",
+                        fuelNotice(result.fuel) + if (result.queued) ", 보내기 주소로 전송 대기" else "",
                     result.fileName,
                 )
             }
@@ -1553,14 +1650,25 @@ class AutoBriefCore private constructor(
         if (s.rowCount == 0) return GleoReply("success", if (year) "No trips are logged this business year yet." else "No trips are logged this month yet.")
         val ratio = s.businessUseRatio?.let { "%.1f".format(it * 100) } ?: "0"
         val pending = if (s.unclassifiedCount > 0) " ${s.unclassifiedCount} trips still need a purpose." else " Every trip has a purpose."
+        // 내 차 mode: the fuel reimbursement of the same period (every month of it so far), or what it still needs
+        val fuel = if (_settings.value.carUse == CarUse.OWN) fuelSettlements(period) else emptyList()
+        val fuelKrw = fuel.takeIf { it.isNotEmpty() && it.all { m -> m.result.amountKrw != null } }?.sumOf { it.result.amountKrw!! }
+        val fuelText = when {
+            fuel.isEmpty() -> ""
+            fuelKrw != null -> " Fuel reimbursement ${if (year) "this business year" else "this month"}: ${"%,d".format(Locale.ROOT, fuelKrw)} won."
+            fuel.any { it.result.missing == FuelReimbursement.Missing.ECONOMY } ->
+                " The fuel reimbursement needs the car's fuel economy or one entered in the settings."
+            else -> " The fuel reimbursement needs a fuel price in the settings."
+        }
         return GleoReply(
             "success",
-            "${if (year) "This business year" else "This month"}: ${s.rowCount} trips, ${"%.0f".format(s.totalKm)} km, business use $ratio percent.$pending",
+            "${if (year) "This business year" else "This month"}: ${s.rowCount} trips, ${"%.0f".format(s.totalKm)} km, business use $ratio percent.$pending$fuelText",
             JsonArray(listOf(buildJsonObject {
                 put("trips", s.rowCount)
                 put("totalKm", s.totalKm)
                 put("businessUsePct", ratio)
                 put("unclassified", s.unclassifiedCount)
+                fuelKrw?.let { put("fuelReimbursementKrw", it) }
             })),
         )
     }
@@ -1657,6 +1765,64 @@ class AutoBriefCore private constructor(
 
         /** The memo of a family trip's row (가족 운행). */
         const val FAMILY_MEMO = "가족 운행"
+
+        /** The highest fuel price taken from the settings (KRW per litre). */
+        const val FUEL_PRICE_MAX = 99_999
+
+        /** The economy a settlement uses: the car's reading, else the owner's km/L, else none. */
+        fun economyOf(s: AppSettings, reading: EconomyReading?): FuelReimbursement.Economy? =
+            reading?.let { FuelReimbursement.Economy(it.litersPer100Km, FuelReimbursement.Source.VEHICLE) }
+                ?: FuelReimbursement.litersPer100Km(s.manualKmPerLiter)?.let { FuelReimbursement.Economy(it, FuelReimbursement.Source.MANUAL) }
+
+        /**
+         * Each calendar month of [period] up to [today]'s, settled from [records] (the printed ⑨, plus ⑧ when the commute
+         * is paid too) with [economy] and the settings' price. Empty for a company car. Pure: workbooks build it off the
+         * core's thread from a snapshot.
+         */
+        fun settleFuel(
+            records: List<TripRecord>,
+            s: AppSettings,
+            economy: FuelReimbursement.Economy?,
+            period: ClosedRange<LocalDate>,
+            today: LocalDate,
+        ): List<FuelReimbursement.Month> {
+            if (s.carUse != CarUse.OWN) return emptyList()
+            val last = YearMonth.from(minOf(period.endInclusive, today))
+            var month = YearMonth.from(period.start)
+            val out = mutableListOf<FuelReimbursement.Month>()
+            while (!month.isAfter(last)) {
+                val range = TaxPeriods.month(month)
+                val sum = TripLogbook.summarize(records.filter { TripLogbook.localDate(it.startEpochMs) in range })
+                val km = if (s.fuelBasis == FuelBasis.WITH_COMMUTE) sum.businessUseKm else sum.businessKm
+                out += FuelReimbursement.Month(month, economy?.source, FuelReimbursement.compute(km, economy?.litersPer100Km, s.fuelPriceKrwPerLiter))
+                month = month.plusMonths(1)
+            }
+            return out
+        }
+
+        /** The sending copy's settlement block: the basis, every month and the total (null while a month has no amount). */
+        fun fuelJson(months: List<FuelReimbursement.Month>, basis: FuelBasis): JsonObject = buildJsonObject {
+            put("basis", basis.name)
+            put("months", JsonArray(months.map { m ->
+                buildJsonObject {
+                    put("month", m.month.toString())
+                    put("businessKm", m.result.businessKm)
+                    put("litersPer100Km", m.result.litersPer100Km)
+                    put("kmPerLiter", m.result.litersPer100Km?.let { TripLogbook.round1(FuelReimbursement.kmPerLiter(it)) })
+                    put("economySource", m.economySource?.label)
+                    put("priceKrwPerLiter", m.result.priceKrwPerLiter)
+                    put("amountKrw", m.result.amountKrw)
+                }
+            }))
+            put("totalKrw", months.takeIf { it.isNotEmpty() && it.all { m -> m.result.amountKrw != null } }?.sumOf { it.result.amountKrw!! })
+        }
+
+        /** The month close's words for its settlement: the amount, or that it could not be made; nothing for a company car. */
+        fun fuelNotice(months: List<FuelReimbursement.Month>): String {
+            if (months.isEmpty()) return ""
+            val total = months.takeIf { it.all { m -> m.result.amountKrw != null } }?.sumOf { it.result.amountKrw!! }
+            return if (total != null) ", 유류비 정산 ${"%,d".format(Locale.ROOT, total)}원" else ", 유류비 정산은 연비나 유가가 없어 비워 두었습니다"
+        }
 
         /** [payloadJson] with [vin] in its car block when the block has none; every other field stays as queued. */
         fun fillMissingVin(payloadJson: String, vin: String?): String {
