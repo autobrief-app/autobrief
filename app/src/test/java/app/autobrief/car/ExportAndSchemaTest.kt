@@ -136,6 +136,14 @@ class GleoSchemaTest {
         assertTrue(schema.getValue("actionCalls") is JsonArray)
     }
 
+    @Test fun gleoCanTurnOnFamilyDriveThroughThePurposeFunction() {
+        val logTrip = schema.getValue("actionCalls").jsonArray.map { (it as JsonObject).getValue("function").jsonObject }
+            .single { it.getValue("name").jsonPrimitive.content == GleoContract.LOG_TRIP_PURPOSE }
+        val purpose = logTrip.getValue("parameters").jsonObject.getValue("properties").jsonObject.getValue("purpose").jsonObject
+        assertEquals(listOf("COMMUTE", "BUSINESS", "PERSONAL", "FAMILY"), purpose.getValue("enum").jsonArray.map { it.jsonPrimitive.content })
+        assertTrue("FAMILY" in logTrip.getValue("description").jsonPrimitive.content)
+    }
+
     @Test fun manifestAsksOnlyForWhatTheLogbookUses() {
         val perms = Regex("""uses-permission android:name="([^"]+)"""").findAll(manifest).map { it.groupValues[1] }.toSet()
         assertEquals(

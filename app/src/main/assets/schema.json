@@ -8,14 +8,14 @@
       "type": "function",
       "function": {
         "name": "LOG_TRIP_PURPOSE",
-        "description": "Record the purpose of the trip that just ended (within the last 30 minutes) in the business-car logbook, if it has no purpose yet (changing a recorded purpose is done on the screen with a reason). Use when the user says what the last drive was for, e.g. '방금 운행 업무로 기록해 줘', '거래처 미팅이었어', '출근한 거야', '개인 용무였어', '방금 건 김예시가 탄 거야'. COMMUTE = going to or from work, BUSINESS = client visits, meetings, deliveries and other work, PERSONAL = anything private.",
+        "description": "Record the purpose of the trip that just ended (within the last 30 minutes) in the business-car logbook, if it has no purpose yet (changing a recorded purpose is done on the screen with a reason). Use when the user says what the last drive was for, e.g. '방금 운행 업무로 기록해 줘', '거래처 미팅이었어', '출근한 거야', '개인 용무였어', '방금 건 김예시가 탄 거야'. COMMUTE = going to or from work, BUSINESS = client visits, meetings, deliveries and other work, PERSONAL = anything private. FAMILY = family drive, said before or during a drive ('가족 운행 켜 줘', '이번엔 가족이랑 가는 거야'): the app reads no location for the drive under way, or for the next one when parked, and records only its distance as personal; it cannot be used for a drive that already ended.",
         "parameters": {
           "type": "object",
           "properties": {
             "purpose": {
               "type": "string",
-              "enum": ["COMMUTE", "BUSINESS", "PERSONAL"],
-              "description": "Purpose of the trip: COMMUTE (출퇴근), BUSINESS (일반 업무) or PERSONAL (비업무)."
+              "enum": ["COMMUTE", "BUSINESS", "PERSONAL", "FAMILY"],
+              "description": "Purpose of the trip: COMMUTE (출퇴근), BUSINESS (일반 업무), PERSONAL (비업무) or FAMILY (가족 운행: the drive under way or the next one, no location read, recorded as personal)."
             },
             "memo": {
               "type": "string",
