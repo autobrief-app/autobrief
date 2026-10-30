@@ -912,6 +912,7 @@ class Director:
         self._shot_warned = False
         self._last_fix = None  # (lat, lon) of the previous GeoFix
         self._positions_stuck = False  # a position wait timed out: later ones are skipped
+        self._own_gps = False  # sticky once POSITION ... source=gps is seen
         self._own_gps_said = False  # said once: the app follows the car on its own GPS, no map
         self._course = 0.0
 
@@ -953,7 +954,8 @@ class Director:
         elif isinstance(step, ShowApp):
             ensure_app_in_front(self.adb, now=self.clock, sleep=self.sleep, say_fn=self.say)
         elif isinstance(step, ShowNavigation):
-            if app_on_own_gps(self.adb.logcat_dump()):
+            if self._own_gps or app_on_own_gps(self.adb.logcat_dump()):
+                self._own_gps = True
                 if not self._own_gps_said:
                     self._own_gps_said = True
                     self.say("  (앱이 차량 GPS로 위치를 받고 있어 지도 화면 없이 진행합니다)")
@@ -1051,8 +1053,16 @@ class Director:
         deadline = started + step.timeout
         shown = False
         while True:
-            seen = last_position_label(self.adb.logcat_dump())
-            if seen != want and not shown and self.clock() - started >= MAP_GRACE_S:
+            dump = self.adb.logcat_dump()
+            if app_on_own_gps(dump):
+                self._own_gps = True
+            seen = last_position_label(dump)
+            if (
+                seen != want
+                and not shown
+                and not self._own_gps
+                and self.clock() - started >= MAP_GRACE_S
+            ):
                 shown = True  # the app's own GPS did not see it: the map has to be on screen to follow the GPS
                 self.show_navigation()
             if seen == want:
@@ -1242,6 +1252,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if saved:
             say("  (점검 기록: %s)" % saved)
         if args.verify:
+            if app_on_own_gps(adb.logcat_dump()):
+                director._own_gps = True
             adb.logcat_clear()
         for scenario in select_scenarios(args.scenario):
             ensure_app_in_front(adb)

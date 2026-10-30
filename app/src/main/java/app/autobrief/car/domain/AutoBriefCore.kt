@@ -1317,8 +1317,8 @@ class AutoBriefCore private constructor(
         writer.saveLedger(Space.DEMO, sample.data.chainId, sample.data.ledger)
         writer.saveTrips(Space.DEMO, sample.data.trips)
         writer.saveSettings(Space.DEMO, sample.data.settings)
-        enter(sample)
         writer.awaitWritten()
+        enter(sample)
         log("DEMO_READY trips=${sample.data.trips.size}")
         sample.data.trips.size
     }
@@ -1332,7 +1332,10 @@ class AutoBriefCore private constructor(
             lastMonthlyCloseYm = YearMonth.from(today).minusMonths(1).toString(),
             ledgerBackfillThroughSeq = if (webhookUrl.isNotBlank()) sampleLedger.headSeq else 0,
         )
-        return StoredSpace.of(Space.DEMO, SpaceData(settings = settings, trips = rows, ledger = sampleLedger.all, chainId = newChainId()))
+        val data = SpaceData(settings = settings, trips = rows, ledger = sampleLedger.all, chainId = newChainId())
+        val logbook = TripLogbook(rows)
+        val check = LedgerCheck(true, sampleLedger.size, Ledger.code(sampleLedger.all.lastOrNull()?.hash), emptyList())
+        return StoredSpace(Space.DEMO, data, logbook, sampleLedger, 0, check)
     }
 
     /** Empties the demo space (refused outside it); returns once that is on the disk. */
@@ -1574,7 +1577,7 @@ class AutoBriefCore private constructor(
                 if (space != forSpace) return
                 val sum = TripLogbook.summarize(rows)
                 _notice.value = Notice(
-                    "${month.monthValue}월 운행기록부를 만들었습니다: ${rows.size}건, 업무사용비율 ${sum.businessUseRatio?.let { "%.1f%%".format(it * 100) } ?: "-"}" +
+                    "${month.monthValue}월 운행기록부를 만들었습니다: ${rows.size}건, 업무사용비율 ${sum.businessUseRatio?.let { String.format(Locale.ROOT, "%.1f%%", it * 100) } ?: "-"}" +
                         fuelNotice(result.fuel) + if (result.queued) ", 보내기 주소로 전송 대기" else "",
                     result.fileName,
                 )
@@ -1621,7 +1624,7 @@ class AutoBriefCore private constructor(
         }
         return GleoReply(
             "success",
-            "The last trip of ${"%.0f".format(km)} km was logged as ${purpose.name.lowercase()} use.",
+            "The last trip of ${String.format(Locale.ROOT, "%.0f", km)} km was logged as ${purpose.name.lowercase()} use.",
             JsonArray(listOf(buildJsonObject { put("distanceKm", km); put("purpose", purpose.label) })),
         )
     }
@@ -1648,26 +1651,31 @@ class AutoBriefCore private constructor(
         val period = if (year) currentBusinessYear() else TaxPeriods.month(YearMonth.from(today()))
         val s = summary(period)
         if (s.rowCount == 0) return GleoReply("success", if (year) "No trips are logged this business year yet." else "No trips are logged this month yet.")
-        val ratio = s.businessUseRatio?.let { "%.1f".format(it * 100) } ?: "0"
+        val ratio = s.businessUseRatio?.let { String.format(Locale.ROOT, "%.1f", it * 100) } ?: "0"
         val pending = if (s.unclassifiedCount > 0) " ${s.unclassifiedCount} trips still need a purpose." else " Every trip has a purpose."
+        val gaps = if (s.gapRowCount > 0) " ${s.gapRowCount} unlogged odometer gaps (${String.format(Locale.ROOT, "%.0f", s.gapKm)} km)." else ""
         // 내 차 mode: the fuel reimbursement of the same period (every month of it so far), or what it still needs
         val fuel = if (_settings.value.carUse == CarUse.OWN) fuelSettlements(period) else emptyList()
         val fuelKrw = fuel.takeIf { it.isNotEmpty() && it.all { m -> m.result.amountKrw != null } }?.sumOf { it.result.amountKrw!! }
         val fuelText = when {
             fuel.isEmpty() -> ""
-            fuelKrw != null -> " Fuel reimbursement ${if (year) "this business year" else "this month"}: ${"%,d".format(Locale.ROOT, fuelKrw)} won."
+            fuelKrw != null -> " Fuel reimbursement ${if (year) "this business year" else "this month"}: ${app.autobrief.car.ui.comma(fuelKrw)} won."
             fuel.any { it.result.missing == FuelReimbursement.Missing.ECONOMY } ->
                 " The fuel reimbursement needs the car's fuel economy or one entered in the settings."
             else -> " The fuel reimbursement needs a fuel price in the settings."
         }
         return GleoReply(
             "success",
-            "${if (year) "This business year" else "This month"}: ${s.rowCount} trips, ${"%.0f".format(s.totalKm)} km, business use $ratio percent.$pending$fuelText",
+            "${if (year) "This business year" else "This month"}: ${s.rowCount} trips, ${String.format(Locale.ROOT, "%.0f", s.totalKm)} km, business use $ratio percent.$pending$gaps$fuelText",
             JsonArray(listOf(buildJsonObject {
                 put("trips", s.rowCount)
                 put("totalKm", s.totalKm)
                 put("businessUsePct", ratio)
                 put("unclassified", s.unclassifiedCount)
+                if (s.gapRowCount > 0) {
+                    put("gapCount", s.gapRowCount)
+                    put("gapKm", s.gapKm)
+                }
                 fuelKrw?.let { put("fuelReimbursementKrw", it) }
             })),
         )
@@ -1821,7 +1829,7 @@ class AutoBriefCore private constructor(
         fun fuelNotice(months: List<FuelReimbursement.Month>): String {
             if (months.isEmpty()) return ""
             val total = months.takeIf { it.all { m -> m.result.amountKrw != null } }?.sumOf { it.result.amountKrw!! }
-            return if (total != null) ", 유류비 정산 ${"%,d".format(Locale.ROOT, total)}원" else ", 유류비 정산은 연비나 유가가 없어 비워 두었습니다"
+            return if (total != null) ", 유류비 정산 ${app.autobrief.car.ui.comma(total)}원" else ", 유류비 정산은 연비나 유가가 없어 비워 두었습니다"
         }
 
         /** [payloadJson] with [vin] in its car block when the block has none; every other field stays as queued. */

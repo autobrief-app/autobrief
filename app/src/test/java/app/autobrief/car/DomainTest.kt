@@ -308,4 +308,19 @@ class DisplayMaskingTest {
         assertEquals("한빛마을 3단지 동·호수 비공개", DisplayMasking.mask("우리집: 한빛마을 3단지 101동 1203호"))
         assertEquals("역삼1동 2호선 강남역 3호점", DisplayMasking.mask("역삼1동 2호선 강남역 3호점"))
     }
+
+    @Test fun localeFreeFormattingHelpersMatchExpectedOutput() {
+        assertEquals("0", app.autobrief.car.ui.comma(0L))
+        assertEquals("999", app.autobrief.car.ui.comma(999L))
+        assertEquals("1,000", app.autobrief.car.ui.comma(1_000L))
+        assertEquals("19,000,000", app.autobrief.car.ui.comma(19_000_000L))
+        assertEquals("-42,580", app.autobrief.car.ui.comma(-42_580L))
+        assertEquals("0.0", app.autobrief.car.ui.km1(0.0))
+        assertEquals("45,218.0", app.autobrief.car.ui.km1(45_218.0))
+        assertEquals("1,093.6", app.autobrief.car.ui.km1(1_093.56))
+        assertEquals("1,900만원", app.autobrief.car.ui.manwon(19_000_000L))
+        assertEquals("26만원", app.autobrief.car.ui.manwon(258_268L))
+        assertEquals("5,000원", app.autobrief.car.ui.manwon(5_000L))
+        assertEquals("운\u2060행\u2060기\u2060록\u2060부 완\u2060료", app.autobrief.car.ui.keepWords("운행기록부 완료"))
+    }
 }

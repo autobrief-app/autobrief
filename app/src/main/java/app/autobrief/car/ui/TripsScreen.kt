@@ -45,8 +45,10 @@ fun TripsScreen(core: AutoBriefCore) {
     val latest = trips.lastOrNull()?.let { TripLogbook.yearMonth(it.startEpochMs) } ?: YearMonth.from(core.today())
     var month by remember { mutableStateOf(latest) }
     var selected by remember { mutableStateOf<String?>(null) }
-    val rows = trips.filter { TripLogbook.yearMonth(it.startEpochMs) == month }.sortedByDescending { it.startEpochMs }
-    val s = TripLogbook.summarize(rows)
+    val rows = remember(trips, month) {
+        trips.filter { TripLogbook.yearMonth(it.startEpochMs) == month }.sortedByDescending { it.startEpochMs }
+    }
+    val s = remember(rows) { TripLogbook.summarize(rows) }
 
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -144,7 +146,7 @@ private fun TripDialog(core: AutoBriefCore, t: TripRecord, onClose: () -> Unit) 
                 "출발 → 도착 장소",
                 listOfNotNull(t.startPlace, t.endPlace).joinToString(" → ").ifBlank { if (t.family) "위치 기록 안 함 (가족 운행)" else "등록된 장소 아님" },
             )
-            t.routeTollEstimateKrw?.takeIf { it > 0 }?.let { KeyValue("내비 예상 통행료", "%,d원".format(it)) }
+            t.routeTollEstimateKrw?.takeIf { it > 0 }?.let { KeyValue("내비 예상 통행료", "${comma(it)}원") }
             if (t.purpose == TripPurpose.UNLOGGED_GAP) {
                 Muted("앱이 꺼져 있던 동안 계기판이 움직인 구간입니다. 업무로 바꿀 수 없고 비업무로 계산합니다.", Type.body)
             } else {

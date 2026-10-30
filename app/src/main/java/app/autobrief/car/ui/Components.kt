@@ -46,15 +46,42 @@ import androidx.compose.foundation.text.KeyboardOptions
 import app.autobrief.car.domain.KST
 import app.autobrief.car.domain.LogbookSummary
 import app.autobrief.car.model.TripPurpose
+import java.math.BigDecimal
+import java.math.RoundingMode
 import java.time.Instant
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 private val HM: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 private val MDHM: DateTimeFormatter = DateTimeFormatter.ofPattern("M월 d일 HH:mm")
 
 fun hm(epochMs: Long): String = HM.format(Instant.ofEpochMilli(epochMs).atZone(KST))
 fun mdhm(epochMs: Long): String = MDHM.format(Instant.ofEpochMilli(epochMs).atZone(KST))
-fun km1(v: Double): String = "%,.1f".format(v)
+
+/** Thousands-grouped integer ("1,650") without ICU/Locale Formatter allocation on the UI thread. */
+fun comma(n: Long): String {
+    if (n in -999L..999L) return n.toString()
+    val sign = if (n < 0) "-" else ""
+    val digits = if (n == Long.MIN_VALUE) "9223372036854775808" else kotlin.math.abs(n).toString()
+    val len = digits.length
+    val sb = StringBuilder(len + (len - 1) / 3 + sign.length)
+    sb.append(sign)
+    for (i in 0 until len) {
+        if (i > 0 && (len - i) % 3 == 0) sb.append(',')
+        sb.append(digits[i])
+    }
+    return sb.toString()
+}
+
+fun comma(n: Int): String = comma(n.toLong())
+
+fun km1(v: Double): String {
+    if (!v.isFinite()) return v.toString()
+    val tenths = BigDecimal.valueOf(v).setScale(1, RoundingMode.HALF_UP).movePointRight(1).toLong()
+    val sign = if (tenths < 0) "-" else ""
+    val a = kotlin.math.abs(tenths)
+    return "$sign${comma(a / 10)}.${a % 10}"
+}
 
 /** Korean 로/으로 after [word]: 으로 after a final consonant other than ㄹ ("출퇴근으로", "업무로", "비업무로"). */
 fun withRo(word: String): String {
@@ -62,13 +89,13 @@ fun withRo(word: String): String {
     val jong = (c.code - 0xAC00) % 28
     return if (jong == 0 || jong == 8) "${word}로" else "${word}으로"
 }
-fun pct(r: Double?): String = r?.let { "%.1f%%".format(it * 100) } ?: "-"
+fun pct(r: Double?): String = r?.let { String.format(Locale.ROOT, "%.1f%%", it * 100) } ?: "-"
 
 /** Korean money in 만원 units for display ("117만원"); below 10,000 KRW shows in 원. */
 fun manwon(krw: Long): String {
     val sign = if (krw < 0) "-" else ""
     val a = kotlin.math.abs(krw)
-    return if (a >= 10_000) "$sign${"%,d".format((a + 5_000) / 10_000)}만원" else "$sign${"%,d".format(a)}원"
+    return if (a >= 10_000) "$sign${comma((a + 5_000) / 10_000)}만원" else "$sign${comma(a)}원"
 }
 
 @Composable
@@ -97,9 +124,22 @@ fun Panel(
  * which the Unicode line-break rules never split, glues every Hangul character to its non-space neighbours. (Phrase line
  * breaking, LineBreak.WordBreak.Phrase, does not change Korean wrapping on API 34.) A word longer than the line still breaks.
  */
-private val INSIDE_A_WORD = Regex("(?<=[가-힣])(?=\\S)|(?<=\\S)(?=[가-힣])")
-
-fun keepWords(text: String): String = INSIDE_A_WORD.replace(text, "\u2060")
+fun keepWords(text: String): String {
+    val n = text.length
+    if (n < 2) return text
+    val sb = StringBuilder(n * 2)
+    var prev = text[0]
+    sb.append(prev)
+    for (i in 1 until n) {
+        val c = text[i]
+        if (!prev.isWhitespace() && !c.isWhitespace() && (prev in '가'..'힣' || c in '가'..'힣')) {
+            sb.append('\u2060')
+        }
+        sb.append(c)
+        prev = c
+    }
+    return if (sb.length == n) text else sb.toString()
+}
 
 @Composable
 fun Txt(text: String, style: TextStyle = Type.body, color: Color = LocalPalette.current.text, modifier: Modifier = Modifier) {

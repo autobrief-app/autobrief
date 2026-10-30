@@ -1810,6 +1810,12 @@ def start_app_and_load(adb: Adb, user: int, args: argparse.Namespace, say: Calla
             % (" (webhook %s)" % redact_url(args.webhook) if args.webhook else "")
         )
         say("  DEMO_READY trips=%d" % load_demo_sample(adb, args.webhook, user))
+        wait_for_app_in_front(adb, user)
+        if closed_for_not_responding(adb):
+            raise SetupError(
+                EXIT_FAIL,
+                "데모 샘플을 불러온 뒤 앱이 응답 없음(ANR)으로 닫혔습니다.",
+            )
 
 
 def load_demo_sample(

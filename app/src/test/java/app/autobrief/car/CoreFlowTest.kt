@@ -246,6 +246,10 @@ class CoreFlowTest {
         assertEquals(45_010.0, gap.startOdometerKm, 0.0)
         assertEquals(45_218.0, gap.endOdometerKm, 0.0)
         assertTrue(h.core.integrity.value.ok)
+        val status = h.core.gleo(GleoContract.GET_LOGBOOK_STATUS, GleoContract.parseParams("{}"))
+        assertTrue(status.message, "1 unlogged odometer gaps (208 km)." in status.message)
+        val statusData = status.data.toString()
+        assertTrue(statusData, "\"gapCount\":1" in statusData && "\"gapKm\":208.0" in statusData)
     }
 
     @Test fun taxMeterTakesTheRateTableOfTheBusinessYearsStart() {

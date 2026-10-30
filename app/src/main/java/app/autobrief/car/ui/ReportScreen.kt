@@ -61,9 +61,11 @@ fun ReportScreen(core: AutoBriefCore, onFlush: () -> Unit) {
     val workbook by core.workbook.collectAsState()
     val making = workbook is AutoBriefCore.WorkbookRequest.Making
     val opt = options[choice]
-    val s = core.summary(opt.range)
+    val s = remember(trips, opt.range) { core.summary(opt.range) }
     val unit = if (opt.businessYear) "사업연도" else "기간"
-    val rows = trips.filter { TripLogbook.localDate(it.startEpochMs) in opt.range }.sortedBy { it.startEpochMs }
+    val rows = remember(trips, opt.range) {
+        trips.filter { TripLogbook.localDate(it.startEpochMs) in opt.range }.sortedBy { it.startEpochMs }
+    }
 
     val metrics = previewMetrics()
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -174,7 +176,7 @@ private fun PreviewPanel(rows: List<TripRecord>, count: Int, m: PreviewMetrics) 
                 shown.forEach { r -> PreviewRow(previewCells(r), stretch, m.row) }
             }
         }
-        if (shown.size < rows.size) Muted("나머지 ${"%,d".format(rows.size - shown.size)}행은 엑셀 파일에서 볼 수 있습니다.")
+        if (shown.size < rows.size) Muted("나머지 ${comma(rows.size - shown.size)}행은 엑셀 파일에서 볼 수 있습니다.")
     }
 }
 

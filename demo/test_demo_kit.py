@@ -1912,6 +1912,16 @@ class DirectorExecutorTests(unittest.TestCase):
         self.assertFalse(director.app_on_own_gps("I AutoBriefLog: POSITION place=집 source=gps\nI AutoBriefLog: POSITION place=-\n"))
         self.assertFalse(director.app_on_own_gps("I AutoBriefLog: SPACE DEMO\n"))
 
+    def test_own_gps_is_sticky_and_suppresses_map_during_grace_timeout(self):
+        runner = self.make()
+        self.adb.app_silent = True
+        runner._own_gps = True
+        runner.await_position(director.AwaitPosition(director.HOME, 20.0))
+        self.assertFalse(
+            [s for s in self.adb.shells if s.startswith("am start") and director.NAV_PACKAGE in s]
+        )
+        self.assertEqual(self.adb.front, FakeAdb.APP)
+
     def test_a_map_that_does_not_start_is_reported_at_once(self):
         runner = self.make()
         self.adb.shell = lambda *a, **k: (

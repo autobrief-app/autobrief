@@ -463,6 +463,7 @@ class Store:
 
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
     timeout = SOCKET_TIMEOUT_S
 
     def log_request(self, code="-", size="-"):     # method, path, status only; never bodies
@@ -475,6 +476,8 @@ class Handler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="application/json; charset=utf-8", extra=()):
         if not isinstance(body, bytes):
             body = json.dumps(body, ensure_ascii=False).encode("utf-8", "replace")
+        if code >= 400:
+            self.close_connection = True
         self.send_response(code)
         for k, v in [("Content-Type", ctype), ("Content-Length", str(len(body))), ("Cache-Control", "no-store"), *extra]:
             self.send_header(k, v)

@@ -3,12 +3,14 @@ package app.autobrief.car.ui
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.unit.dp
 import app.autobrief.car.domain.AutoBriefCore
 import app.autobrief.car.domain.FuelReimbursement
 import app.autobrief.car.model.FuelBasis
 import java.time.LocalDate
 import java.time.YearMonth
+import java.util.Locale
 
 /**
  * The settlement in one sentence, every number from the calculation:
@@ -18,11 +20,11 @@ import java.time.YearMonth
  */
 fun fuelLine(m: FuelReimbursement.Month, withCommute: Boolean, label: String = "이번 달"): String {
     val r = m.result
-    val economy = r.litersPer100Km?.let { "%.1f".format(FuelReimbursement.kmPerLiter(it)) } ?: "-"
-    val per100 = r.litersPer100Km?.let { "100km당 ${"%.2f".format(it)}L, " } ?: ""
+    val economy = r.litersPer100Km?.let { String.format(Locale.ROOT, "%.1f", FuelReimbursement.kmPerLiter(it)) } ?: "-"
+    val per100 = r.litersPer100Km?.let { "100km당 ${String.format(Locale.ROOT, "%.2f", it)}L, " } ?: ""
     return "$label 업무${if (withCommute) "(출퇴근 포함)" else ""} ${km1(r.businessKm)}km, " +
         "평균 연비 ${economy}km/L($per100${m.economySource?.label ?: "-"}), " +
-        "유가 ${r.priceKrwPerLiter?.let { "%,d".format(it) } ?: "-"}원/L, 정산 ${r.amountKrw?.let { "%,d".format(it) } ?: "-"}원"
+        "유가 ${r.priceKrwPerLiter?.let(::comma) ?: "-"}원/L, 정산 ${r.amountKrw?.let(::comma) ?: "-"}원"
 }
 
 /**
@@ -33,12 +35,12 @@ fun fuelLine(m: FuelReimbursement.Month, withCommute: Boolean, label: String = "
 @Composable
 fun FuelCard(core: AutoBriefCore, period: ClosedRange<LocalDate>, title: String, onOpen: ((Tab) -> Unit)? = null) {
     val p = LocalPalette.current
-    core.trips.collectAsState().value
-    core.energy.collectAsState().value
+    val trips by core.trips.collectAsState()
+    val energy by core.energy.collectAsState()
     val settings by core.settings.collectAsState()
-    val months = core.fuelSettlements(period)
-    val withCommute = settings.fuelBasis == FuelBasis.WITH_COMMUTE
     val thisMonth = YearMonth.from(core.today())
+    val months = remember(trips, energy, settings, period, thisMonth) { core.fuelSettlements(period) }
+    val withCommute = settings.fuelBasis == FuelBasis.WITH_COMMUTE
     Panel {
         Muted(title, Type.body)
         val missing = months.firstOrNull { it.result.missing != null }?.result?.missing
@@ -60,7 +62,7 @@ fun FuelCard(core: AutoBriefCore, period: ClosedRange<LocalDate>, title: String,
             }
             else -> {
                 val total = months.sumOf { it.result.amountKrw ?: 0L }
-                Txt("${"%,d".format(total)}원", Type.hero, p.accent)
+                Txt("${comma(total)}원", Type.hero, p.accent)
                 months.takeLast(3).forEach { m ->
                     Txt(fuelLine(m, withCommute, if (m.month == thisMonth) "이번 달" else "${m.month.year}년 ${m.month.monthValue}월"), Type.body)
                 }

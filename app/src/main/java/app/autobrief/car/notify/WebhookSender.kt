@@ -93,7 +93,7 @@ class WebhookSender(
     companion object {
         private const val LEDGER = "ledger"
         const val MAX_PER_FLUSH = 2_000
-        const val MARK_EVERY = 50
+        const val MARK_EVERY = 200
         const val ROUND_MS = 20_000L
         const val BACKOFF_FIRST_MS = 5_000L
         const val BACKOFF_MAX_MS = 10 * 60_000L
@@ -109,18 +109,18 @@ class WebhookSender(
 }
 
 private fun httpPost(url: String, body: String, key: String): Pair<Boolean, String?> = runCatching {
+    val bytes = body.toByteArray(Charsets.UTF_8)
     val conn = URL(url).openConnection() as HttpURLConnection
-    try {
-        conn.requestMethod = "POST"
-        conn.connectTimeout = 5_000
-        conn.readTimeout = 15_000
-        conn.doOutput = true
-        conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-        conn.setRequestProperty("Idempotency-Key", key)
-        conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-        val code = conn.responseCode
-        if (code in 200..299) true to null else false to "HTTP $code"
-    } finally {
-        conn.disconnect()
-    }
+    conn.requestMethod = "POST"
+    conn.connectTimeout = 5_000
+    conn.readTimeout = 15_000
+    conn.doOutput = true
+    conn.setFixedLengthStreamingMode(bytes.size)
+    conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+    conn.setRequestProperty("Idempotency-Key", key)
+    conn.outputStream.use { it.write(bytes) }
+    val code = conn.responseCode
+    // drain and close the response stream (instead of conn.disconnect()) so Android's HttpURLConnection keep-alive pool reuses the TCP socket
+    runCatching { (if (code in 200..399) conn.inputStream else conn.errorStream)?.use { it.readBytes() } }
+    if (code in 200..299) true to null else false to "HTTP $code"
 }.getOrElse { false to (it.message ?: it::class.java.simpleName) }

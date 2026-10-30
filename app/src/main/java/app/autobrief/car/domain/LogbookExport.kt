@@ -48,7 +48,7 @@ object LogbookExport {
         val totalLabel: String get() = "⑪$scope 총주행 거리(㎞)"
         val businessUseLabel: String get() = "⑫$scope 업무용 사용거리(㎞)"
         val ratioLabel: String get() = "⑬업무사용비율(⑫/⑪)"
-        val ratioText: String get() = ratio?.let { "%.1f%%".format(it * 100) } ?: "-"
+        val ratioText: String get() = ratio?.let { String.format(Locale.ROOT, "%.1f%%", it * 100) } ?: "-"
     }
 
     /** A plain table sheet (the ledger listing); [note] is printed under the rows across the whole width. */
@@ -262,9 +262,9 @@ object LogbookExport {
         val family = (b["family"] as? JsonPrimitive)?.takeIf { !it.isString }?.content == "true"
         val user = s("userName")?.let { n -> " · $n" + (s("userDept")?.takeIf { it.isNotBlank() }?.let { "($it)" } ?: "") } ?: ""
         return when (e.kind) {
-            LedgerKind.TRIP, LedgerKind.GAP -> "계기판 ${"%,.1f".format(d("startOdometerKm") ?: 0.0)} → ${"%,.1f".format(d("endOdometerKm") ?: 0.0)} km" +
+            LedgerKind.TRIP, LedgerKind.GAP -> "계기판 ${app.autobrief.car.ui.km1(d("startOdometerKm") ?: 0.0)} → ${app.autobrief.car.ui.km1(d("endOdometerKm") ?: 0.0)} km" +
                 (s("source")?.takeIf { it != TripSource.SDK }?.let { " · $it" } ?: "") +
-                (d("toll")?.takeIf { it > 0 }?.let { " · 내비 예상 통행료 ${"%,d".format(it.toLong())}원" } ?: "") +
+                (d("toll")?.takeIf { it > 0 }?.let { " · 내비 예상 통행료 ${app.autobrief.car.ui.comma(it.toLong())}원" } ?: "") +
                 (if (family) ", family=true(가족 운행, 위치 기록 안 함)" else "")
             LedgerKind.CLASSIFY -> purpose("purpose") + user + " · ${s("by") ?: "-"}" + (s("autoReason")?.let { "($it)" } ?: "")
             LedgerKind.AMEND -> "${purpose("previousPurpose")} → ${purpose("purpose")}$user · ${s("by") ?: "-"} · 사유: ${s("reason") ?: "-"}"

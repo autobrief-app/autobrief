@@ -35,13 +35,17 @@ fun HomeScreen(core: AutoBriefCore, wide: Boolean, vehicleStalled: Boolean, onOp
     val open by core.openTrip.collectAsState()
     val lastId by core.lastClosedId.collectAsState()
     val notice by core.notice.collectAsState()
-    val last = lastId?.let { id -> trips.firstOrNull { it.id == id } }
-    val pending = trips.filter { it.purpose == TripPurpose.UNCLASSIFIED && it.id != last?.id }.sortedByDescending { it.startEpochMs }
+    val last = remember(trips, lastId) { lastId?.let { id -> trips.firstOrNull { it.id == id } } }
+    val pending = remember(trips, lastId) {
+        trips.filter { it.purpose == TripPurpose.UNCLASSIFIED && it.id != last?.id }.sortedByDescending { it.startEpochMs }
+    }
 
     val settings by core.settings.collectAsState()
     val space by core.activeSpace.collectAsState()
     val today = core.today()
-    val todays = trips.filter { TripLogbook.localDate(it.startEpochMs) == today }.sortedByDescending { it.startEpochMs }
+    val todays = remember(trips, today) {
+        trips.filter { TripLogbook.localDate(it.startEpochMs) == today }.sortedByDescending { it.startEpochMs }
+    }
     val main: @Composable () -> Unit = {
         if (space == AutoBriefCore.Space.LIVE && trips.isEmpty() && (settings.entityName.isBlank() || settings.users.isEmpty())) {
             SetupCard(core, onOpen)
@@ -287,9 +291,9 @@ private fun PendingCard(core: AutoBriefCore, pending: List<TripRecord>, onOpen: 
 @Composable
 private fun MonthCard(core: AutoBriefCore) {
     val p = LocalPalette.current
-    core.trips.collectAsState().value
+    val trips by core.trips.collectAsState()
     val month = YearMonth.from(core.today())
-    val s = core.summary(TaxPeriods.month(month))
+    val s = remember(trips, month) { core.summary(TaxPeriods.month(month)) }
     Panel {
         Muted("${month.monthValue}월 업무사용비율", Type.body)
         if (s.rowCount > 0) {
@@ -306,10 +310,10 @@ private fun MonthCard(core: AutoBriefCore) {
 @Composable
 private fun TaxCard(core: AutoBriefCore, onOpen: (Tab) -> Unit) {
     val p = LocalPalette.current
-    core.trips.collectAsState().value
+    val trips by core.trips.collectAsState()
     val settings by core.settings.collectAsState()
-    val r = core.taxBenefit()
     val year = core.currentBusinessYear()
+    val r = remember(trips, settings, year) { core.taxBenefit() }
     Panel {
         Muted("올해 운행기록부 효과 (사업연도 ${year.start} ~ ${year.endInclusive})", Type.body)
         if (r == null) {
@@ -321,7 +325,7 @@ private fun TaxCard(core: AutoBriefCore, onOpen: (Tab) -> Unit) {
         if (r.extraDeductibleKrw > 0) {
             Txt("+${manwon(r.extraDeductibleKrw)}", Type.hero, p.ok)
             Txt("비용으로 더 인정 · 세금 약 ${manwon(r.taxEffectKrw)} 줄어듦", Type.heading)
-            Muted("세율 ${"%.1f".format(r.ratePct)}%(지방소득세 포함) 가정", Type.small)
+            Muted("세율 ${String.format(java.util.Locale.ROOT, "%.1f", r.ratePct)}%(지방소득세 포함) 가정", Type.small)
         } else {
             Txt("기록부 없이도 비용 인정이 같거나 큰 구간", Type.heading)
             val cap = manwon(TaxBenefit.NO_LOGBOOK_CAP_KRW)

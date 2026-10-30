@@ -400,5 +400,24 @@ class HttpTests(Base):
         self.assertEqual((log.count("POST /hook 200"), log.count("GET / 200")), (2, 1))    # one line per request
         self.assertNotIn("SECRETMARK", log)                                                # bodies are never logged
 
+    def test_http_1_1_reuses_one_connection_across_multiple_posts(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        self.addCleanup(conn.close)
+        ch = Chain()
+        socks = []
+        for idx, payload in enumerate(ch.run(3), 1):
+            conn.request(
+                "POST",
+                "/hook",
+                body=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json", "Idempotency-Key": "k-%d" % idx},
+            )
+            r = conn.getresponse()
+            data = json.loads(r.read())
+            self.assertEqual((r.version, r.status, data), (11, 200, {"ok": True}))
+            socks.append(conn.sock.fileno())
+        self.assertEqual(len(set(socks)), 1)
+        self.assertEqual(self.car()["entries"], 3)
+
 if __name__ == "__main__":
     unittest.main()
