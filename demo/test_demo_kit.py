@@ -2268,6 +2268,17 @@ class SessionKeeperTests(unittest.TestCase):
         keeper.stop()
         self.assertEqual(len(request.calls), 1, "no thread, and no closing call either")
 
+    def test_a_dropped_first_beat_is_retried(self):
+        # CI run 41047304089: POST /browser/session dropped across adb forward right after a prior director exited
+        dropped = se.ConsoleError("Remote end closed connection without response", dropped=True)
+        request = RecordingRequest(script=[dropped, "ok"])
+        sleeps = []
+        keeper = self.keeper(request, sleep=sleeps.append)
+        keeper.start()
+        keeper.stop()
+        self.assertEqual(request.calls[:2], [("POST", SESSION_URL)] * 2)
+        self.assertEqual(sleeps, [1.0])
+
     def test_a_failing_closing_call_never_raises(self):
         calls = []
 

@@ -705,12 +705,14 @@ class SessionKeeper:
         client: str = SESSION_CLIENT,
         interval: Optional[float] = None,
         request=console_request,
+        sleep: Optional[Callable[[float], None]] = None,
         say_fn: Callable[[str], None] = say,
     ):
         self.url = base_url.rstrip("/") + "/browser/session"
         self.client = client
         self.interval = SESSION_INTERVAL_S if interval is None else interval
         self._request = request
+        self._sleep = sleep or time.sleep
         self._say = say_fn
         self._stop = threading.Event()
         self._thread = None
@@ -721,7 +723,16 @@ class SessionKeeper:
         params = [("client", self.client)]
         if closing:
             params.append(("closing", "1"))
-        self._request("POST", "%s?%s" % (self.url, urllib.parse.urlencode(params)))
+        url = "%s?%s" % (self.url, urllib.parse.urlencode(params))
+        retries = 0 if closing else REQUEST_RETRIES
+        for attempt in range(retries + 1):
+            try:
+                self._request("POST", url)
+                return
+            except ConsoleError as exc:
+                if not (exc.status == 503 or exc.dropped) or attempt == retries:
+                    raise
+                self._sleep(REQUEST_RETRY_SLEEP_S)
 
     def start(self) -> None:
         """First beat now (the session is alive before the first write), then one per interval."""
