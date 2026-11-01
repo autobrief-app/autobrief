@@ -186,7 +186,8 @@ class FamilyAndFuelTests(Base):
         self.assertEqual((trip["family"], trip["purpose"], plain["family"]), (True, "PERSONAL", False))
         m = car["month"]
         self.assertEqual((m["totalKm"], m["businessKm"], m["personalKm"], m["ratioPct"]), (22.0, 10.0, 12.0, 45.5))
-        page = open(os.path.join(fc.HERE, "dashboard.html"), encoding="utf-8").read()
+        with open(os.path.join(fc.HERE, "dashboard.html"), encoding="utf-8") as f:
+            page = f.read()
         self.assertIn("가족 운행 (위치 기록 안 함)", page)
 
     def test_the_month_workbook_of_an_own_car_shows_one_fuel_line(self):
@@ -205,7 +206,8 @@ class FamilyAndFuelTests(Base):
         self.assertEqual(self.car()["fuelReimbursement"]["amountKrw"], 42580)
         again = fc.Store(self.tmp)                                                 # restored from the stored lines
         self.assertEqual({**self.store.state(), "generatedAt": 0}, {**again.state(), "generatedAt": 0})
-        self.assertIn("fuelReimbursement", open(os.path.join(fc.HERE, "dashboard.html"), encoding="utf-8").read())
+        with open(os.path.join(fc.HERE, "dashboard.html"), encoding="utf-8") as f:
+            self.assertIn("fuelReimbursement", f.read())
 
 class LimitTests(Base):
     def test_idempotency_keys_are_deduped_and_bounded(self):

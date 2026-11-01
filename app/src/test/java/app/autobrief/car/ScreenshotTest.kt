@@ -7,6 +7,7 @@ import app.autobrief.car.domain.AutoBriefCore
 import app.autobrief.car.domain.NaviEvent
 import app.autobrief.car.domain.SampleHistory
 import app.autobrief.car.domain.VehicleEvent
+import app.autobrief.car.model.CarUse
 import app.autobrief.car.model.Gear
 import app.autobrief.car.model.GeoPoint
 import app.autobrief.car.ui.AutoBriefScreen
@@ -120,5 +121,18 @@ class ScreenshotTest {
     @Test fun liveFirstRun() {
         // a fresh install on a real car: no history, no settings, and a minute without gear or odometer from the vehicle service
         shoot(Harness(startAt = Harness.at(ptDay, 8, 0)).core, Tab.HOME, "11_live_first_run", waitMs = VEHICLE_WAIT_MS + 1_000)
+    }
+
+    @Test fun homeFamilyAndFuel() {
+        val h = commuted()
+        h.core.saveSettings(
+            h.core.settings.value.copy(carUse = CarUse.OWN, manualKmPerLiter = 12.1, fuelPriceKrwPerLiter = 1_650),
+            null,
+            null,
+        )
+        h.core.startFamilyDrive()
+        h.advance(3 * 3_600_000)
+        h.gear(Gear.DRIVE); h.advance(22 * 60_000); h.odo(45_230.0); h.gear(Gear.PARK)
+        shoot(h.core, Tab.HOME, "12_home_family_and_fuel")
     }
 }
