@@ -73,6 +73,7 @@ RAMP_STEPS = 8
 RAMP_UP_S = 4.0
 RAMP_DOWN_S = 3.0
 SETTLE_S = 1.5  # let the app react before the screenshot
+PARK_SETTLE_S = 4.0  # CarUxRestrictions clears ~1.2-3.5 s after Gear=Park; never scaled down
 VERIFY_TIMEOUT_S = 20.0
 GEAR_CONFIRM_TIMEOUT_S = 10.0
 SESSION_CLIENT = "autobrief-director"  # our client id on POST /browser/session
@@ -434,7 +435,7 @@ def plan_beats(
     if places:
         arrive.append(AwaitPosition(dest, POSITION_WAIT_DRIVING_S))
 
-    park = (ParkVehicle(), ShowApp(), Pause(SETTLE_S * scale))
+    park = (ParkVehicle(), ShowApp(), Pause(max(PARK_SETTLE_S, SETTLE_S * scale)))
 
     bodies = (
         ("ready", ready, False),

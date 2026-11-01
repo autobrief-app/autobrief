@@ -135,6 +135,8 @@ jobs:
       - name: Play the optional family and fuel scenes and verify
         # docs/DEMO.md scenes 8 and 9; they go on from the odometer where `all` ends
         run: |
+          adb shell pkill -SIGINT screenrecord || true
+          sleep 3
           python3 demo/director.py --scenario family --mode auto --fast --verify --out e2e-out/family
           python3 demo/director.py --scenario fuel --mode auto --fast --verify --out e2e-out/fuel
 

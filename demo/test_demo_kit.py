@@ -1517,11 +1517,13 @@ class ScenarioPlanTests(unittest.TestCase):
         slow = steps_of(director.plan_beats(scenario, 1.2))
         fast = steps_of(director.plan_beats(scenario, director.FAST_KM_INTERVAL))
         self.assertEqual(len(slow), len(fast))
-        for a, b in zip(slow, fast):
+        for a, b in zip(slow[:-1], fast[:-1]):
             if isinstance(a, director.Pause):
                 self.assertAlmostEqual(b.seconds, a.seconds * 0.25)
             else:
                 self.assertEqual(a, b)
+        self.assertEqual(slow[-1], director.Pause(director.PARK_SETTLE_S))
+        self.assertEqual(fast[-1], director.Pause(director.PARK_SETTLE_S))
         ticks = [
             s.seconds
             for s in steps_of(director.plan_beats(scenario, 0.3), director.Pause)

@@ -1894,6 +1894,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         director.write_preflight(
             args.out, director.preflight_lines(adb, console.state())
         )
+        if director.app_on_own_gps(adb.logcat_dump()):
+            drive._own_gps = True
         adb.logcat_clear()
         try:
             timeline.clock(measure_clock(adb))
