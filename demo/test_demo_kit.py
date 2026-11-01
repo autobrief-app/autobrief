@@ -2731,6 +2731,13 @@ class ReadinessParseTests(unittest.TestCase):
                 ),
                 "임시 홈",
             ),
+            (
+                se.UserSnapshot(
+                    True, 10, se.USER_UNLOCKED,
+                    se.FrontActivity(10, "com.android.sdksetup/.DefaultActivity"),
+                ),
+                "임시 홈",
+            ),
         ]
         for snap, words in cases:
             self.assertIn(words, se.user_not_ready(snap), snap)
@@ -2836,6 +2843,32 @@ class AppFrontWaitTests(unittest.TestCase):
         self.assertIn("u0 " + APP_SCREEN, str(caught.exception))
         starts = [s for s in adb.shells if s.startswith("am start")]
         self.assertEqual(len(starts), 2, "relaunched every 5 s, not on every poll")
+
+    def test_blank_slot_surface_restarts_home_and_app(self):
+        self.assertFalse(se.slot_surface_blank(b"\x89PNG\r\n\x1a\nfake-screen"))
+        self.assertFalse(se.slot_surface_blank(b"\x89PNG\r\n\x1a\n" + b"x" * 200_000))
+        blank_png = b"\x89PNG\r\n\x1a\n" + b"x" * 60_000
+        self.assertTrue(se.slot_surface_blank(blank_png))
+        adb = SequenceAdb(
+            fronts=(dumpsys_front(HOME_SCREEN),),
+            after_start=(dumpsys_front(APP_SCREEN),),
+            logcats=("I AutoBriefLog: VEHICLE_CONNECTED\n",),
+        )
+        adb.screencap_png = lambda: blank_png
+        adb.logcat_clear = lambda **k: None
+        clock, notes = FakeClock(), []
+        self.assertTrue(
+            se.recover_blank_slot_surface(adb, 10, notes.append, now=clock.now, sleep=clock.sleep)
+        )
+        self.assertIn(
+            "am start -W -S --user 10 -n " + HOME_SCREEN,
+            adb.shells,
+        )
+        self.assertIn(
+            "am start -W -S --user 10 -n " + APP_SCREEN,
+            adb.shells,
+        )
+        self.assertTrue(any("홈 화면 슬롯 표면이 비어 있습니다" in n for n in notes))
 
 
 class BroadcastIdleTests(unittest.TestCase):

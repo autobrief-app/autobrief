@@ -87,8 +87,15 @@ LOGCAT_CLEAR_RETRY_S = 2.0
 HSUM_PROP = "ro.fw.mu.headless_system_user"
 USER_UNLOCKED = "RUNNING_UNLOCKED"
 SETUP_WIZARD_MARK = "setupwizard"  # ai.umos.setupwizard on Pleos Connect
-# Settings' stand-in launcher while the user is still unlocking; the real home comes after it
+# Settings' / SDK's stand-in launchers while the user is still unlocking; the real home comes after them
 FALLBACK_HOME_MARK = "FallbackHome"
+SDK_SETUP_MARK = "sdksetup"  # com.android.sdksetup/.DefaultActivity before HomeActivity takes over
+HOME_ACTIVITY = "ai.umos.homescreen/.HomeActivity"
+HOME_RESTART_SETTLE_S = 10.0
+# On the 2560x1600 Pleos screen, a rendered frame is 190..540 KB; when HomeActivity's ConnectTaskView
+# SurfaceSyncGroup wedges during cold boot (CI run 41292587613), both slots stay flat #F7F7F7 (~55..61 KB)
+BLANK_SLOT_MIN_BYTES = 1024
+BLANK_SLOT_MAX_BYTES = 100_000
 # BOOT_COMPLETED of the driver's user reaches every app after the unlock (measured on CI: 55 s
 # after FallbackHome, with the CPU saturated meanwhile); the app starts after that settles
 BROADCAST_IDLE_WAIT_S = 300
@@ -1623,7 +1630,7 @@ def user_not_ready(snap: UserSnapshot) -> Optional[str]:
         return "앞 화면이 다른 사용자의 것 (%s)" % snap.front
     if SETUP_WIZARD_MARK in snap.front.package:
         return "설정 마법사가 앞에 있음 (%s)" % snap.front
-    if FALLBACK_HOME_MARK in snap.front.component:
+    if FALLBACK_HOME_MARK in snap.front.component or SDK_SETUP_MARK in snap.front.package:
         return "임시 홈(%s)만 떠 있음, 실제 홈 화면 대기" % snap.front
     return None
 
@@ -1796,6 +1803,49 @@ def closed_for_not_responding(adb: Adb) -> bool:
     return bool(re.search(r"\bANR in %s\b" % re.escape(APP_PACKAGE), adb.logcat_dump("ActivityManager", "E")))
 
 
+def slot_surface_blank(png: bytes) -> bool:
+    """True when a 2560x1600 Pleos screenshot compressed to the ~60 KB flat-#F7F7F7 size of a wedged
+    ConnectTaskView surface (CI run 41292587613). Tiny test stubs (<1 KB) and rendered frames (>=100 KB)
+    return False."""
+    return (
+        png.startswith(b"\x89PNG\r\n\x1a\n")
+        and BLANK_SLOT_MIN_BYTES <= len(png) < BLANK_SLOT_MAX_BYTES
+    )
+
+
+def recover_blank_slot_surface(
+    adb: Adb,
+    user: int,
+    say: Callable[[str], None],
+    now: Optional[Callable[[], float]] = None,
+    sleep: Optional[Callable[[float], None]] = None,
+) -> bool:
+    """If HomeActivity's ConnectTaskView surfaces wedged during cold boot (both slots flat #F7F7F7),
+    restart HomeActivity after boot broadcasts have settled and re-open our app in the fresh slot."""
+    sleep = sleep or time.sleep
+    try:
+        png = adb.screencap_png()
+    except AdbError:
+        return False
+    if not slot_surface_blank(png):
+        return False
+    say(
+        "  (경고) 홈 화면 슬롯 표면이 비어 있습니다 (%d bytes). 홈 화면을 다시 시작해 복구합니다."
+        % len(png)
+    )
+    adb.shell(
+        "am", "start", "-W", "-S", "--user", str(user), "-n", HOME_ACTIVITY, timeout=90
+    )
+    wait_for_user_ready(adb, now=now, sleep=sleep, log=say)
+    sleep(HOME_RESTART_SETTLE_S)
+    adb.logcat_clear(sleep=sleep)
+    start_app(adb, user, restart=True)
+    front = wait_for_app_in_front(adb, user, now=now, sleep=sleep, log=say)
+    say("  앱이 화면 앞에 있습니다: %s" % front)
+    say("  VEHICLE_CONNECTED (%.0f초)" % wait_for_vehicle_connected(adb, now=now, sleep=sleep))
+    return True
+
+
 def start_app_and_load(adb: Adb, user: int, args: argparse.Namespace, say: Callable[[str], None]) -> None:
     """Start the app fresh, wait for its vehicle link and, with --demo-sample, load the sample."""
     adb.logcat_clear()  # VEHICLE_CONNECTED must come from the process started now
@@ -1804,6 +1854,7 @@ def start_app_and_load(adb: Adb, user: int, args: argparse.Namespace, say: Calla
     say("  앱이 화면 앞에 있습니다: %s" % front)
     say("  차량 SDK 연결 확인 중 (최대 %d초)..." % VEHICLE_CONNECTED_WAIT_S)
     say("  VEHICLE_CONNECTED (%.0f초)" % wait_for_vehicle_connected(adb))
+    recover_blank_slot_surface(adb, user, say)
     if args.demo_sample:
         say(
             "  데모 샘플 전송%s"
