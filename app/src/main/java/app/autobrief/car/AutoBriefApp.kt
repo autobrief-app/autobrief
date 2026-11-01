@@ -9,13 +9,17 @@ import android.os.SystemClock
 import android.util.Log
 import app.autobrief.car.data.JsonFiles
 import app.autobrief.car.domain.AutoBriefCore
+import app.autobrief.car.vehicle.CarServices
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -28,6 +32,10 @@ open class AutoBriefApp : Application() {
     val background = AutoBriefCore.Background.android()
 
     private val loaded = MutableStateFlow<AutoBriefCore?>(null)
+    private var storeRef: AutoBriefCore.Store? = null
+    private var initFuture: CompletableFuture<LoadedInit>? = null
+
+    private class LoadedInit(val stored: AutoBriefCore.StoredSpace, val restricted: Boolean?)
 
     /** The core once the stored logbook is read; null while it is being read. */
     val coreState: StateFlow<AutoBriefCore?> = loaded.asStateFlow()
@@ -45,20 +53,57 @@ open class AutoBriefApp : Application() {
         super.onCreate()
         flushOnExit()
         val store = logbookStore()
+        storeRef = store
+        val future = CompletableFuture<LoadedInit>()
+        initFuture = future
         background.scope.launch {
-            loaded.value = AutoBriefCore.open(
-                store = store,
-                files = { space, name, bytes ->
-                    // app-specific external storage: no storage permission, removed with the app
-                    val dir = File(getExternalFilesDir("exports") ?: File(filesDir, "exports"), space.dir).apply { mkdirs() }
-                    File(dir, name).apply { writeBytes(bytes) }.absolutePath
-                },
-                log = { line -> Log.i(LOG_TAG, line) },
-                detailLogs = BuildConfig.DEBUG,
-                monotonic = SystemClock::elapsedRealtime,
-                background = background,
-            )
+            val init = withContext(background.io) {
+                try {
+                    LoadedInit(AutoBriefCore.StoredSpace.read(store), CarServices.queryRestricted(this@AutoBriefApp))
+                        .also { future.complete(it) }
+                } catch (t: Throwable) {
+                    future.completeExceptionally(t)
+                    throw t
+                }
+            }
+            installCore(store, init)
         }
+    }
+
+    /**
+     * When the background read of the stored logbook has already finished (or finishes within [waitMs], as on an empty or
+     * small store), builds the core on the main thread before the first Compose frame so Frame 1 draws [AutoBriefScreen]
+     * directly instead of [Loading] followed by a full-screen replacement during the window-focus handshake.
+     */
+    fun claimLoadedCoreIfReady(waitMs: Long = 500L) {
+        if (loaded.value != null) return
+        val store = storeRef ?: return
+        val future = initFuture ?: return
+        val init = try {
+            future.get(waitMs, TimeUnit.MILLISECONDS)
+        } catch (_: Exception) {
+            return
+        }
+        installCore(store, init)
+    }
+
+    private fun installCore(store: AutoBriefCore.Store, init: LoadedInit) {
+        if (loaded.value != null) return
+        val core = AutoBriefCore.fromStored(
+            store = store,
+            stored = init.stored,
+            files = { space, name, bytes ->
+                // app-specific external storage: no storage permission, removed with the app
+                val dir = File(getExternalFilesDir("exports") ?: File(filesDir, "exports"), space.dir).apply { mkdirs() }
+                File(dir, name).apply { writeBytes(bytes) }.absolutePath
+            },
+            log = { line -> Log.i(LOG_TAG, line) },
+            detailLogs = BuildConfig.DEBUG,
+            monotonic = SystemClock::elapsedRealtime,
+            background = background,
+        )
+        if (init.restricted != null) core.setRestricted(init.restricted)
+        loaded.value = core
     }
 
     /**

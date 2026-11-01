@@ -7,6 +7,7 @@ import app.autobrief.car.vehicle.PleosVehicleSource
 import app.autobrief.car.vehicle.VehicleLink
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -25,6 +26,7 @@ import java.util.Collections
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class VehicleSdkThreadTest {
+    @get:Rule val stalePleosBinds = RefuseStalePleosBinds()
     private val calls: MutableList<String> = Collections.synchronizedList(mutableListOf())
     private val events: MutableList<VehicleEvent> = Collections.synchronizedList(mutableListOf())
     private val links: MutableList<CarLink> = Collections.synchronizedList(mutableListOf())

@@ -26,7 +26,6 @@ class CarServices(private val context: Context, private val onRestricted: (Boole
     fun start() {
         if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE)) return
         stopped = false
-        onRestricted(null)
         if (Build.VERSION.SDK_INT >= 30) {
             car = Car.createCar(context, main, Car.CAR_WAIT_TIMEOUT_WAIT_FOREVER) { c, ready ->
                 if (stopped) return@createCar
@@ -84,5 +83,22 @@ class CarServices(private val context: Context, private val onRestricted: (Boole
 
     companion object {
         private const val TAG = "AutoBriefCar"
+
+        /**
+         * Reads the current UX restriction state off the main thread during startup so the first Compose frame knows
+         * whether the car is parked instead of rendering DrivingView and then replacing the screen after Display.
+         */
+        fun queryRestricted(context: Context): Boolean? {
+            if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE)) return null
+            val c = runCatching { Car.createCar(context) }.getOrNull() ?: return null
+            return try {
+                val ux = c.getCarManager(Car.CAR_UX_RESTRICTION_SERVICE) as? CarUxRestrictionsManager
+                ux?.currentCarUxRestrictions?.isRequiresDistractionOptimization
+            } catch (_: Exception) {
+                null
+            } finally {
+                runCatching { c.disconnect() }
+            }
+        }
     }
 }

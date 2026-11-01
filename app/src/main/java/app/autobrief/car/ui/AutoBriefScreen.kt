@@ -4,7 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -37,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -121,11 +121,11 @@ private fun Root(core: AutoBriefCore, tab: MutableState<Tab>, restricted: Boolea
     val p = LocalPalette.current
     val v by core.vehicle.collectAsState()
     val vehicleStalled = rememberVehicleStalled(v)
-    BoxWithConstraints(Modifier.fillMaxSize().background(p.bg)) {
-        val wide = maxWidth >= 1400.dp
+    val wide = LocalConfiguration.current.screenWidthDp >= 1400
+    Box(Modifier.fillMaxSize().background(p.bg)) {
         if (drivingLayout(restricted, v.gear)) {
             DrivingView(core)
-            return@BoxWithConstraints
+            return@Box
         }
         Row(Modifier.fillMaxSize()) {
             NavRail(tab)

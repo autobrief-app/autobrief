@@ -11,7 +11,6 @@ import ai.pleos.playground.navi.helper.listener.NaviHelperEventListener
 import android.content.Context
 import android.os.Handler
 import android.os.HandlerThread
-import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import app.autobrief.car.domain.NaviBookmark
@@ -31,14 +30,14 @@ import app.autobrief.car.vehicle.QuietWatch
  * until it succeeds. Once connected, a link that answered nothing for [QUIET_MS] while the car is out of P
  * ([checkQuiet], called by the monitor's tick; positions are asked for every few seconds then) is made again.
  *
- * Every call into NaviHelper runs on a background HandlerThread ([Process.THREAD_PRIORITY_BACKGROUND]) and
- * waits until the vehicle SDK has connected (or [INITIAL_DELAY_MS] has elapsed) so NaviHelper's binder
- * callbacks do not contend with the vehicle SDK's initial kotlin-reflect metadata load during cold start.
+ * Every call into NaviHelper runs on a dedicated HandlerThread and waits until the vehicle SDK has connected
+ * (or [INITIAL_DELAY_MS] has elapsed) so NaviHelper's binder callbacks do not contend with the vehicle SDK's
+ * initial kotlin-reflect metadata load.
  */
 class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
 
     private val app = context.applicationContext
-    private val thread = HandlerThread("AutoBriefNaviSdk", Process.THREAD_PRIORITY_BACKGROUND).apply { start() }
+    private val thread = HandlerThread("AutoBriefNaviSdk").apply { start() }
     private val sdk = Handler(thread.looper)
     private var navi: NaviHelper? = null
     @Volatile private var started = false
@@ -203,8 +202,8 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
     companion object {
         private const val TAG = "AutoBriefNavi"
 
-        /** Fallback delay when the vehicle SDK has not connected yet, keeping cold-launch focus events free. */
-        const val INITIAL_DELAY_MS = 12_000L
+        /** Fallback delay when the vehicle SDK has not connected yet. */
+        const val INITIAL_DELAY_MS = 5_000L
 
         /** Positions are asked for every 6 s outside P: five minutes without any answer is a lost link. */
         const val QUIET_MS = 5 * 60_000L

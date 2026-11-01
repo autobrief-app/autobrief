@@ -345,16 +345,17 @@ class AutoBriefCore private constructor(
      * chain re-hashed against them. It can be read on any thread; [open] reads it off the main thread before the core
      * exists.
      */
-    private class StoredSpace(
+    class StoredSpace internal constructor(
         val space: Space,
         val data: SpaceData,
-        val logbook: TripLogbook,
-        val ledger: Ledger,
+        internal val logbook: TripLogbook,
+        internal val ledger: Ledger,
         val rebuilt: Int,
         val check: LedgerCheck,
     ) {
         companion object {
-            fun read(store: Store, space: Space): StoredSpace = of(space, store.load(space)) { rows -> store.saveTrips(space, rows) }
+            fun read(store: Store, space: Space = store.activeSpace()): StoredSpace =
+                of(space, store.load(space)) { rows -> store.saveTrips(space, rows) }
 
             /** [d] as the core uses it; [saveRebuilt] stores the rows that had to be rebuilt from the chain. */
             fun of(space: Space, d: SpaceData, saveRebuilt: (List<TripRecord>) -> Unit = {}): StoredSpace {
@@ -1713,6 +1714,18 @@ class AutoBriefCore private constructor(
         (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
 
     companion object {
+        /** Builds a core on the calling thread from a [StoredSpace] already read off-thread. */
+        fun fromStored(
+            store: Store,
+            stored: StoredSpace,
+            files: FileSink,
+            log: (String) -> Unit,
+            detailLogs: Boolean,
+            monotonic: () -> Long,
+            background: Background,
+            clock: () -> Long = System::currentTimeMillis,
+        ): AutoBriefCore = AutoBriefCore(store, files, clock, log, detailLogs, monotonic, background, stored)
+
         /**
          * The app's core. The space is read on [Background.io] (its files parsed, the chain re-hashed: seconds on a loaded
          * head unit) and the core is made back on the calling thread, which becomes its thread. Made in
@@ -1729,7 +1742,7 @@ class AutoBriefCore private constructor(
             clock: () -> Long = System::currentTimeMillis,
         ): AutoBriefCore {
             val stored = withContext(background.io) { StoredSpace.read(store, store.activeSpace()) }
-            return AutoBriefCore(store, files, clock, log, detailLogs, monotonic, background, stored)
+            return fromStored(store, stored, files, log, detailLogs, monotonic, background, clock)
         }
 
         const val APP_VERSION = "2.0.0"
