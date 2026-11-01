@@ -3,6 +3,7 @@ package app.autobrief.car.vehicle
 import android.content.Context
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import app.autobrief.car.domain.VehicleEvent
@@ -28,7 +29,7 @@ class PleosVehicleSource(
     private val emit: (VehicleEvent) -> Unit,
     private val newLink: () -> VehicleLink = { PleosVehicleLink(context.applicationContext) },
 ) {
-    private val thread = HandlerThread("AutoBriefVehicleSdk").apply { start() }
+    private val thread = HandlerThread("AutoBriefVehicleSdk", Process.THREAD_PRIORITY_BACKGROUND).apply { start() }
     private val sdk = Handler(thread.looper)
     private var link: VehicleLink? = null
     private var registered = false

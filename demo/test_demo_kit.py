@@ -2908,6 +2908,23 @@ class VehicleConnectedWaitTests(unittest.TestCase):
         self.assertIn("VEHICLE_CONNECTED 없음", text)
         self.assertIn("vehicle service not bound", text)
 
+    def test_window_manager_anr_and_settle_wait(self):
+        wm_anr = (
+            "11-01 02:11:16.987   588  9396 I WindowManager: "
+            "ANR in Window{99e2d2e u10 app.autobrief.car/app.autobrief.car.ui.MainActivity}. "
+            "Reason:Input dispatching timed out\n"
+        )
+        am_anr = (
+            "11-01 02:11:40.270   588  9536 E ActivityManager: "
+            "ANR in app.autobrief.car (app.autobrief.car/.ui.MainActivity)\n"
+        )
+        adb = SequenceAdb(logcats=("", wm_anr))
+        self.assertTrue(se.closed_for_not_responding(adb))
+        settle_adb = SequenceAdb(logcats=("", "", am_anr))
+        clock = FakeClock()
+        se.wait_for_anr_settled(settle_adb, now=clock.now, sleep=clock.sleep)
+        self.assertEqual(clock.sleeps, [2.0, 2.0, 5.0])
+
 
 class DirectorFrontTests(unittest.TestCase):
     def test_app_in_front_is_left_alone(self):

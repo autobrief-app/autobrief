@@ -1797,10 +1797,35 @@ def wait_for_vehicle_connected(
 
 
 def closed_for_not_responding(adb: Adb) -> bool:
-    """True when Android closed the app for not responding. Android Automotive shows no ANR dialog (car UI
-    mode): an app that does not take an input or focus event within 5 s is closed at once, which a busy
-    emulator (software rendering, still settling after boot) can cause in the app's first seconds."""
-    return bool(re.search(r"\bANR in %s\b" % re.escape(APP_PACKAGE), adb.logcat_dump("ActivityManager", "E")))
+    """True when Android closed (or is closing) the app for not responding. Android Automotive shows no ANR
+    dialog (car UI mode): an app that does not take an input or focus event within 5 s is logged by
+    WindowManager at once, while ActivityManager dumps stack traces (~23 s on API 34) before logging its
+    own ANR line and killing the process."""
+    pattern = r"\bANR in (?:Window\{[^\n]*\s)?%s\b" % re.escape(APP_PACKAGE)
+    return bool(
+        re.search(pattern, adb.logcat_dump("ActivityManager", "E"))
+        or re.search(pattern, adb.logcat_dump("WindowManager", "I"))
+    )
+
+
+def wait_for_anr_settled(
+    adb: Adb,
+    timeout: float = 35.0,
+    now: Optional[Callable[[], float]] = None,
+    sleep: Optional[Callable[[float], None]] = None,
+) -> None:
+    """When WindowManager declares an input/focus ANR, ActivityManager spends ~20-25 s dumping stack
+    traces before logging `E ActivityManager: ANR in <pkg>` and killing the old process. Wait until that
+    kill phase completes so a retry does not launch into the middle of the stack dump."""
+    now = now or time.monotonic
+    sleep = sleep or time.sleep
+    deadline = now() + timeout
+    pattern = r"\bANR in %s\b" % re.escape(APP_PACKAGE)
+    while not re.search(pattern, adb.logcat_dump("ActivityManager", "E")):
+        if now() >= deadline:
+            break
+        sleep(2.0)
+    sleep(5.0)
 
 
 def slot_surface_blank(png: bytes) -> bool:
@@ -1854,6 +1879,11 @@ def start_app_and_load(adb: Adb, user: int, args: argparse.Namespace, say: Calla
     say("  앱이 화면 앞에 있습니다: %s" % front)
     say("  차량 SDK 연결 확인 중 (최대 %d초)..." % VEHICLE_CONNECTED_WAIT_S)
     say("  VEHICLE_CONNECTED (%.0f초)" % wait_for_vehicle_connected(adb))
+    if closed_for_not_responding(adb):
+        raise SetupError(
+            EXIT_FAIL,
+            "차량 SDK 연결 직후 앱 프로세스가 종료됐습니다.",
+        )
     recover_blank_slot_surface(adb, user, say)
     if args.demo_sample:
         say(
@@ -1896,7 +1926,7 @@ def load_demo_sample(
         trips = find_demo_ready(adb.logcat_dump())
         if trips is not None:
             return trips
-        if now() >= deadline:
+        if now() >= deadline or closed_for_not_responding(adb):
             raise SetupError(
                 EXIT_FAIL,
                 "%.0f초 안에 DEMO_READY 로그를 보지 못했습니다. 디버그 APK(assembleDebug)를 설치했는지 확인하세요 "
@@ -2106,6 +2136,7 @@ def run(args: argparse.Namespace) -> int:
         # only an app Android closed for not responding is started once more; any other failure stands
         if not closed_for_not_responding(adb):
             raise
+        wait_for_anr_settled(adb)
         say("  (경고) 에뮬레이터가 바빠 앱이 응답 없음(ANR)으로 닫혔습니다. 앱을 새로 띄워 한 번 더 합니다.")
         start_app_and_load(adb, user, args, say)
     if not (args.no_browser or args.headless):

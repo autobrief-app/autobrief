@@ -10,7 +10,8 @@ import ai.pleos.playground.navi.helper.NaviHelper
 import ai.pleos.playground.navi.helper.listener.NaviHelperEventListener
 import android.content.Context
 import android.os.Handler
-import android.os.Looper
+import android.os.HandlerThread
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import app.autobrief.car.domain.NaviBookmark
@@ -29,12 +30,18 @@ import app.autobrief.car.vehicle.QuietWatch
  * The navigation service may not be up when the app starts: initialising is tried again with a growing pause
  * until it succeeds. Once connected, a link that answered nothing for [QUIET_MS] while the car is out of P
  * ([checkQuiet], called by the monitor's tick; positions are asked for every few seconds then) is made again.
+ *
+ * Every call into NaviHelper runs on a background HandlerThread ([Process.THREAD_PRIORITY_BACKGROUND]) and
+ * waits until the vehicle SDK has connected (or [INITIAL_DELAY_MS] has elapsed) so NaviHelper's binder
+ * callbacks do not contend with the vehicle SDK's initial kotlin-reflect metadata load during cold start.
  */
 class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
 
     private val app = context.applicationContext
-    private var navi = NaviHelper(app)
-    private val main = Handler(Looper.getMainLooper())
+    private val thread = HandlerThread("AutoBriefNaviSdk", Process.THREAD_PRIORITY_BACKGROUND).apply { start() }
+    private val sdk = Handler(thread.looper)
+    private var navi: NaviHelper? = null
+    @Volatile private var started = false
     @Volatile private var ready = false
     @Volatile private var stopped = false
     private val quiet = QuietWatch(QUIET_MS, SystemClock::elapsedRealtime)
@@ -76,24 +83,39 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
         override fun onBookMarkChanged() = requestBookmarks()
     }
 
-    fun start() {
+    fun start(initialDelayMs: Long = INITIAL_DELAY_MS) {
         stopped = false
+        sdk.postDelayed({ beginIfNeeded() }, initialDelayMs)
+    }
+
+    /** Starts initialisation immediately once the vehicle SDK has connected and warmed kotlin-reflect. */
+    fun startNow() {
+        if (stopped || started) return
+        sdk.post(::beginIfNeeded)
+    }
+
+    private fun beginIfNeeded() {
+        if (stopped || started) return
+        started = true
+        if (navi == null) navi = NaviHelper(app)
         initialize(attempt = 0)
     }
 
     private fun initialize(attempt: Int) {
         if (stopped) return
-        val helper = navi
+        val helper = navi ?: NaviHelper(app).also { navi = it }
         try {
             helper.initialize({
-                if (stopped || helper !== navi) return@initialize
-                ready = true
-                quiet.heard()
-                helper.addListener(listener)
-                emit(NaviEvent.Ready(true))
-                requestBookmarks()
-                requestLocation()
-                refreshDestination()
+                sdk.post {
+                    if (stopped || helper !== navi) return@post
+                    ready = true
+                    quiet.heard()
+                    helper.addListener(listener)
+                    emit(NaviEvent.Ready(true))
+                    requestBookmarks()
+                    requestLocation()
+                    refreshDestination()
+                }
             }, {
                 Log.w(TAG, "navi init: ${it.message}")
                 emit(NaviEvent.Ready(false))
@@ -106,7 +128,7 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
     }
 
     private fun retry(attempt: Int) {
-        if (!stopped) main.postDelayed({ initialize(attempt + 1) }, Backoff.delayMs(attempt))
+        if (!stopped) sdk.postDelayed({ initialize(attempt + 1) }, Backoff.delayMs(attempt))
     }
 
     /** Resuming asks for the position at once (the requests skipped meanwhile are not made up later). */
@@ -118,37 +140,55 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
     /** The answer comes back through onCurrentLocationInfo; nothing is asked while [locationPaused]. */
     fun requestLocation() {
         if (!ready || locationPaused) return
-        runCatching { navi.getCurrentLocationInfo() }.onFailure { Log.w(TAG, "location: ${it.message}") }
+        sdk.post {
+            if (!stopped && ready && !locationPaused) {
+                runCatching { navi?.getCurrentLocationInfo() }.onFailure { Log.w(TAG, "location: ${it.message}") }
+            }
+        }
     }
 
     fun requestBookmarks() {
         if (!ready) return
-        runCatching { navi.getBookmarkInfo() }.onFailure { Log.w(TAG, "bookmarks: ${it.message}") }
+        sdk.post {
+            if (!stopped && ready) {
+                runCatching { navi?.getBookmarkInfo() }.onFailure { Log.w(TAG, "bookmarks: ${it.message}") }
+            }
+        }
     }
 
     private fun refreshDestination() {
-        runCatching { navi.getDestinationInfo() }.onFailure { Log.w(TAG, "destination: ${it.message}") }
+        sdk.post {
+            if (!stopped && ready) {
+                runCatching { navi?.getDestinationInfo() }.onFailure { Log.w(TAG, "destination: ${it.message}") }
+            }
+        }
     }
 
     /** Called by the monitor every tick with the car's gear; see the class comment. */
     fun checkQuiet(gear: Gear) {
-        if (stopped || !ready || !quiet.reconnectDue(gear)) return
-        Log.w(TAG, "navigation answered nothing for ${QUIET_MS / 60_000} min outside P: connecting again")
-        release()
-        navi = NaviHelper(app)
-        initialize(attempt = 0)
+        if (stopped || !ready) return
+        sdk.post {
+            if (stopped || !ready || !quiet.reconnectDue(gear)) return@post
+            Log.w(TAG, "navigation answered nothing for ${QUIET_MS / 60_000} min outside P: connecting again")
+            release()
+            navi = NaviHelper(app)
+            initialize(attempt = 0)
+        }
     }
 
     private fun release() {
         ready = false
-        runCatching { navi.removeListener(listener) }
-        runCatching { navi.release() }
+        val helper = navi ?: return
+        runCatching { helper.removeListener(listener) }
+        runCatching { helper.release() }
+        navi = null
     }
 
     fun stop() {
         stopped = true
-        main.removeCallbacksAndMessages(null)
-        release()
+        sdk.removeCallbacksAndMessages(null)
+        sdk.post(::release)
+        thread.quitSafely()
     }
 
     private fun BookmarkInfo.toBookmark(): NaviBookmark? {
@@ -162,6 +202,9 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
 
     companion object {
         private const val TAG = "AutoBriefNavi"
+
+        /** Fallback delay when the vehicle SDK has not connected yet, keeping cold-launch focus events free. */
+        const val INITIAL_DELAY_MS = 12_000L
 
         /** Positions are asked for every 6 s outside P: five minutes without any answer is a lost link. */
         const val QUIET_MS = 5 * 60_000L

@@ -59,8 +59,11 @@ class VehicleMonitorService : Service() {
     override fun onCreate() {
         super.onCreate()
         startAsForeground()
-        vehicle = PleosVehicleSource(this, emit = { e -> dispatch("vehicle event") { it.onVehicle(e) } })
         navi = PleosNaviSource(this) { e -> dispatch("navigation event") { it.onNavi(e) } }
+        vehicle = PleosVehicleSource(this, emit = { e ->
+            if (e is VehicleEvent.Connection && e.connected) navi.startNow()
+            dispatch("vehicle event") { it.onVehicle(e) }
+        })
         car = CarServices(this) { r -> dispatch("driving restrictions") { it.setRestricted(r) } }
         gps = PlatformLocationSource(this) { fix -> dispatch("gnss fix") { it.onPlatformFix(fix) } }
         // no position is asked for until the logbook is read: 가족 운행 may be on (see attach)
