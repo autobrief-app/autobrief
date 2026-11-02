@@ -2897,7 +2897,6 @@ class BroadcastIdleTests(unittest.TestCase):
                 "appops set --user 10 ai.umos.maps.android.navigation.app FINE_LOCATION ignore",
                 "appops set --user 10 ai.umos.maps.android.navigation.app COARSE_LOCATION ignore",
                 "appops set --user 10 ai.umos.maps.android.navigation.app GPS ignore",
-                "appops set --user 10 ai.umos.maps.android.navigation.app RUN_ANY_IN_BACKGROUND ignore",
                 "cmd jobscheduler cancel --user 10 ai.umos.maps.android.navigation.app",
             ],
         )
@@ -4451,6 +4450,31 @@ class RehearsalUiDriverTests(QuietTestCase):
         self.app.shell = flaky
         self.assertTrue(ui.dump())
         self.assertEqual(calls["n"], 2)
+
+    def test_wait_for_recovers_when_another_app_steals_the_screen_and_retaps(self):
+        ui = self.make()
+        self.app.screen = "home"
+        ui.tap_text("tab_trips", "운행 목록")
+        # Simulate navigation.app stealing the screen right as the tap happened (swallowing the tap)
+        self.app.screen = "home"
+        nav_xml = (
+            '<hierarchy><display id="0"><window index="0" package="ai.umos.maps.android.navigation.app" layer="2">'
+            '<node index="0" text="Map" package="ai.umos.maps.android.navigation.app" bounds="[0,0][2560,1440]" />'
+            '</window></display></hierarchy>'
+        )
+        real_render = self.app.render
+        renders = [nav_xml]
+
+        def render_with_stolen_first():
+            if renders:
+                return renders.pop(0)
+            return real_render()
+
+        self.app.render = render_with_stolen_first
+        with mock.patch("director.ensure_app_in_front") as bring_front:
+            ui.wait_text("trips_list", "45,200.0 → 45,218.0", timeout=5)
+        self.assertEqual(bring_front.call_count, 1)
+        self.assertEqual(self.app.screen, "trips")
 
 
 class RehearsalHelperTests(QuietTestCase):

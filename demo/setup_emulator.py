@@ -93,7 +93,7 @@ SDK_SETUP_MARK = "sdksetup"  # com.android.sdksetup/.DefaultActivity before Home
 HOME_ACTIVITY = "ai.umos.homescreen/.HomeActivity"
 HOME_RESTART_SETTLE_S = 10.0
 NAV_PACKAGE = "ai.umos.maps.android.navigation.app"
-NAV_QUIET_OPS = ("FINE_LOCATION", "COARSE_LOCATION", "GPS", "RUN_ANY_IN_BACKGROUND")
+NAV_QUIET_OPS = ("FINE_LOCATION", "COARSE_LOCATION", "GPS")
 # On the 2560x1600 Pleos screen, a rendered frame is 190..540 KB; when HomeActivity's ConnectTaskView
 # SurfaceSyncGroup wedges during cold boot (CI run 41292587613), both slots stay flat #F7F7F7 (~55..61 KB)
 BLANK_SLOT_MIN_BYTES = 50_000
@@ -1734,9 +1734,12 @@ def quiet_emulator_navigation(adb: Adb, user: int) -> None:
     removes its dead binder registration and synchronously calls BpGnss::stopSvStatus back into
     android.hardware.gnss-service.ranchu while Gnss::onGnssSvStatusCb holds its non-recursive
     mutex, deadlocking system_server's android.fg thread until Watchdog kills system_server
-    (CI run 41318807339). Blocking its location and background-job appops via shell's
-    MANAGE_APPOPS grant prevents both IGnss::startSvStatus and the Datatransport job ANR while
-    leaving AutoBrief's own PlatformLocationSource (app.autobrief.car) untouched.
+    (CI run 41318807339). Blocking its location appops via shell's MANAGE_APPOPS grant and
+    cancelling its queued jobs prevents both IGnss::startSvStatus and the Datatransport job ANR
+    without marking the process background-restricted (RUN_ANY_IN_BACKGROUND ignore would cause
+    ActivityManager to kill it after ~5m45s of cached idle, triggering HomeActivity to relaunch it
+    over the foreground slot; CI run 41387159188), while leaving AutoBrief's own
+    PlatformLocationSource (app.autobrief.car) untouched.
     """
     for op in NAV_QUIET_OPS:
         try:

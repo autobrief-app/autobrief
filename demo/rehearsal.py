@@ -228,6 +228,7 @@ class UiNode:
     window: int = 0  # the <window> it belongs to (0 for a single-window dump)
     layer: int = 0  # that window's layer (z-order: higher is on top)
     display: int = MAIN_DISPLAY
+    package: str = ""
 
     @property
     def center(self) -> Tuple[int, int]:
@@ -284,6 +285,7 @@ def parse_ui_dump(xml_text: str) -> List[UiNode]:
                 window=window,
                 display=display,
                 layer=layer,
+                package=element.get("package", ""),
             )
             nodes.append(node)
             parent = node.index
@@ -292,6 +294,13 @@ def parse_ui_dump(xml_text: str) -> List[UiNode]:
 
     walk(root, None, 0, MAIN_DISPLAY)
     return nodes
+
+
+def app_on_screen(nodes: Sequence[UiNode]) -> bool:
+    """True when the dump has at least one node of our app on the main display (or no package attributes at all)."""
+    return not any(n.package for n in nodes) or any(
+        n.package == APP_PACKAGE and n.display == MAIN_DISPLAY for n in nodes
+    )
 
 
 def has_text(node: UiNode, text: str, exact: bool = True) -> bool:
@@ -961,6 +970,7 @@ class UiDriver:
         self.record = record or (lambda text: None)
         self.last_xml = ""
         self.failures = 0
+        self.last_tap: Optional[Tuple[UiNode, str]] = None
 
     def dump(self) -> List[UiNode]:
         last = ""
@@ -1039,11 +1049,24 @@ class UiDriver:
         timeout = UI_WAIT_S if timeout is None else timeout
         deadline = self.now() + timeout
         scrolls = 0
+        prior_tap, self.last_tap = self.last_tap, None
+        recovered = False
         while True:
             nodes = self.dump()
+            if not app_on_screen(nodes):
+                director.ensure_app_in_front(
+                    self.adb, now=self.now, sleep=self.sleep, say_fn=self.say
+                )
+                recovered = True
+                continue
             found = find(nodes)
             if found is not None and found is not WAITING:
                 return found, nodes
+            if found is None and recovered and prior_tap is not None:
+                self.tap(*prior_tap)
+                self.last_tap = None
+                prior_tap = None
+                continue
             if found is None and scroll and scrolls < MAX_SCROLLS:
                 anchors = find_all(nodes, scroll_anchor) if scroll_anchor else []
                 panel = scroll_container(nodes, anchors[0] if anchors else None)
@@ -1067,6 +1090,7 @@ class UiDriver:
         return self.wait_for(step, "'%s'" % text, find, timeout)[0]
 
     def tap(self, node: UiNode, what: str) -> None:
+        self.last_tap = (node, what)
         x, y = node.center
         self.adb.shell("input", "tap", str(x), str(y))
         self.say("  - 누름: %s (%d, %d)" % (what, x, y))
