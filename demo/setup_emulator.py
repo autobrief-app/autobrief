@@ -92,6 +92,8 @@ FALLBACK_HOME_MARK = "FallbackHome"
 SDK_SETUP_MARK = "sdksetup"  # com.android.sdksetup/.DefaultActivity before HomeActivity takes over
 HOME_ACTIVITY = "ai.umos.homescreen/.HomeActivity"
 HOME_RESTART_SETTLE_S = 10.0
+NAV_PACKAGE = "ai.umos.maps.android.navigation.app"
+NAV_QUIET_OPS = ("FINE_LOCATION", "COARSE_LOCATION", "GPS", "RUN_ANY_IN_BACKGROUND")
 # On the 2560x1600 Pleos screen, a rendered frame is 190..540 KB; when HomeActivity's ConnectTaskView
 # SurfaceSyncGroup wedges during cold boot (CI run 41292587613), both slots stay flat #F7F7F7 (~55..61 KB)
 BLANK_SLOT_MIN_BYTES = 1024
@@ -1722,6 +1724,32 @@ def wait_for_broadcast_idle(
     return now() - started
 
 
+def quiet_emulator_navigation(adb: Adb, user: int) -> None:
+    """Prevent the bundled navigation app from deadlocking android.hardware.gnss-service.ranchu.
+
+    On Pleos Connect v2.1.0 (user build without Google Play Services), HomeActivity launches
+    ai.umos.maps.android.navigation.app during boot, which registers a GnssStatusCallback
+    (IGnss::startSvStatus) and schedules a Google Datatransport JobInfoSchedulerService that
+    ANRs 90 s later. When ActivityManager kills the navigation app, GnssStatusProvider.onReportSvStatus
+    removes its dead binder registration and synchronously calls BpGnss::stopSvStatus back into
+    android.hardware.gnss-service.ranchu while Gnss::onGnssSvStatusCb holds its non-recursive
+    mutex, deadlocking system_server's android.fg thread until Watchdog kills system_server
+    (CI run 41318807339). Blocking its location and background-job appops via shell's
+    MANAGE_APPOPS grant prevents both IGnss::startSvStatus and the Datatransport job ANR while
+    leaving AutoBrief's own PlatformLocationSource (app.autobrief.car) untouched.
+    """
+    for op in NAV_QUIET_OPS:
+        try:
+            adb.shell("appops", "set", "--user", str(user), NAV_PACKAGE, op, "ignore")
+        except AdbError:
+            pass
+    try:
+        adb.shell("cmd", "jobscheduler", "cancel", "--user", str(user), NAV_PACKAGE)
+    except AdbError:
+        pass
+
+
+
 def wait_for_app_in_front(
     adb: Adb,
     user: int,
@@ -1911,22 +1939,25 @@ def load_demo_sample(
     now = now or time.monotonic
     sleep = sleep or time.sleep
     adb.logcat_clear()  # a DEMO_READY left over from an earlier run must not satisfy the wait
+    broadcast_timed_out = False
     try:
         # am broadcast returns when the receiver has finished loading (a background broadcast
         # that runs past 60 s is an ANR on the device as well)
         adb.shell(*demo_broadcast_args("load_sample", webhook, user))
     except AdbTimeout:
-        raise SetupError(
-            EXIT_FAIL,
-            "앱이 데모 샘플을 60초 안에 다 불러오지 못했습니다 (DemoReceiver). 에뮬레이터가 바쁜지 "
-            "확인하세요 (adb shell cat /proc/loadavg).",
-        )
+        broadcast_timed_out = True
     deadline = now() + timeout
     while True:
         trips = find_demo_ready(adb.logcat_dump())
         if trips is not None:
             return trips
         if now() >= deadline or closed_for_not_responding(adb):
+            if broadcast_timed_out:
+                raise SetupError(
+                    EXIT_FAIL,
+                    "앱이 데모 샘플을 60초 안에 다 불러오지 못했습니다 (DemoReceiver). 에뮬레이터가 바쁜지 "
+                    "확인하세요 (adb shell cat /proc/loadavg).",
+                )
             raise SetupError(
                 EXIT_FAIL,
                 "%.0f초 안에 DEMO_READY 로그를 보지 못했습니다. 디버그 APK(assembleDebug)를 설치했는지 확인하세요 "
@@ -2114,7 +2145,9 @@ def run(args: argparse.Namespace) -> int:
     stage(7, total, "부팅 기다리기 (최대 %d초)" % timeout)
     wait_for_boot(adb, timeout, proc=proc, log_path=log_path)
     enlarge_logcat(adb)
+    quiet_emulator_navigation(adb, 10)
     user = wait_for_user_ready(adb)
+    quiet_emulator_navigation(adb, user)
     say("  부팅 직후 방송 처리 대기 중...")
     say("  방송 처리 끝 (%.0f초)" % wait_for_broadcast_idle(adb))
 

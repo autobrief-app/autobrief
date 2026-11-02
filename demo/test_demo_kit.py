@@ -2887,6 +2887,47 @@ class BroadcastIdleTests(unittest.TestCase):
             se.wait_for_broadcast_idle(Slow(), timeout=5)
         self.assertEqual(caught.exception.code, se.EXIT_BOOT)
 
+    def test_quiet_emulator_navigation_sets_appops_and_ignores_errors(self):
+        adb = SequenceAdb()
+        se.quiet_emulator_navigation(adb, 10)
+        self.assertEqual(
+            adb.shells,
+            [
+                "appops set --user 10 ai.umos.maps.android.navigation.app FINE_LOCATION ignore",
+                "appops set --user 10 ai.umos.maps.android.navigation.app COARSE_LOCATION ignore",
+                "appops set --user 10 ai.umos.maps.android.navigation.app GPS ignore",
+                "appops set --user 10 ai.umos.maps.android.navigation.app RUN_ANY_IN_BACKGROUND ignore",
+                "cmd jobscheduler cancel --user 10 ai.umos.maps.android.navigation.app",
+            ],
+        )
+
+        class Refusing(SequenceAdb):
+            def shell(self, *args, timeout=None):
+                raise se.AdbError("denied")
+
+        se.quiet_emulator_navigation(Refusing(), 10)
+
+    def test_load_demo_sample_recovers_when_broadcast_times_out_but_demo_ready_arrives(self):
+        class SlowBroadcastAdb(SequenceAdb):
+            def logcat_clear(self, **kwargs):
+                pass
+
+            def shell(self, *args, timeout=None):
+                raise se.AdbTimeout("adb shell: 시간 초과")
+
+        adb = SlowBroadcastAdb(logcats=("", "I AutoBriefLog: DEMO_READY trips=487\n"))
+        clock = FakeClock()
+        self.assertEqual(
+            se.load_demo_sample(adb, None, user=10, timeout=10, now=clock.now, sleep=clock.sleep),
+            487,
+        )
+        empty = SlowBroadcastAdb(logcats=("",))
+        clock = FakeClock()
+        with self.assertRaises(se.SetupError) as caught:
+            se.load_demo_sample(empty, None, user=10, timeout=4, now=clock.now, sleep=clock.sleep)
+        self.assertIn("DemoReceiver", str(caught.exception))
+
+
 
 class VehicleConnectedWaitTests(unittest.TestCase):
     def test_returns_when_the_line_appears(self):

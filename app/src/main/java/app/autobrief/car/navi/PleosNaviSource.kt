@@ -11,6 +11,7 @@ import ai.pleos.playground.navi.helper.listener.NaviHelperEventListener
 import android.content.Context
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import app.autobrief.car.domain.NaviBookmark
@@ -37,7 +38,7 @@ import app.autobrief.car.vehicle.QuietWatch
 class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
 
     private val app = context.applicationContext
-    private val thread = HandlerThread("AutoBriefNaviSdk").apply { start() }
+    private val thread = HandlerThread("AutoBriefNaviSdk", Process.THREAD_PRIORITY_BACKGROUND).apply { start() }
     private val sdk = Handler(thread.looper)
     private var navi: NaviHelper? = null
     @Volatile private var started = false
