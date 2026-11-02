@@ -1812,6 +1812,10 @@ def quiet_emulator_navigation(adb: Adb, user: int) -> None:
         adb.shell("settings", "put", "global", "activity_manager_constants", NAV_AM_CONSTANTS)
     except AdbError:
         pass
+    try:
+        adb.shell("cmd", "car_service", "watchdog-control-process-health-check", "disable")
+    except AdbError:
+        pass
 
 
 

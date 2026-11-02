@@ -2903,6 +2903,7 @@ class BroadcastIdleTests(unittest.TestCase):
                 "cmd jobscheduler cancel --user 10 ai.umos.maps.android.navigation.app",
                 "settings put global activity_manager_constants "
                 "background_settle_time=7200000,no_kill_cached_processes_post_boot_completed_duration_millis=7200000",
+                "cmd car_service watchdog-control-process-health-check disable",
             ],
         )
 
