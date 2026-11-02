@@ -73,7 +73,7 @@ RAMP_STEPS = 8
 RAMP_UP_S = 4.0
 RAMP_DOWN_S = 3.0
 SETTLE_S = 1.5  # let the app react before the screenshot
-PARK_SETTLE_S = 5.0  # CarUxRestrictions clears ~1.2-3.5 s after Gear=Park; never scaled down
+PARK_SETTLE_S = 12.0  # CarUxRestrictions, 3D cluster transition and parked card swap settle within ~8-11 s on 2-vCPU CI; never scaled down
 VERIFY_TIMEOUT_S = 20.0
 GEAR_CONFIRM_TIMEOUT_S = 10.0
 SESSION_CLIENT = "autobrief-director"  # our client id on POST /browser/session

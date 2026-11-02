@@ -32,7 +32,7 @@ class VehicleSdkThreadTest {
     private val links: MutableList<CarLink> = Collections.synchronizedList(mutableListOf())
 
     /** A car whose vehicle service is up; every call into the SDK is noted with " on main" when it ran on the main thread. */
-    private inner class CarLink : VehicleLink {
+    private open inner class CarLink : VehicleLink {
         @Volatile var onGear: ((Gear) -> Unit)? = null
 
         private fun call(name: String) {
@@ -116,5 +116,33 @@ class VehicleSdkThreadTest {
         runMainLooperUntil("the release") { calls.isNotEmpty() }
         assertEquals(listOf("release"), calls.toList())
         assertTrue(links.size == 2)
+    }
+
+    @Test fun unsupportedCarPropertyConfigEnergyIdsAreSkippedAfterFirstReadOnSameLink() {
+        val vehicle = PleosVehicleSource(RuntimeEnvironment.getApplication(), { events += it }) {
+            object : CarLink() {
+                override fun fuelEconomy(onValue: (Float?) -> Unit, onFailed: (Exception) -> Unit) {
+                    super.fuelEconomy(
+                        {
+                            onFailed(
+                                IllegalArgumentException(
+                                    "property ID is not in carPropertyConfig list, and so it is not supported: 0x21600be2",
+                                ),
+                            )
+                        },
+                        onFailed,
+                    )
+                }
+            }.also { links += it }
+        }
+        vehicle.start()
+        passTimeUntil("initial energy read") { events.any { it is VehicleEvent.EvEfficiency } }
+        assertEquals(connect, calls.toList())
+
+        calls.clear()
+        vehicle.requestEnergy()
+        passTimeUntil("only supported energy queried again") { calls.size == 1 }
+        assertEquals(listOf("evEfficiency"), calls.toList())
+        vehicle.stop()
     }
 }

@@ -142,8 +142,14 @@ private fun Root(core: AutoBriefCore, tab: MutableState<Tab>, restricted: Boolea
             return@Box
         }
         if (warmingField) {
-            Box(Modifier.size(1.dp).alpha(0f).clearAndSetSemantics {}) {
-                Field("", "", Modifier.size(1.dp)) {}
+            // alpha(0.01f) instead of 0f so OpenGLRenderer submits draw commands and compiles the shaders/glyphs
+            // for the purpose buttons, user chip and memo field before the first unclassified trip parks.
+            Box(Modifier.size(1.dp).clip(RoundedCornerShape(1.dp)).alpha(0.01f).clearAndSetSemantics {}) {
+                Column {
+                    PurposeButtons {}
+                    Choice("예시", true) {}
+                    Field("비고", "", Modifier.size(1.dp)) {}
+                }
             }
         }
         Row(Modifier.fillMaxSize()) {

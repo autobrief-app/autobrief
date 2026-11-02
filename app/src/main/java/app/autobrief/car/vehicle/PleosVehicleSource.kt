@@ -33,6 +33,8 @@ class PleosVehicleSource(
     private val sdk = Handler(thread.looper)
     private var link: VehicleLink? = null
     private var registered = false
+    private var fuelSupported = true
+    private var evSupported = true
     @Volatile private var stopped = false
     @Volatile private var lastGear = Gear.UNKNOWN
     private val quiet = QuietWatch(QUIET_MS, SystemClock::elapsedRealtime)
@@ -119,27 +121,38 @@ class PleosVehicleSource(
 
     /**
      * Both figures, each reported as it comes; a call that fails (a car without that value, or no CAR_ENERGY grant) reports
-     * no value, so the log shows what the car answered either way. A Float goes on as the decimal it prints as.
+     * no value, so the log shows what the car answered either way. When CarPropertyManager says the property ID is absent
+     * from carPropertyConfig, later requestEnergy() calls on the same link skip that property instead of throwing on every P.
      */
     private fun readEnergy(l: VehicleLink) {
         fun decimal(v: Float?): Double? = v?.toString()?.toDoubleOrNull()
-        runCatching {
-            l.fuelEconomy({ emit(VehicleEvent.FuelEconomy(decimal(it))) }) {
+        fun unsupported(e: Throwable): Boolean =
+            e is IllegalArgumentException && e.message?.contains("carPropertyConfig") == true
+        if (fuelSupported) {
+            runCatching {
+                l.fuelEconomy({ emit(VehicleEvent.FuelEconomy(decimal(it))) }) {
+                    if (unsupported(it)) fuelSupported = false
+                    issue("fuel economy", it)
+                    emit(VehicleEvent.FuelEconomy(null))
+                }
+            }.onFailure {
+                if (unsupported(it)) fuelSupported = false
                 issue("fuel economy", it)
                 emit(VehicleEvent.FuelEconomy(null))
             }
-        }.onFailure {
-            issue("fuel economy", it)
-            emit(VehicleEvent.FuelEconomy(null))
         }
-        runCatching {
-            l.evEfficiency({ emit(VehicleEvent.EvEfficiency(decimal(it))) }) {
+        if (evSupported) {
+            runCatching {
+                l.evEfficiency({ emit(VehicleEvent.EvEfficiency(decimal(it))) }) {
+                    if (unsupported(it)) evSupported = false
+                    issue("ev efficiency", it)
+                    emit(VehicleEvent.EvEfficiency(null))
+                }
+            }.onFailure {
+                if (unsupported(it)) evSupported = false
                 issue("ev efficiency", it)
                 emit(VehicleEvent.EvEfficiency(null))
             }
-        }.onFailure {
-            issue("ev efficiency", it)
-            emit(VehicleEvent.EvEfficiency(null))
         }
     }
 
@@ -162,6 +175,8 @@ class PleosVehicleSource(
         link?.release()
         link = null
         registered = false
+        fuelSupported = true
+        evSupported = true
         lastGear = Gear.UNKNOWN // the next gear comes from the next link
     }
 
