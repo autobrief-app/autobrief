@@ -629,6 +629,10 @@ class Adb:
             raise AdbError("geo nmea 거부됨: " + reply.strip())
 
     def screencap_png(self) -> bytes:
+        raw = self.run("exec-out", "screencap")[1]
+        png = raw_screencap_to_png(raw)
+        if png is not None:
+            return png
         return self.run("exec-out", "screencap", "-p")[1]
 
 
@@ -1806,10 +1810,6 @@ def quiet_emulator_navigation(adb: Adb, user: int) -> None:
         pass
     try:
         adb.shell("settings", "put", "global", "activity_manager_constants", NAV_AM_CONSTANTS)
-    except AdbError:
-        pass
-    try:
-        adb.shell("cmd", "car_service", "watchdog-control-process-health-check", "disable")
     except AdbError:
         pass
 

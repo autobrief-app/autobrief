@@ -2903,7 +2903,6 @@ class BroadcastIdleTests(unittest.TestCase):
                 "cmd jobscheduler cancel --user 10 ai.umos.maps.android.navigation.app",
                 "settings put global activity_manager_constants "
                 "background_settle_time=7200000,no_kill_cached_processes_post_boot_completed_duration_millis=7200000",
-                "cmd car_service watchdog-control-process-health-check disable",
             ],
         )
 
@@ -4980,6 +4979,21 @@ class RawScreencapPngTests(unittest.TestCase):
             self.assertTrue(png.endswith(b"IEND\xaeB`\x82"))
         self.assertEqual(se.raw_screencap_to_png(PNG), PNG)
         self.assertIsNone(se.raw_screencap_to_png(b"short"))
+
+    def test_adb_screencap_png_encodes_raw_and_falls_back_when_unknown(self):
+        adb, calls = se.Adb("adb"), []
+        raw16 = se.struct.pack("<IIII", 2, 2, 1, 0) + b"\xaa\xbb\xcc\xff" * 4
+        replies = [(0, raw16, b""), (0, b"unknown", b""), (0, PNG, b"")]
+
+        def run(*args, timeout=None, check=True, device=True):
+            calls.append(args)
+            return replies.pop(0)
+
+        adb.run = run
+        self.assertTrue(adb.screencap_png().startswith(director.PNG_SIGNATURE))
+        self.assertEqual(calls, [("exec-out", "screencap")])
+        self.assertEqual(adb.screencap_png(), PNG)
+        self.assertEqual(calls[1:], [("exec-out", "screencap"), ("exec-out", "screencap", "-p")])
 
 
 class OptionalScenesTests(unittest.TestCase):
