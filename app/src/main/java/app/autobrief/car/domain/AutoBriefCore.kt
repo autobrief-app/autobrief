@@ -736,7 +736,6 @@ class AutoBriefCore private constructor(
         } else if (writeTrip) {
             logClosed(placed)
         }
-        saveTrips()
         closeMonthIfDue()
     }
 
@@ -953,8 +952,10 @@ class AutoBriefCore private constructor(
         val rows = logbook.records
         _check.value = _check.value.copy(entryCount = entries.size, code = Ledger.code(entries.lastOrNull()?.hash))
         background.scope.launch {
-            val checked = withContext(background.work) { verify(entries, rows) }
-            if (round == checkRound) _check.value = checked
+            val checked = withContext(background.work) {
+                if (round != checkRound) null else verify(entries, rows)
+            }
+            if (checked != null && round == checkRound) _check.value = checked
         }
     }
 

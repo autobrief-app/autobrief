@@ -2192,7 +2192,7 @@ class SessionKeeperTests(unittest.TestCase):
     def test_defaults_follow_the_console_page(self):
         keeper = director.SessionKeeper(BASE)
         self.assertEqual(keeper.client, "autobrief-director")
-        self.assertEqual(keeper.interval, 1.0)
+        self.assertEqual(keeper.interval, 0.5)
         self.assertEqual(keeper.url, BASE + "/browser/session")
 
     def test_start_sends_the_first_beat_before_it_returns(self):
@@ -4965,6 +4965,35 @@ class LogcatClearTests(unittest.TestCase):
         with self.assertRaises(se.AdbError):
             adb.logcat_clear(sleep=lambda s: None)
         self.assertEqual(len(calls), 1)
+
+
+class RawScreencapPngTests(unittest.TestCase):
+    def test_raw_rgba_buffer_is_encoded_to_png_on_host(self):
+        pixels = b"\x12\x34\x56\xff" * 6
+        raw16 = se.struct.pack("<IIII", 3, 2, 1, 0) + pixels
+        raw12 = se.struct.pack("<III", 3, 2, 1) + pixels
+        for raw in (raw16, raw12):
+            png = se.raw_screencap_to_png(raw)
+            self.assertIsNotNone(png)
+            self.assertTrue(png.startswith(director.PNG_SIGNATURE))
+            self.assertTrue(png.endswith(b"IEND\xaeB`\x82"))
+        self.assertEqual(se.raw_screencap_to_png(PNG), PNG)
+        self.assertIsNone(se.raw_screencap_to_png(b"short"))
+
+    def test_adb_screencap_png_encodes_raw_and_falls_back_when_unknown(self):
+        adb, calls = se.Adb("adb"), []
+        raw16 = se.struct.pack("<IIII", 2, 2, 1, 0) + b"\xaa\xbb\xcc\xff" * 4
+        replies = [(0, raw16, b""), (0, b"unknown", b""), (0, PNG, b"")]
+
+        def run(*args, timeout=None, check=True, device=True):
+            calls.append(args)
+            return replies.pop(0)
+
+        adb.run = run
+        self.assertTrue(adb.screencap_png().startswith(director.PNG_SIGNATURE))
+        self.assertEqual(calls, [("exec-out", "screencap")])
+        self.assertEqual(adb.screencap_png(), PNG)
+        self.assertEqual(calls[1:], [("exec-out", "screencap"), ("exec-out", "screencap", "-p")])
 
 
 class OptionalScenesTests(unittest.TestCase):

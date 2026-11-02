@@ -62,7 +62,12 @@ class VehicleMonitorService : Service() {
         navi = PleosNaviSource(this) { e -> dispatch("navigation event") { it.onNavi(e) } }
         vehicle = PleosVehicleSource(this, emit = { e ->
             if (e is VehicleEvent.Connection && e.connected) navi.startNow()
-            dispatch("vehicle event") { it.onVehicle(e) }
+            dispatch("vehicle event") {
+                // CarUxRestrictions clears ~300-450 ms after VHAL gear=PARK; clear before closing the trip so Compose
+                // transitions straight to the parked HomeScreen instead of rendering an intermediate DrivingView frame.
+                if (e is VehicleEvent.GearChanged && e.gear == Gear.PARK) it.setRestricted(false)
+                it.onVehicle(e)
+            }
         })
         car = CarServices(this) { r -> dispatch("driving restrictions") { it.setRestricted(r) } }
         gps = PlatformLocationSource(this) { fix -> dispatch("gnss fix") { it.onPlatformFix(fix) } }

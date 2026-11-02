@@ -22,6 +22,7 @@ import re
 import shlex
 import shutil
 import ssl
+import struct
 import subprocess
 import sys
 import time
@@ -31,6 +32,7 @@ import urllib.request
 import webbrowser
 import xml.etree.ElementTree as ET
 import zipfile
+import zlib
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -627,7 +629,54 @@ class Adb:
             raise AdbError("geo nmea 거부됨: " + reply.strip())
 
     def screencap_png(self) -> bytes:
+        raw = self.run("exec-out", "screencap")[1]
+        png = raw_screencap_to_png(raw)
+        if png is not None:
+            return png
         return self.run("exec-out", "screencap", "-p")[1]
+
+
+def _png_chunk(tag: bytes, data: bytes) -> bytes:
+    return (
+        struct.pack(">I", len(data))
+        + tag
+        + data
+        + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    )
+
+
+def raw_screencap_to_png(data: bytes) -> Optional[bytes]:
+    """Encode a raw `screencap` RGBA_8888 buffer (12- or 16-byte header) into a PNG on the host.
+
+    On the software-rendered CI emulator, `screencap -p` compresses 16.4 MB of RGBA pixels inside
+    the guest vCPU (~7 s per screenshot, starving the app and VehicleApiDdsEmu); encoding the raw
+    buffer on the host takes ~70 ms and saves ~95 s across the 15-screenshot director run.
+    """
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return data
+    if len(data) < 12:
+        return None
+    w, h, fmt = struct.unpack_from("<III", data, 0)
+    if fmt != 1 or not (0 < w <= 8192 and 0 < h <= 8192):
+        return None
+    need = w * h * 4
+    for header in (16, 12):
+        if len(data) == header + need:
+            stride = w * 4
+            mv = memoryview(data)[header:]
+            rows = bytearray(h * (stride + 1))
+            for y in range(h):
+                dst = y * (stride + 1)
+                src = y * stride
+                rows[dst + 1 : dst + 1 + stride] = mv[src : src + stride]
+            ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
+            return (
+                b"\x89PNG\r\n\x1a\n"
+                + _png_chunk(b"IHDR", ihdr)
+                + _png_chunk(b"IDAT", zlib.compress(rows, 6))
+                + _png_chunk(b"IEND", b"")
+            )
+    return None
 
 
 # --------------------------------------------------------------------------- local console HTTP
