@@ -408,6 +408,7 @@ class AutoBriefCore private constructor(
         _check.value = o.check
         // the new logbook needs the car's current state to detect the next departure correctly
         _vehicle.value.odometerKm?.let { logbook.seedOdometer(it) }
+        _vehicle.value = _vehicle.value.copy(odometerKm = logbook.odometerKm)
         logbook.onGear(_vehicle.value.gear, clock())
         d.settings.ledgerBackfillThroughSeq.takeIf { it > 0 }?.let(::backfillLedger)
     }

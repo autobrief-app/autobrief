@@ -1341,6 +1341,10 @@ class Rehearsal:
         """Wait until the console holds the app's whole ledger (docs/DEMO.md, the day before: the console shows the
         app's verification code and '정상'). The app sends its sample ledger in order, a few entries a second."""
         director.ensure_app_in_front(self.adb, say_fn=self.say)
+        if self.drive_director is not None:
+            commute = director.select_scenarios("commute")[0]
+            self.drive_director.console.set_gear("Park")
+            self.drive_director.console.set_odometer(commute.odometer_start)
         started = self.now()
         code, read_at = None, None
         self.say(

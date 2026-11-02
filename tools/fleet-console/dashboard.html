@@ -33,7 +33,7 @@ main{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,860px),1
 .badge.ok{background:var(--ok)}.badge.warn{background:var(--pending)}.badge.bad{background:var(--danger)}
 .band{display:flex;flex-wrap:wrap;align-items:center;gap:24px;margin:18px 0 6px}
 .ratio .big{font-size:64px;font-weight:800;line-height:1.1;color:var(--business);font-variant-numeric:tabular-nums}
-.lbl{color:var(--muted);font-size:14px}
+.lbl{color:var(--muted);font-size:14px;word-break:keep-all}
 .stats{flex:1;min-width:280px;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}
 .stat{background:var(--inset);border-radius:12px;padding:12px 14px}
 .stat b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
@@ -53,8 +53,8 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 .fuel{margin:6px 0 0;font-size:20px;font-weight:700}
 small{margin-left:6px;color:var(--muted)}
 .none{padding:18px;color:var(--muted)}
-.files{display:flex;flex-direction:column;gap:6px}
-.files a{color:var(--commute);text-decoration:none}.files a:hover{text-decoration:underline}
+.files{display:flex;flex-direction:column;gap:6px;padding:12px 16px;background:var(--inset);border:1px solid var(--line);border-radius:12px}
+.files a{color:var(--commute);font-weight:700;text-decoration:none}.files a:hover{text-decoration:underline}
 /* alerts: a banner above the numbers, red when anything was tampered with */
 .banner{margin:18px 0 4px;padding:14px 20px;border-radius:12px;border:2px solid var(--line);background:var(--inset);font-size:22px;line-height:1.45}
 .banner.warn{border-color:var(--pending);background:#2A2110}
@@ -71,6 +71,16 @@ tr.tampered td:first-child{box-shadow:inset 5px 0 0 var(--danger)}
 @keyframes flashbad{from{background:rgba(255,107,107,.6)}to{background:rgba(255,107,107,.14)}}
 tr.flash td{animation:flash 4s ease-out var(--d,0s) both}
 tr.tampered.flash td{animation-name:flashbad}   /* the fade ends on the tamper tint, not transparent */
+@media (max-width:1100px){
+  header{padding:22px 20px 6px}
+  main{padding:12px 20px 36px}
+  .car{padding:18px}
+  .banner{padding:12px 16px;font-size:18px;word-break:keep-all}
+  .banner .title{font-size:21px}
+  table{min-width:0;font-size:15px}
+  th,td{padding:8px 8px}
+  .badge.small,.chip,.tag{font-size:14px;padding:2px 8px}
+}
 @media (max-width:700px){
   header{padding:18px 14px 4px}h1{font-size:24px}
   main{padding:12px 14px 32px;gap:16px}
@@ -195,22 +205,6 @@ tr.tampered.flash td{animation-name:flashbad}   /* the fade ends on the tamper t
     sec.appendChild(band);
     if (car.fuelReimbursement) sec.appendChild(el('div', 'fuel', car.fuelReimbursement.text));   // an own car used for work
 
-    sec.appendChild(el('div', 'sect', '최근 운행 (최신순, 최대 30건)'));
-    var box = el('div', 'tablebox');
-    box.dataset.key = car.key;
-    if (!car.recentTrips.length) {
-      box.appendChild(el('div', 'none', '아직 운행 기록이 없습니다.'));
-    } else {
-      var table = el('table'), hr = el('tr'), body = el('tbody');
-      var tampered = tamperedTrips(car);
-      HEAD.forEach(function (h) { hr.appendChild(el('th', '', h)); });
-      table.appendChild(el('thead')).appendChild(hr);
-      car.recentTrips.forEach(function (t) { body.appendChild(tripRow(car, t, now, known, tampered)); });
-      table.appendChild(body);
-      box.appendChild(table);
-    }
-    sec.appendChild(box);
-
     if (car.archives.length) {
       sec.appendChild(el('div', 'sect', '운행기록부 보관함'));
       var files = el('div', 'files');
@@ -229,6 +223,22 @@ tr.tampered.flash td{animation-name:flashbad}   /* the fade ends on the tamper t
       });
       sec.appendChild(files);
     }
+
+    sec.appendChild(el('div', 'sect', '최근 운행 (최신순, 최대 30건)'));
+    var box = el('div', 'tablebox');
+    box.dataset.key = car.key;
+    if (!car.recentTrips.length) {
+      box.appendChild(el('div', 'none', '아직 운행 기록이 없습니다.'));
+    } else {
+      var table = el('table'), hr = el('tr'), body = el('tbody');
+      var tampered = tamperedTrips(car);
+      HEAD.forEach(function (h) { hr.appendChild(el('th', '', h)); });
+      table.appendChild(el('thead')).appendChild(hr);
+      car.recentTrips.forEach(function (t) { body.appendChild(tripRow(car, t, now, known, tampered)); });
+      table.appendChild(body);
+      box.appendChild(table);
+    }
+    sec.appendChild(box);
     return sec;
   }
 

@@ -4726,11 +4726,15 @@ class RehearsalSceneTests(QuietTestCase):
 
     def test_prepare_waits_until_the_console_shows_the_apps_code(self):
         r = self.make(console_state(last_hash="1111-2222", entries=577))
+        vc = FakeConsole()
+        r.drive_director = director.Director(vc, self.app, sleep=self.clock.sleep, clock=self.clock.now, say_fn=lambda line: None)
         r.fleet.fetch = lambda url, seen=[]: (seen.append(1), json.dumps(
             console_state(last_hash="AD90-6338" if len(seen) > 3 else "1111-2222")))[1]
         ready = r.prepare()
         self.assertEqual((ready["code"], ready["entries"]), ("AD90-6338", 972))
         self.assertGreater(ready["waited_s"], 0)
+        self.assertIn(("gear", "Park"), vc.calls)
+        self.assertIn(("odometer", director.select_scenarios("commute")[0].odometer_start), vc.calls)
 
     def test_a_failed_scene_is_recorded_with_a_screenshot_and_the_next_one_still_plays(self):
         r = self.make()
