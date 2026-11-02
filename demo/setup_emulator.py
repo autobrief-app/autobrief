@@ -93,7 +93,12 @@ SDK_SETUP_MARK = "sdksetup"  # com.android.sdksetup/.DefaultActivity before Home
 HOME_ACTIVITY = "ai.umos.homescreen/.HomeActivity"
 HOME_RESTART_SETTLE_S = 10.0
 NAV_PACKAGE = "ai.umos.maps.android.navigation.app"
-NAV_QUIET_OPS = ("FINE_LOCATION", "COARSE_LOCATION", "GPS")
+NAV_UID_OPS = ("FINE_LOCATION", "COARSE_LOCATION")
+NAV_QUIET_OPS = ("FINE_LOCATION", "COARSE_LOCATION", "GPS", "RUN_ANY_IN_BACKGROUND")
+NAV_AM_CONSTANTS = (
+    "background_settle_time=7200000,"
+    "no_kill_cached_processes_post_boot_completed_duration_millis=7200000"
+)
 # On the 2560x1600 Pleos screen, a rendered frame is 190..540 KB; when HomeActivity's ConnectTaskView
 # SurfaceSyncGroup wedges during cold boot (CI run 41292587613), both slots stay flat #F7F7F7 (~55..61 KB)
 BLANK_SLOT_MIN_BYTES = 50_000
@@ -1734,13 +1739,17 @@ def quiet_emulator_navigation(adb: Adb, user: int) -> None:
     removes its dead binder registration and synchronously calls BpGnss::stopSvStatus back into
     android.hardware.gnss-service.ranchu while Gnss::onGnssSvStatusCb holds its non-recursive
     mutex, deadlocking system_server's android.fg thread until Watchdog kills system_server
-    (CI run 41318807339). Blocking its location appops via shell's MANAGE_APPOPS grant and
-    cancelling its queued jobs prevents both IGnss::startSvStatus and the Datatransport job ANR
-    without marking the process background-restricted (RUN_ANY_IN_BACKGROUND ignore would cause
-    ActivityManager to kill it after ~5m45s of cached idle, triggering HomeActivity to relaunch it
-    over the foreground slot; CI run 41387159188), while leaving AutoBrief's own
-    PlatformLocationSource (app.autobrief.car) untouched.
+    (CI run 41318807339). Blocking its UID-level location appops and RUN_ANY_IN_BACKGROUND via
+    shell's MANAGE_APPOPS grant prevents both IGnss::startSvStatus and the Datatransport job ANR,
+    while extending ActivityManager's cached-idle kill window to 2 hours prevents OomAdjuster
+    from killing the background-restricted process after 10 minutes (CI run 41387159188), leaving
+    AutoBrief's own PlatformLocationSource (app.autobrief.car) untouched.
     """
+    for op in NAV_UID_OPS:
+        try:
+            adb.shell("appops", "set", "--user", str(user), "--uid", NAV_PACKAGE, op, "ignore")
+        except AdbError:
+            pass
     for op in NAV_QUIET_OPS:
         try:
             adb.shell("appops", "set", "--user", str(user), NAV_PACKAGE, op, "ignore")
@@ -1748,6 +1757,10 @@ def quiet_emulator_navigation(adb: Adb, user: int) -> None:
             pass
     try:
         adb.shell("cmd", "jobscheduler", "cancel", "--user", str(user), NAV_PACKAGE)
+    except AdbError:
+        pass
+    try:
+        adb.shell("settings", "put", "global", "activity_manager_constants", NAV_AM_CONSTANTS)
     except AdbError:
         pass
 
