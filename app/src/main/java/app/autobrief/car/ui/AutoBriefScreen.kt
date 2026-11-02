@@ -32,12 +32,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -122,10 +125,26 @@ private fun Root(core: AutoBriefCore, tab: MutableState<Tab>, restricted: Boolea
     val v by core.vehicle.collectAsState()
     val vehicleStalled = rememberVehicleStalled(v)
     val wide = LocalConfiguration.current.screenWidthDp >= 1400
+    var fieldWarmed by remember { mutableStateOf(false) }
+    var warmingField by remember { mutableStateOf(false) }
+    LaunchedEffect(v.sdkConnected) {
+        if (v.sdkConnected && !fieldWarmed) {
+            delay(1_500L)
+            warmingField = true
+            withFrameNanos { }
+            warmingField = false
+            fieldWarmed = true
+        }
+    }
     Box(Modifier.fillMaxSize().background(p.bg)) {
         if (drivingLayout(restricted, v.gear)) {
             DrivingView(core)
             return@Box
+        }
+        if (warmingField) {
+            Box(Modifier.size(1.dp).alpha(0f).clearAndSetSemantics {}) {
+                Field("", "", Modifier.size(1.dp)) {}
+            }
         }
         Row(Modifier.fillMaxSize()) {
             NavRail(tab)
