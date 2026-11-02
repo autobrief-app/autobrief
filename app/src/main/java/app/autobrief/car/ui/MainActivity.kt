@@ -39,6 +39,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (!monitorStarted && hasWindowFocus()) {
+            mainHandler.removeCallbacks(startMonitorRunnable)
+            mainHandler.postDelayed(startMonitorRunnable, AFTER_FOCUS_START_MS)
+        }
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus && !monitorStarted) {
@@ -54,9 +62,15 @@ class MainActivity : ComponentActivity() {
 
     private fun ensureMonitorStarted() {
         if (monitorStarted || isFinishing || isDestroyed) return
-        monitorStarted = true
-        // the monitor normally starts at boot; opening the app makes sure it runs (e.g. right after install)
-        VehicleMonitorService.start(this)
+        // the monitor normally starts at boot; opening the app makes sure it runs (e.g. right after install).
+        // If HomeActivity's slot/keyguard is still transitioning (uidState TPSL), startForegroundService returns
+        // false (ForegroundServiceStartNotAllowedException); retry until the slot reaches PROCESS_STATE_TOP.
+        if (VehicleMonitorService.start(this)) {
+            monitorStarted = true
+        } else {
+            mainHandler.removeCallbacks(startMonitorRunnable)
+            mainHandler.postDelayed(startMonitorRunnable, RETRY_START_MS)
+        }
     }
 
     /**
@@ -82,6 +96,7 @@ class MainActivity : ComponentActivity() {
         const val PREFS = "ui"
         const val KEY_LOCATION_ASKED = "location_asked"
         const val AFTER_FOCUS_START_MS = 500L
+        const val RETRY_START_MS = 2_000L
         const val FOCUS_FALLBACK_START_MS = 8_000L
     }
 }

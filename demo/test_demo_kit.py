@@ -2846,6 +2846,7 @@ class AppFrontWaitTests(unittest.TestCase):
 
     def test_blank_slot_surface_restarts_home_and_app(self):
         self.assertFalse(se.slot_surface_blank(b"\x89PNG\r\n\x1a\nfake-screen"))
+        self.assertFalse(se.slot_surface_blank(b"\x89PNG\r\n\x1a\n" + b"x" * 23_800))
         self.assertFalse(se.slot_surface_blank(b"\x89PNG\r\n\x1a\n" + b"x" * 200_000))
         blank_png = b"\x89PNG\r\n\x1a\n" + b"x" * 60_000
         self.assertTrue(se.slot_surface_blank(blank_png))

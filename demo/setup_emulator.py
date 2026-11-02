@@ -96,8 +96,8 @@ NAV_PACKAGE = "ai.umos.maps.android.navigation.app"
 NAV_QUIET_OPS = ("FINE_LOCATION", "COARSE_LOCATION", "GPS", "RUN_ANY_IN_BACKGROUND")
 # On the 2560x1600 Pleos screen, a rendered frame is 190..540 KB; when HomeActivity's ConnectTaskView
 # SurfaceSyncGroup wedges during cold boot (CI run 41292587613), both slots stay flat #F7F7F7 (~55..61 KB)
-BLANK_SLOT_MIN_BYTES = 1024
-BLANK_SLOT_MAX_BYTES = 100_000
+BLANK_SLOT_MIN_BYTES = 50_000
+BLANK_SLOT_MAX_BYTES = 70_000
 # BOOT_COMPLETED of the driver's user reaches every app after the unlock (measured on CI: 55 s
 # after FallbackHome, with the CPU saturated meanwhile); the app starts after that settles
 BROADCAST_IDLE_WAIT_S = 300
@@ -1878,6 +1878,9 @@ def recover_blank_slot_surface(
     sleep = sleep or time.sleep
     try:
         png = adb.screencap_png()
+        if slot_surface_blank(png):
+            sleep(APP_FRONT_STABLE_S)
+            png = adb.screencap_png()
     except AdbError:
         return False
     if not slot_surface_blank(png):
