@@ -66,12 +66,14 @@ class ScreenshotTest {
     /** Just shifted into D, still standing (no UX restrictions yet): the screen is already the driving view. */
     @Test fun homeDriving() {
         val h = demoHarness()
+        h.core.onNavi(NaviEvent.RouteStarted("회사", 1_200))
         h.advance(60_000); h.gear(Gear.DRIVE)
         shoot(h.core, Tab.HOME, "02_home_trip_in_progress")
     }
 
     @Test fun drivingRestrictedView() {
         val h = demoHarness()
+        h.core.onNavi(NaviEvent.RouteStarted("회사", 1_200))
         h.advance(60_000); h.gear(Gear.DRIVE); h.advance(12 * 60_000); h.odo(45_212.0)
         h.core.setRestricted(true)
         shoot(h.core, Tab.HOME, "03_driving_restricted")
@@ -116,7 +118,19 @@ class ScreenshotTest {
         shoot(h.core, Tab.REPORT, "09_report")
     }
 
-    @Test fun settings() = shoot(commuted().core, Tab.SETTINGS, "10_settings")
+    @Test fun settings() {
+        val h = commuted()
+        h.core.onNavi(
+            NaviEvent.Bookmarks(
+                listOf(
+                    app.autobrief.car.domain.NaviBookmark(app.autobrief.car.model.PlaceKind.HOME, "우리집", SampleHistory.HOME.point),
+                    app.autobrief.car.domain.NaviBookmark(app.autobrief.car.model.PlaceKind.OFFICE, "회사", SampleHistory.OFFICE.point),
+                    app.autobrief.car.domain.NaviBookmark(app.autobrief.car.model.PlaceKind.CLIENT, "한빛정밀", GeoPoint(37.2056, 127.0715)),
+                ),
+            ),
+        )
+        shoot(h.core, Tab.SETTINGS, "10_settings")
+    }
 
     @Test fun liveFirstRun() {
         // a fresh install on a real car: no history, no settings, and a minute without gear or odometer from the vehicle service

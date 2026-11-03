@@ -27,6 +27,7 @@ sealed interface NaviEvent {
         val remainDistanceM: Int?,
         val remainTimeS: Int?,
         val tollFareKrw: Int?,
+        val point: GeoPoint? = null,
     ) : NaviEvent
     data class Arrived(val name: String?) : NaviEvent
     data object RouteEnded : NaviEvent
@@ -34,7 +35,7 @@ sealed interface NaviEvent {
     /** NaviHelper CurrentLocationInfo; kept in memory only, compared with places and dropped. */
     data class Location(val point: GeoPoint) : NaviEvent
 
-    /** NaviHelper BookmarkInfo entries of category HOME or OFFICE. */
+    /** NaviHelper BookmarkInfo entries (HOME, OFFICE, and saved DEFAULT client bookmarks). */
     data class Bookmarks(val places: List<NaviBookmark>) : NaviEvent
 }
 
