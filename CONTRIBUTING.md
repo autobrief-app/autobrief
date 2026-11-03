@@ -48,12 +48,11 @@ gh workflow run demo-rehearsal.yml --ref fix/<주제>
   `demo-rehearsal`도 통과했습니다. 문서만 바꾼 PR은 시험 없이 합칠 수 있습니다.
 
 합치기는 시험을 통과한 PR의 마지막 커밋으로 main을 앞으로 옮기는(fast-forward) 방식입니다. GitHub는 그 커밋이
-main에 들어온 것을 보고 PR을 '합쳐짐'으로 바꿉니다.
+main에 들어온 것을 보고 PR을 '합쳐짐'으로 바꾸고, 작업 브랜치도 저절로 지웁니다(지운 브랜치의 실행 기록은 남습니다).
 
 ```bash
 gh pr ready <PR 번호>
 git push origin fix/<주제>:main
-git push origin --delete fix/<주제>
 ```
 
 - GitHub 화면의 합치기 버튼(`gh pr merge`, 합치기 API 포함)은 쓰지 않습니다. 그 방식은 커밋을 새로 만들면서
