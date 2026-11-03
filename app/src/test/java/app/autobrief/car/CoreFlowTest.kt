@@ -322,4 +322,43 @@ class CoreFlowTest {
         assertEquals("HTTP 503", byKey.getValue(keys[50]).lastError)
         assertEquals(1, byKey.getValue(keys[50]).attempts)
     }
+
+    @Test fun navigationDestinationInputAutomaticallyClassifiesOnParkWithoutManualTap() {
+        val h = Harness(base) // no places registered in Settings at all
+        h.core.onNavi(app.autobrief.car.domain.NaviEvent.RouteStarted("일양상사 판교 사옥", 1_800))
+        h.core.onNavi(app.autobrief.car.domain.NaviEvent.Destination("일양상사 판교 사옥", 12_000, 900, 1_800, SampleHistory.CLIENT.point))
+        assertEquals("일양상사 판교 사옥", h.core.navi.value.destinationLabel)
+        h.odo(45_200.0); h.gear(Gear.PARK); h.advance(60_000); h.gear(Gear.DRIVE)
+        h.advance(30 * 60_000); h.odo(45_218.0)
+        h.core.onNavi(app.autobrief.car.domain.NaviEvent.Arrived("일양상사 판교 사옥"))
+        h.gear(Gear.PARK)
+
+        val row = h.core.trips.value.single()
+        assertEquals(TripPurpose.BUSINESS, row.purpose)
+        assertEquals(ClassifiedBy.AUTO, row.classifiedBy)
+        assertEquals("일양상사 판교 사옥", row.endPlace)
+        assertEquals("일양상사 판교 사옥 방문", row.memo)
+        assertEquals(1_800, row.routeTollEstimateKrw)
+        assertNull("cleared after the trip closes", h.core.navi.value.destinationLabel)
+        assertTrue(h.core.integrity.value.ok)
+    }
+
+    @Test fun navigationClientBookmarksSyncAutomaticallyIntoAllPlaces() {
+        val h = Harness(base)
+        h.core.onNavi(
+            app.autobrief.car.domain.NaviEvent.Bookmarks(
+                listOf(
+                    app.autobrief.car.domain.NaviBookmark(PlaceKind.HOME, "우리집", SampleHistory.HOME.point),
+                    app.autobrief.car.domain.NaviBookmark(PlaceKind.OFFICE, "회사", SampleHistory.OFFICE.point),
+                    app.autobrief.car.domain.NaviBookmark(PlaceKind.CLIENT, "한빛정밀", SampleHistory.CLIENT.point),
+                ),
+            ),
+        )
+        assertTrue(h.core.allPlaces().any { it.label == "한빛정밀" && it.kind == PlaceKind.CLIENT && it.fromNavigation })
+        h.drive(45_200.0, 11.0, SampleHistory.OFFICE.point, SampleHistory.CLIENT.point)
+        val row = h.core.trips.value.single()
+        assertEquals(TripPurpose.BUSINESS, row.purpose)
+        assertEquals(ClassifiedBy.AUTO, row.classifiedBy)
+        assertEquals("한빛정밀 방문", row.memo)
+    }
 }

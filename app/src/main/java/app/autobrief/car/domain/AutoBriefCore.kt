@@ -135,6 +135,7 @@ class AutoBriefCore private constructor(
         val location: GeoPoint? = null,
         val locationEpochMs: Long = 0,
         val bookmarks: List<NaviBookmark> = emptyList(),
+        val destinationLabel: String? = null,
     )
 
     /** Where the position the place rules would use now comes from (see [positionSource]). */
@@ -251,7 +252,10 @@ class AutoBriefCore private constructor(
     internal var verify: (List<LedgerEntry>, List<TripRecord>) -> LedgerCheck = { entries, rows -> Ledger.check(entries, rows) }
 
     /** The place rules a closed trip goes through ([AutoClassifier.classify]); a test wraps it to count the calls. */
-    internal var placeRules: (GeoPoint?, GeoPoint?, List<Place>) -> AutoClassifier.Result = AutoClassifier::classify
+    internal var placeRules: (GeoPoint?, GeoPoint?, List<Place>) -> AutoClassifier.Result =
+        { start, end, places ->
+            AutoClassifier.classify(start, end, places, routeDestinationName, routeDestinationPoint, _settings.value.entityName)
+        }
 
     private val _space = MutableStateFlow(space)
     private val _settings = MutableStateFlow(AppSettings())
@@ -309,6 +313,9 @@ class AutoBriefCore private constructor(
     val demoMode: Boolean get() = space == Space.DEMO
 
     private var routeToll: Int? = null
+    private var routeDestinationName: String? = null
+    private var routeDestinationPoint: GeoPoint? = null
+    private var routeArrived = false
     private var openStartPoint: GeoPoint? = null
 
     /** The open trip's start place label: after a restart only the label is known, and it stands for the place. */
@@ -396,6 +403,8 @@ class AutoBriefCore private constructor(
         // a workbook still being made finishes for the space it was asked in; a finished one's message goes
         if (_workbook.value !is WorkbookRequest.Making) _workbook.value = null
         pendingAuto = null
+        routeToll = null
+        clearRouteDestination()
         openStartPoint = null
         openStartLabel = null
         openFamily = false
@@ -520,17 +529,36 @@ class AutoBriefCore private constructor(
     fun onNavi(e: NaviEvent) {
         when (e) {
             is NaviEvent.Ready -> _navi.update { it.copy(ready = e.ready) }
-            // only the toll estimate is kept; the destination's name (where the driver goes) is not stored anywhere
-            is NaviEvent.RouteStarted -> {
+            // the route's toll estimate and matched business/commute destination (personal/medical names are never stored)
+            is NaviEvent.RouteStarted -> if (!familyOn) {
                 routeToll = e.tollFareKrw
+                if (!e.destinationName.isNullOrBlank()) routeDestinationName = e.destinationName
+                routeArrived = false
+                refreshNaviDestinationLabel()
                 updateOpenRoute()
             }
-            is NaviEvent.Destination -> {
+            is NaviEvent.Destination -> if (!familyOn) {
                 if (e.tollFareKrw != null) routeToll = e.tollFareKrw
+                if (!e.name.isNullOrBlank()) routeDestinationName = e.name
+                if (e.point != null) routeDestinationPoint = e.point
+                refreshNaviDestinationLabel()
                 updateOpenRoute()
+                if (pendingAuto != null && (e.point != null || matchedNaviDestination() != null)) {
+                    resolvePendingAuto(freshLocation(clock(), LOCATION_FRESH_MS) ?: e.point)
+                }
             }
-            is NaviEvent.Arrived -> Unit
-            NaviEvent.RouteEnded -> routeToll = null
+            is NaviEvent.Arrived -> if (!familyOn) {
+                if (!e.name.isNullOrBlank()) routeDestinationName = e.name
+                routeArrived = true
+                refreshNaviDestinationLabel()
+                if (pendingAuto != null) {
+                    resolvePendingAuto(freshLocation(clock(), LOCATION_FRESH_MS) ?: routeDestinationPoint)
+                }
+            }
+            NaviEvent.RouteEnded -> {
+                routeToll = null
+                if (logbook.openTrip == null && pendingAuto == null) clearRouteDestination()
+            }
             // family drive: a position that still arrives is not kept, not used and not logged
             is NaviEvent.Location -> if (!familyOn) {
                 val now = clock()
@@ -539,8 +567,27 @@ class AutoBriefCore private constructor(
                 logPosition(now)
                 pendingAuto?.let { p -> if (now > p.askedAt) resolvePendingAuto(freshLocation(now, LOCATION_FRESH_MS) ?: e.point) }
             }
-            is NaviEvent.Bookmarks -> _navi.update { it.copy(ready = true, bookmarks = e.places) }
+            is NaviEvent.Bookmarks -> {
+                _navi.update { it.copy(ready = true, bookmarks = e.places) }
+                refreshNaviDestinationLabel()
+            }
         }
+    }
+
+    private fun matchedNaviDestination(): Place? =
+        if (familyOn) null
+        else AutoClassifier.matchNaviDestination(routeDestinationName, allPlaces(), _settings.value.entityName, routeDestinationPoint)
+
+    private fun refreshNaviDestinationLabel() {
+        val label = matchedNaviDestination()?.label
+        _navi.update { it.copy(destinationLabel = label) }
+    }
+
+    private fun clearRouteDestination() {
+        routeDestinationName = null
+        routeDestinationPoint = null
+        routeArrived = false
+        _navi.update { it.copy(destinationLabel = null) }
     }
 
     /** Periodic call (every few seconds): pending place rules time out, the month closes. */
@@ -682,8 +729,11 @@ class AutoBriefCore private constructor(
         openStartPoint = null
         openStartLabel = null
         val arrival = freshLocation(now, ARRIVAL_LOCATION_MAX_AGE_MS)
+        val hasNaviDest = matchedNaviDestination() != null
         // positions may come from navigation or from the car's own GNSS: either one can still deliver the arrival
-        if (_settings.value.autoClassify && arrival == null && (start != null || _navi.value.ready || gnssFix != null)) {
+        if (_settings.value.autoClassify && arrival == null && !routeArrived && routeDestinationPoint == null &&
+            (start != null || _navi.value.ready || gnssFix != null || hasNaviDest)
+        ) {
             // the position at the moment of parking is not in yet: write the row now, run the place rules shortly
             appendLedger(LedgerKind.TRIP, row, Ledger.tripBody(row, currentVin()))
             pendingAuto = PendingAuto(row.id, start, now + AUTO_WAIT_MS, now)
@@ -704,6 +754,8 @@ class AutoBriefCore private constructor(
         openFamily = false
         openStartPoint = null
         openStartLabel = null
+        routeToll = null
+        clearRouteDestination()
         val marked = logbook.markFamily(row.id) ?: row
         appendLedger(LedgerKind.TRIP, marked, Ledger.tripBody(marked, currentVin()))
         val (_, updated) = logbook.classify(marked.id, TripPurpose.PERSONAL, defaultUser(), FAMILY_MEMO, ClassifiedBy.FAMILY) ?: return
@@ -725,6 +777,7 @@ class AutoBriefCore private constructor(
     /** Place labels for the row; when a place rule decides the purpose, the trip is classified automatically. */
     private fun applyPlaces(row: TripRecord, start: GeoPoint?, end: GeoPoint?, writeTrip: Boolean) {
         val result = placeRules(start, end, allPlaces())
+        clearRouteDestination()
         val placed = logbook.setPlaces(row.id, result.startLabel, result.endLabel) ?: row
         if (writeTrip) appendLedger(LedgerKind.TRIP, placed, Ledger.tripBody(placed, currentVin()))
         val purpose = result.purpose
@@ -798,6 +851,8 @@ class AutoBriefCore private constructor(
         val on = familyOn
         if (on && !_locationPaused.value) {
             pendingAuto?.let { resolvePendingAuto(freshLocation(clock(), LOCATION_FRESH_MS)) }
+            routeToll = null
+            clearRouteDestination()
             _navi.update { it.copy(location = null, locationEpochMs = 0) }
             gnssFix = null
             _positionSource.value = null
@@ -807,10 +862,15 @@ class AutoBriefCore private constructor(
 
     // ---------------------------------------------------------------- places
 
-    /** Navigation bookmarks (HOME/OFFICE) first, then the places registered in the app. */
+    /** Navigation bookmarks (HOME/OFFICE/CLIENT) first, then the places registered in the app. */
     fun allPlaces(): List<Place> =
-        _navi.value.bookmarks.map {
-            Place(if (it.kind == PlaceKind.HOME) "집" else "회사", it.kind, it.point, fromNavigation = true)
+        _navi.value.bookmarks.mapNotNull {
+            val label = when (it.kind) {
+                PlaceKind.HOME -> "집"
+                PlaceKind.OFFICE -> "회사"
+                PlaceKind.CLIENT -> sanitizeMemo(DisplayMasking.mask(it.name)).take(20).ifBlank { return@mapNotNull null }
+            }
+            Place(label, it.kind, it.point, fromNavigation = true)
         } + _settings.value.places
 
     enum class PlaceResult { SAVED, NO_LOCATION, INVALID }
@@ -854,6 +914,10 @@ class AutoBriefCore private constructor(
             ?: return ClassifyResult.NOT_FOUND
         if (correcting) appendLedger(LedgerKind.AMEND, updated, Ledger.amendBody(updated, prev.purpose, why))
         else appendLedger(LedgerKind.CLASSIFY, updated, Ledger.classifyBody(updated))
+        if (pendingAuto?.tripId == id) {
+            pendingAuto = null
+            clearRouteDestination()
+        }
         if (_lastClosedId.value == id) _lastClosedId.value = null
         log("TRIP_CLASSIFIED id=$id purpose=${purpose.name} by=$source${if (correcting) " amended" else ""}")
         saveTrips()

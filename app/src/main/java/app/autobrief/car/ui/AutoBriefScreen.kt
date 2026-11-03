@@ -230,6 +230,7 @@ fun AppMark(size: Int = 72) {
 private fun StatusBar(core: AutoBriefCore) {
     val p = LocalPalette.current
     val v by core.vehicle.collectAsState()
+    val navi by core.navi.collectAsState()
     val position by core.positionSource.collectAsState()
     val paused by core.locationPaused.collectAsState()
     val check by core.integrity.collectAsState()
@@ -254,6 +255,9 @@ private fun StatusBar(core: AutoBriefCore) {
                 },
                 if (position != null) p.ok else p.muted,
             )
+            navi.destinationLabel?.let { dest ->
+                StatusPill("내비 목적지 · $dest", p.accent)
+            }
         }
         StatusPill(
             when {
@@ -281,6 +285,7 @@ fun DrivingView(core: AutoBriefCore) {
     val p = LocalPalette.current
     val open by core.openTrip.collectAsState()
     val v by core.vehicle.collectAsState()
+    val navi by core.navi.collectAsState()
     val trips by core.trips.collectAsState()
     val cardShape = RoundedCornerShape(16.dp)
     val noteShape = RoundedCornerShape(10.dp)
@@ -305,12 +310,15 @@ fun DrivingView(core: AutoBriefCore) {
                 if (o.family) {
                     StatusPill(FAMILY_BADGE, p.personal, filled = true)
                     Gap(16.dp)
+                } else if (navi.destinationLabel != null) {
+                    StatusPill("내비 목적지 연동 · ${navi.destinationLabel}", p.ok, filled = true)
+                    Gap(16.dp)
                 }
                 Txt("운행 기록 중", Type.title, p.accent)
                 Gap(8.dp)
                 val delta = (v.odometerKm ?: o.startOdometerKm) - o.startOdometerKm
                 Txt("+${km1(delta)} km", Type.hero.copy(fontSize = Type.hero.fontSize * 1.6f, lineHeight = Type.hero.lineHeight * 1.6f))
-                Txt("출발 ${km1(o.startOdometerKm)} km" + (o.startPlace?.let { " · $it" } ?: "") + " · ${hm(o.startEpochMs)}", Type.body, p.muted)
+                Txt("출발 ${km1(o.startOdometerKm)} km" + (o.startPlace?.let { " · $it" } ?: "") + (navi.destinationLabel?.let { " → $it" } ?: "") + " · ${hm(o.startEpochMs)}", Type.body, p.muted)
             } else {
                 Txt("주행 중에는 화면 조작을 줄였습니다", Type.title)
                 val month = core.summary(TaxPeriods.month(YearMonth.from(core.today())))
@@ -324,7 +332,15 @@ fun DrivingView(core: AutoBriefCore) {
                     .border(1.dp, p.line, noteShape)
                     .padding(horizontal = 36.dp, vertical = 20.dp),
             ) {
-                Txt(if (o?.family == true) "도착해서 P에 두면 거리만 비업무로 남깁니다" else "도착해서 P에 두면 목적을 여쭙니다", Type.heading, p.muted)
+                Txt(
+                    when {
+                        o?.family == true -> "도착해서 P에 두면 거리만 비업무로 남깁니다"
+                        navi.destinationLabel != null -> "내비 목적지(${navi.destinationLabel}) 연동 중 · 도착 후 P에 두면 목적을 자동 기록합니다"
+                        else -> "도착해서 P에 두면 목적을 여쭙니다"
+                    },
+                    Type.heading,
+                    p.muted,
+                )
             }
         }
         Spacer(Modifier.height(1.dp).fillMaxWidth())

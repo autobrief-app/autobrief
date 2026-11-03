@@ -86,6 +86,20 @@ class DemoReceiver : BroadcastReceiver() {
             }
             "reset" -> if (core.demoMode) core.resetDemo()
             "live" -> core.setDemoMode(false, null)
+            "navi_route" -> {
+                if (!core.demoMode) {
+                    Log.w(AutoBriefApp.LOG_TAG, "DEMO_REFUSED (navi_route only in the demo space)")
+                    return
+                }
+                val name = intent.getStringExtra("name")?.takeIf { it.isNotBlank() } ?: return
+                val toll = intent.getStringExtra("toll")?.toIntOrNull()
+                val lat = intent.getStringExtra("lat")?.toDoubleOrNull()
+                val lon = intent.getStringExtra("lon")?.toDoubleOrNull()
+                val point = if (lat != null && lon != null) app.autobrief.car.model.GeoPoint(lat, lon) else null
+                core.onNavi(app.autobrief.car.domain.NaviEvent.RouteStarted(name, toll))
+                core.onNavi(app.autobrief.car.domain.NaviEvent.Destination(name, 0, 0, toll, point))
+                Log.i(AutoBriefApp.LOG_TAG, "NAVI_ROUTE_SET destination=${core.navi.value.destinationLabel ?: "-"}")
+            }
             else -> Log.i(AutoBriefApp.LOG_TAG, "DEMO_STATUS space=${core.activeSpace.value} trips=${core.trips.value.size} code=${core.integrity.value.code}")
         }
     }

@@ -137,18 +137,23 @@ private fun InProgressCard(core: AutoBriefCore) {
     val p = LocalPalette.current
     val open by core.openTrip.collectAsState()
     val v by core.vehicle.collectAsState()
+    val navi by core.navi.collectAsState()
     val o = open ?: return
     val delta = (v.odometerKm ?: o.startOdometerKm) - o.startOdometerKm
     Panel(border = if (o.family) p.personal else p.accent) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             StatusPill("운행 기록 중", p.accent, filled = true)
             if (o.family) StatusPill(FAMILY_BADGE, p.personal, filled = true)
+            else if (navi.destinationLabel != null) StatusPill("내비 목적지 · ${navi.destinationLabel}", p.ok, filled = true)
         }
         Txt("+${km1(delta)} km", Type.hero)
-        Txt("출발 ${hm(o.startEpochMs)} · 계기판 ${km1(o.startOdometerKm)} km" + (o.startPlace?.let { " · $it" } ?: ""), Type.body, p.muted)
+        Txt("출발 ${hm(o.startEpochMs)} · 계기판 ${km1(o.startOdometerKm)} km" + (o.startPlace?.let { " · $it" } ?: "") + (navi.destinationLabel?.let { " → $it" } ?: ""), Type.body, p.muted)
         Muted(
-            if (o.family) "도착해서 기어를 P로 바꾸면 거리만 비업무로 한 줄 남깁니다. 이번 운행은 위치를 읽지 않습니다."
-            else "도착해서 기어를 P로 바꾸면 운행기록부에 한 줄이 생깁니다. 집, 회사, 거래처로 등록한 곳이면 목적도 자동으로 적습니다.",
+            when {
+                o.family -> "도착해서 기어를 P로 바꾸면 거리만 비업무로 한 줄 남깁니다. 이번 운행은 위치를 읽지 않습니다."
+                navi.destinationLabel != null -> "내비게이션 목적지(${navi.destinationLabel})가 연동되었습니다. 도착 후 P로 바꾸면 버튼을 누르지 않아도 목적과 방문처가 자동 반영됩니다."
+                else -> "도착해서 기어를 P로 바꾸면 운행기록부에 한 줄이 생깁니다. 내비게이션 목적지를 입력하거나 집·회사·거래처에 도착하면 목적도 자동으로 적습니다."
+            },
             Type.body,
         )
     }
@@ -246,14 +251,20 @@ private fun AutoConfirmCard(core: AutoBriefCore, trip: TripRecord) {
 private fun ReadyCard(core: AutoBriefCore, last: TripRecord?, vehicleStalled: Boolean) {
     val p = LocalPalette.current
     val v by core.vehicle.collectAsState()
+    val navi by core.navi.collectAsState()
     val ready = v.sdkConnected && v.gear != Gear.UNKNOWN && v.odometerKm != null
     Panel {
-        StatusPill(if (ready) "기록 준비 완료" else "차량 연결을 기다리는 중", if (ready) p.ok else p.pending, filled = true)
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            StatusPill(if (ready) "기록 준비 완료" else "차량 연결을 기다리는 중", if (ready) p.ok else p.pending, filled = true)
+            navi.destinationLabel?.let { dest ->
+                StatusPill("내비 목적지 연동 · $dest", p.accent, filled = true)
+            }
+        }
         Txt(
             if (vehicleStalled) "차량 정보를 기다리고 있습니다. 1분이 넘으면 앱을 다시 열어 주세요" else "시동을 걸고 기어를 D로 바꾸면 기록이 시작됩니다",
             Type.title,
         )
-        Muted("휴대폰도 GPS 기록도 없이 계기판 누적거리만 씁니다. 위치는 집, 회사, 거래처를 알아보는 데만 쓰고 저장하지 않습니다.", Type.body)
+        Muted("내비게이션 목적지·즐겨찾기와 계기판 누적거리를 자동 연동합니다. 도착 후 P로 바꾸면 일일이 누르지 않아도 출퇴근·업무 목적이 자동 반영됩니다.", Type.body)
         if (last != null) {
             Gap(4.dp)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
