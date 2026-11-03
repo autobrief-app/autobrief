@@ -1360,7 +1360,7 @@ class ScenarioPlanTests(unittest.TestCase):
             45229,
             "BUSINESS",
             "회사",
-            "가상상사",
+            "일양상사",
             (37.3947, 127.1112),
             (37.5126, 127.0590),
         ),
@@ -1368,7 +1368,7 @@ class ScenarioPlanTests(unittest.TestCase):
             45229,
             45236,
             "UNCLASSIFIED",
-            "가상상사",
+            "일양상사",
             "미등록 장소",
             (37.5126, 127.0590),
             (37.5665, 126.9780),
@@ -1842,7 +1842,7 @@ class DirectorExecutorTests(unittest.TestCase):
         )
         self.assertEqual(park[:2], (director.ParkVehicle(), director.ShowApp()))
         self.assertEqual(director.UNREGISTERED.app_label, "-")
-        self.assertEqual(director.CLIENT.app_label, "가상상사")
+        self.assertEqual(director.CLIENT.app_label, "일양상사")
 
     def test_the_map_learns_the_position_and_the_app_shows_the_trip(self):
         runner = self.make()
@@ -1887,7 +1887,7 @@ class DirectorExecutorTests(unittest.TestCase):
         runner.run_scenario(director.SCENARIOS[1])
         self.assertFalse([s for s in self.adb.shells if s.startswith("am start") and director.NAV_PACKAGE in s])
         self.assertEqual(self.adb.front, FakeAdb.APP)
-        for place in ("집", "회사", "가상상사"):
+        for place in ("집", "회사", "일양상사"):
             self.assertIn("  - 앱이 위치를 확인했습니다: %s" % place, self.said)
         self.assertEqual(sum("지도 화면 없이 진행합니다" in m for m in self.said), 1)
         self.assertFalse(any("확인하지 못했습니다" in m for m in self.said))
@@ -3142,7 +3142,7 @@ elif cmd == "emu":
         if not flag("nmea_ko") and fields and fields[0] == "$GPGGA" and not flag("no_position"):
             lat = int(fields[2][:2]) + float(fields[2][2:]) / 60
             lon = int(fields[4][:3]) + float(fields[4][3:]) / 60
-            places = {"집": (37.5444, 127.0374), "회사": (37.3947, 127.1112), "가상상사": (37.5126, 127.0590)}
+            places = {"집": (37.5444, 127.0374), "회사": (37.3947, 127.1112), "일양상사": (37.5126, 127.0590)}
             label = next((n for n, (a, o) in places.items() if abs(a - lat) < 0.0025 and abs(o - lon) < 0.0025), "-")
             log_app("POSITION place=" + label)
     else:
@@ -4235,7 +4235,7 @@ class FakeCarApp:
         commute = ["비업무", "화면 · 수정됨"] if self.amended else ["출퇴근", "자동(집→회사)"]
         rows = [
             ("45,229.0 → 45,236.0", ["비업무", "화면"], 300, None),
-            ("45,218.0 → 45,229.0", ["일반 업무", "자동(거래처 도착: 가상상사)"], 410, None),
+            ("45,218.0 → 45,229.0", ["일반 업무", "자동(거래처 도착: 일양상사)"], 410, None),
             ("45,200.0 → 45,218.0", commute, 520, "open:commute"),
             ("45,190.0 → 45,200.0", ["비업무", "음성"], 630, None),
         ]

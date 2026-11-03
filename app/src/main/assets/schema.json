@@ -8,7 +8,7 @@
       "type": "function",
       "function": {
         "name": "LOG_TRIP_PURPOSE",
-        "description": "Record the purpose of the trip that just ended (within the last 30 minutes) in the business-car logbook, if it has no purpose yet (changing a recorded purpose is done on the screen with a reason). Use when the user says what the last drive was for, e.g. '방금 운행 업무로 기록해 줘', '거래처 미팅이었어', '출근한 거야', '개인 용무였어', '방금 건 김예시가 탄 거야'. COMMUTE = going to or from work, BUSINESS = client visits, meetings, deliveries and other work, PERSONAL = anything private. FAMILY = family drive, said before or during a drive ('가족 운행 켜 줘', '이번엔 가족이랑 가는 거야'): the app reads no location for the drive under way, or for the next one when parked, and records only its distance as personal; it cannot be used for a drive that already ended.",
+        "description": "Record the purpose of the trip that just ended (within the last 30 minutes) in the business-car logbook, if it has no purpose yet (changing a recorded purpose is done on the screen with a reason). Use when the user says what the last drive was for, e.g. '방금 운행 업무로 기록해 줘', '거래처 미팅이었어', '출근한 거야', '개인 용무였어', '방금 건 김기현이 탄 거야'. COMMUTE = going to or from work, BUSINESS = client visits, meetings, deliveries and other work, PERSONAL = anything private. FAMILY = family drive, said before or during a drive ('가족 운행 켜 줘', '이번엔 가족이랑 가는 거야'): the app reads no location for the drive under way, or for the next one when parked, and records only its distance as personal; it cannot be used for a drive that already ended.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -19,7 +19,7 @@
             },
             "memo": {
               "type": "string",
-              "description": "Short note for the remarks column, such as the client or the errand (e.g. '가상고객사 미팅'). Omit if the user gave none."
+              "description": "Short note for the remarks column, such as the client or the errand (e.g. '일양상사 미팅'). Omit if the user gave none."
             },
             "user_name": {
               "type": "string",

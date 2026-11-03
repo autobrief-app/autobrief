@@ -30,8 +30,8 @@ import org.junit.Test
  * that drive ends; positions that still arrive meanwhile change nothing.
  */
 class FamilyDriveTest {
-    private val user = CarUser("김예시", "영업팀")
-    private val base = AppSettings(entityName = "가상예시 주식회사", plateNumber = "00가 0000", users = listOf(user))
+    private val user = CarUser("김기현", "영업팀")
+    private val base = AppSettings(entityName = "한성물산 주식회사", plateNumber = "00가 0000", users = listOf(user))
     private val family = GleoContract.parseParams("""{"purpose":"FAMILY"}""")
 
     private fun Harness.gps(p: GeoPoint) = core.onPlatformFix(PlatformFix(p, now, 8f))
@@ -78,7 +78,7 @@ class FamilyDriveTest {
         h.here(SampleHistory.OFFICE.point)
         h.core.tick()
         assertNull(h.core.positionSource.value)
-        assertEquals(AutoBriefCore.PlaceResult.NO_LOCATION, h.core.registerPlaceHere("가상상사", PlaceKind.CLIENT))
+        assertEquals(AutoBriefCore.PlaceResult.NO_LOCATION, h.core.registerPlaceHere("일양상사", PlaceKind.CLIENT))
         assertEquals("no position asked while it is on", asked, h.locationRequests)
         assertTrue("no position logged: ${h.logs.drop(logged)}", h.logs.drop(logged).none { it.startsWith("POSITION") })
 

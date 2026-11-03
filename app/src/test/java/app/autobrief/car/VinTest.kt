@@ -58,7 +58,7 @@ class VinTest {
     }
 
     @Test fun anEntryKeepsTheIdentityItWasQueuedUnder() {
-        val h = Harness(AppSettings(plateNumber = "11가 1111", entityName = "가상예시 주식회사", archiveWebhookUrl = hook))
+        val h = Harness(AppSettings(plateNumber = "11가 1111", entityName = "한성물산 주식회사", archiveWebhookUrl = hook))
         h.core.onVehicle(VehicleEvent.Vin("\"$vin\""))
         h.drive(100.0, 12.0, null, null)
         val item = h.core.outbox.value.first()
@@ -67,7 +67,7 @@ class VinTest {
         h.core.onVehicle(VehicleEvent.Vin("\"KMHL341DBNA000002\""))
         val sent = car(h.core.wireBody(item))
         assertEquals("11가 1111", sent.getValue("plate").jsonPrimitive.content)
-        assertEquals("가상예시 주식회사", sent.getValue("entity").jsonPrimitive.content)
+        assertEquals("한성물산 주식회사", sent.getValue("entity").jsonPrimitive.content)
         assertEquals(vin, sent.getValue("vin").jsonPrimitive.content)
         assertEquals(item.payloadJson, h.core.wireBody(item))
     }
@@ -83,7 +83,7 @@ class VinTest {
         assertEquals(vin, car(again.wireBody(item)).getValue("vin").jsonPrimitive.content)
         assertEquals("the trip body carries it too", vin, Json.parseToJsonElement(again.ledgerEntries.first().body).jsonObject.getValue("vin").jsonPrimitive.content)
         // an ordinary settings save from the screen does not drop it
-        again.saveSettings(again.settings.value.copy(entityName = "가상예시 주식회사"), null, null)
+        again.saveSettings(again.settings.value.copy(entityName = "한성물산 주식회사"), null, null)
         assertEquals(vin, h.store.data.getValue(Space.LIVE).settings.vin)
     }
 }
