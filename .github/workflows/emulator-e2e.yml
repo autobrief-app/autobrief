@@ -14,13 +14,15 @@
 # Changes reach main only through a pull request (CONTRIBUTING.md): the job runs on every push to a PR into main,
 # and a newer push to the same PR cancels the older PR run. A PR is merged by moving main forward to the very
 # commit this job passed on, so main is not tested a second time; a run started by hand is never cancelled.
-# Failed runs are kept, never deleted.
+# A draft PR is not tested (the job is skipped): mark it ready when the change is done, which starts the run.
+# The org runs on the free Actions minutes only. Failed runs are kept, never deleted.
 
 name: emulator-e2e
 
 on:
   workflow_dispatch:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main]
     paths:
       - "app/**"
@@ -36,6 +38,7 @@ concurrency:
 
 jobs:
   e2e:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 80
     env:

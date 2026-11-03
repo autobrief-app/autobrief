@@ -21,9 +21,12 @@ gh pr create --base main --draft
 
 ## 2. PR에서 시험합니다
 
-- main으로 가는 PR에 `app/`, `demo/`, 시험 작업 파일이 바뀌면 `emulator-e2e`가 자동으로 돕니다.
-  같은 PR에 새 커밋을 올리면 앞선 실행은 취소되고 새 커밋으로 다시 돕니다.
-- `app/`이나 `demo/`가 바뀌면 7분 시연 리허설도 같은 브랜치에서 돌립니다.
+- PR은 초안(draft)으로 열고, 초안에서는 시험이 돌지 않습니다. 변경을 마치면 `gh pr ready <PR 번호>`로 준비
+  상태로 바꾸고, 그때 `app/`, `demo/`, 시험 작업 파일이 바뀌었으면 `emulator-e2e`가 자동으로 돕니다.
+  준비 상태에서 새 커밋을 올리면 앞선 실행은 취소되고 새 커밋으로 다시 돕니다.
+- `demo/`나 앱 화면(`app/src/main/java/app/autobrief/car/ui/`, `app/src/main/res/`)이 바뀌면 7분 시연 리허설도
+  같은 브랜치에서 돌립니다. 리허설은 화면의 글자를 찾아 누르기 때문입니다.
+- 시험은 무료 Actions 시간 안에서만 돌립니다. 초안에서 단위 테스트(`./gradlew testDebugUnitTest`)로 먼저 확인합니다.
 
 ```bash
 gh workflow run demo-rehearsal.yml --ref fix/<주제>
@@ -44,7 +47,7 @@ gh workflow run demo-rehearsal.yml --ref fix/<주제>
 
 - 브랜치가 최신 main 위에 있습니다. main이 그사이 바뀌었으면 `git rebase origin/main`으로 옮긴 뒤 다시 올리고
   다시 시험합니다.
-- PR의 마지막 커밋에서 `emulator-e2e`가 통과했습니다. `app/`이나 `demo/`가 바뀌었다면 같은 커밋에서
+- PR의 마지막 커밋에서 `emulator-e2e`가 통과했습니다. `demo/`나 앱 화면이 바뀌었다면 같은 커밋에서
   `demo-rehearsal`도 통과했습니다. 문서만 바꾼 PR은 시험 없이 합칠 수 있습니다.
 
 합치기는 시험을 통과한 PR의 마지막 커밋으로 main을 앞으로 옮기는(fast-forward) 방식입니다. GitHub는 그 커밋이

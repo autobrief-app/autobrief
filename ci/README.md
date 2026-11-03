@@ -3,7 +3,7 @@
 `.github/workflows/emulator-e2e.yml`은 깃허브 Actions(KVM이 되는 리눅스 러너)에서 Pleos Connect 에뮬레이터를 띄워
 `demo/setup_emulator.py`와 `demo/director.py --verify`로 앱을 실제 이미지에서 시험하는 작업입니다.
 
-2026-10-26부터 켜져 있습니다. main으로 가는 PR에 `app/`, `demo/`, 작업 파일이 바뀌어 올라올 때마다 돌고, 같은 PR에 새 커밋이
+2026-10-26부터 켜져 있습니다. main으로 가는 PR(초안 제외)에 `app/`, `demo/`, 작업 파일이 바뀌어 올라올 때마다 돌고, 같은 PR에 새 커밋이
 오면 앞선 PR 실행은 취소됩니다. PR은 시험을 통과한 바로 그 커밋으로 main을 앞으로 옮겨 합치므로, main에서 같은 커밋을 다시
 시험하지 않습니다. Actions 화면에서 직접 실행할 수도 있고, 직접 실행한 것은 취소하지 않습니다.
 결과(화면 녹화 `e2e.mp4`, logcat, 관리자 화면 상태)는 실행 화면의 `e2e-out` 묶음으로 받습니다.
