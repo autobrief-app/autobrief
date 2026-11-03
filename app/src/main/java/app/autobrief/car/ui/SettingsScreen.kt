@@ -135,7 +135,7 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                                 Choice("삭제", false) { core.removePlace(place.label) }
                             }
                         }
-                        Field("지금 위치에 붙일 이름 (예: 가상상사)", placeName, Modifier.fillMaxWidth()) { placeName = it }
+                        Field("지금 위치에 붙일 이름 (예: 일양상사)", placeName, Modifier.fillMaxWidth()) { placeName = it }
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             listOf(PlaceKind.HOME to "집으로", PlaceKind.OFFICE to "회사로", PlaceKind.CLIENT to "거래처로").forEach { (kind, label) ->
                                 BigButton("지금 위치를 $label", Modifier.weight(1f), outlined = true, height = 76.dp) {

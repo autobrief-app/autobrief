@@ -92,7 +92,7 @@ class UiFlowTest {
     }
 
     @Test fun tripDetailCorrectionWaitsForAReasonChipAndKeepsTheOptionalMemo() {
-        val h = Harness(AppSettings(users = listOf(CarUser("김예시", "영업팀"))))
+        val h = Harness(AppSettings(users = listOf(CarUser("김기현", "영업팀"))))
         h.drive(1_000.0, 12.0, null, null)
         val id = h.core.trips.value.last().id
         assertEquals(AutoBriefCore.ClassifyResult.OK, h.core.classifyTrip(id, TripPurpose.BUSINESS, null, "", ClassifiedBy.SCREEN))

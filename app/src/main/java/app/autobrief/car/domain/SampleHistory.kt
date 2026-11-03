@@ -23,29 +23,29 @@ import java.time.temporal.IsoFields
  * quoted (to 2026-10-22: 487 rows, 9,636 km, 94.6%) stay reproducible.
  */
 object SampleHistory {
-    val SALES = CarUser("김예시", "영업팀")
-    val PLANNING = CarUser("이샘플", "기획팀")
+    val SALES = CarUser("김기현", "영업팀")
+    val PLANNING = CarUser("이동재", "기획팀")
 
     /** Public landmarks standing in for fictional places; the app stores only the labels on trips. */
     val HOME = Place("집", PlaceKind.HOME, GeoPoint(37.5444, 127.0374))
     val OFFICE = Place("회사", PlaceKind.OFFICE, GeoPoint(37.3947, 127.1112))
-    val CLIENT = Place("가상상사", PlaceKind.CLIENT, GeoPoint(37.5126, 127.0590))
+    val CLIENT = Place("일양상사", PlaceKind.CLIENT, GeoPoint(37.5126, 127.0590))
 
     const val END_ODOMETER_KM = 45_200
     const val GAP_KM = 27
     val GAP_DAY: LocalDate = LocalDate.of(2026, 3, 14)
     val FIRST_DAY: LocalDate = LocalDate.of(2026, 1, 2)
 
-    private val CLIENTS = listOf("가상고객사 A 미팅", "가상고객사 B 납품 협의", "가상고객사 C 현장 점검", "협력사 교육 참석", "가상고객사 D 계약 협의")
+    private val CLIENTS = listOf("일양상사 미팅", "한빛정밀 납품 협의", "서진물류 현장 점검", "협력사 교육 참석", "대성전자 계약 협의")
     private val HOLIDAYS = setOf(
         "2026-01-01", "2026-02-16", "2026-02-17", "2026-02-18", "2026-03-02", "2026-05-05", "2026-05-25",
         "2026-06-03", "2026-08-17", "2026-09-24", "2026-09-25", "2026-10-05", "2026-10-09", "2026-12-25",
     ).map(LocalDate::parse).toSet()
 
     fun settings(webhookUrl: String = ""): AppSettings = AppSettings(
-        entityName = "가상예시 주식회사",
+        entityName = "한성물산 주식회사",
         businessNumber = "000-00-00000",
-        vehicleModel = "그랜저 하이브리드 (가상 예시 차량)",
+        vehicleModel = "그랜저 하이브리드",
         plateNumber = "00가 0000",
         users = listOf(SALES, PLANNING),
         defaultUserIndex = 0,

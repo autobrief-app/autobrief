@@ -27,7 +27,7 @@ import java.security.MessageDigest
 import java.time.LocalDate
 
 class TripLogbookTest {
-    private val user = CarUser("김예시", "영업팀")
+    private val user = CarUser("김기현", "영업팀")
 
     @Test fun gearCycleWritesOneRowWithDashboardValues() {
         val lb = TripLogbook()
@@ -230,7 +230,7 @@ class AutoClassifierTest {
     @Test fun clientArrivalAndReturnAreBusiness() {
         val toClient = AutoClassifier.classify(SampleHistory.OFFICE.point, SampleHistory.CLIENT.point, places)
         assertEquals(TripPurpose.BUSINESS, toClient.purpose)
-        assertEquals("가상상사 방문", toClient.memo)
+        assertEquals("일양상사 방문", toClient.memo)
         assertEquals(TripPurpose.BUSINESS, AutoClassifier.classify(SampleHistory.CLIENT.point, SampleHistory.OFFICE.point, places).purpose)
     }
 

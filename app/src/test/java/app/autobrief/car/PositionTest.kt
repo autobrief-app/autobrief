@@ -26,8 +26,8 @@ import org.junit.Test
  * 37.4127, 127.0947, 2.5 km from the demo office), while the platform GNSS follows the injected fixes.
  */
 class PositionTest {
-    private val user = CarUser("김예시", "영업팀")
-    private val base = AppSettings(entityName = "가상예시 주식회사", plateNumber = "00가 0000", users = listOf(user))
+    private val user = CarUser("김기현", "영업팀")
+    private val base = AppSettings(entityName = "한성물산 주식회사", plateNumber = "00가 0000", users = listOf(user))
     private val frozenNavi = GeoPoint(37.4127212, 127.094681)
 
     private fun Harness.gps(p: GeoPoint, ageMs: Long = 0, accuracyM: Float? = 8f) = core.onPlatformFix(PlatformFix(p, now - ageMs, accuracyM))
@@ -51,7 +51,7 @@ class PositionTest {
         val h = Harness(base)
         h.at(SampleHistory.CLIENT.point)
         h.gps(near(SampleHistory.CLIENT.point)) // the same place seen by both, 100 m apart
-        assertEquals(AutoBriefCore.PlaceResult.SAVED, h.core.registerPlaceHere("가상상사", PlaceKind.CLIENT))
+        assertEquals(AutoBriefCore.PlaceResult.SAVED, h.core.registerPlaceHere("일양상사", PlaceKind.CLIENT))
         assertEquals(SampleHistory.CLIENT.point, h.core.settings.value.places.single().point)
     }
 
@@ -60,7 +60,7 @@ class PositionTest {
         h.at(SampleHistory.CLIENT.point)
         h.advance(AutoBriefCore.NAVI_PREFERRED_MS + 1)
         h.gps(near(SampleHistory.CLIENT.point))
-        h.core.registerPlaceHere("가상상사", PlaceKind.CLIENT)
+        h.core.registerPlaceHere("일양상사", PlaceKind.CLIENT)
         assertEquals(near(SampleHistory.CLIENT.point), h.core.settings.value.places.single().point)
     }
 
@@ -68,7 +68,7 @@ class PositionTest {
         val h = Harness(base)
         h.at(SampleHistory.CLIENT.point)
         h.advance(AutoBriefCore.NAVI_PREFERRED_MS + 1) // older than 30 s, still within the 2 min a place may use
-        h.core.registerPlaceHere("가상상사", PlaceKind.CLIENT)
+        h.core.registerPlaceHere("일양상사", PlaceKind.CLIENT)
         assertEquals(SampleHistory.CLIENT.point, h.core.settings.value.places.single().point)
     }
 
@@ -125,7 +125,7 @@ class PositionTest {
         h.gps(SampleHistory.CLIENT.point, accuracyM = 900f) // a network-only estimate cannot tell places apart
         h.gps(GeoPoint(0.0, 0.0))
         h.gps(GeoPoint(Double.NaN, 127.0))
-        assertEquals(AutoBriefCore.PlaceResult.NO_LOCATION, h.core.registerPlaceHere("가상상사", PlaceKind.CLIENT))
+        assertEquals(AutoBriefCore.PlaceResult.NO_LOCATION, h.core.registerPlaceHere("일양상사", PlaceKind.CLIENT))
     }
 
     @Test fun releaseLogsNameNoPlaceAndNoSource() {

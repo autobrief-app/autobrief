@@ -26,8 +26,8 @@ import org.junit.Test
 
 /** The core under the conditions a real car and a live demo produce: shuffled gears, restarts, odd sensor values. */
 class CoreRobustnessTest {
-    private val user = CarUser("김예시", "영업팀")
-    private val base = AppSettings(entityName = "가상예시 주식회사", plateNumber = "00가 0000", users = listOf(user))
+    private val user = CarUser("김기현", "영업팀")
+    private val base = AppSettings(entityName = "한성물산 주식회사", plateNumber = "00가 0000", users = listOf(user))
 
     @Test fun gearShuffleWithoutMovingLeavesNoOpenTripAndKeepsTheLastTripCard() {
         val h = Harness(base)
@@ -154,12 +154,12 @@ class CoreRobustnessTest {
         val dying = DiesBeforeTheTripsSave(h.store)
         val c = AutoBriefCore(dying, clock = { h.now })
         dying.armed = true
-        assertThrows(IllegalStateException::class.java) { c.classifyTrip(id, TripPurpose.BUSINESS, user, "가상고객사 미팅", ClassifiedBy.SCREEN) }
+        assertThrows(IllegalStateException::class.java) { c.classifyTrip(id, TripPurpose.BUSINESS, user, "일양상사 미팅", ClassifiedBy.SCREEN) }
         assertEquals(TripPurpose.UNCLASSIFIED, h.store.data.getValue(Space.LIVE).trips.single().purpose)
         val again = AutoBriefCore(h.store, clock = { h.now })
         val row = again.trips.value.single()
         assertEquals(TripPurpose.BUSINESS, row.purpose)
-        assertEquals("가상고객사 미팅", row.memo)
+        assertEquals("일양상사 미팅", row.memo)
         assertEquals(ClassifiedBy.SCREEN, row.classifiedBy)
         assertTrue(again.integrity.value.ok)
         // an amendment lost the same way comes back too

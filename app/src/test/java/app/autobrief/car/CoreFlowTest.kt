@@ -23,8 +23,8 @@ import java.time.LocalDate
 
 /** The core end to end on a fake clock: vehicle and navigation events in, rows, ledger, files and replies out. */
 class CoreFlowTest {
-    private val user = CarUser("김예시", "영업팀")
-    private val base = AppSettings(entityName = "가상예시 주식회사", plateNumber = "00가 0000", users = listOf(user))
+    private val user = CarUser("김기현", "영업팀")
+    private val base = AppSettings(entityName = "한성물산 주식회사", plateNumber = "00가 0000", users = listOf(user))
 
     @Test fun homeToOfficeIsWrittenAsACommuteTheMomentTheCarParks() {
         val h = Harness(base)
@@ -48,7 +48,7 @@ class CoreFlowTest {
         h.at(GeoPoint(37.4127, 127.0947)) // between places: no label
         h.at(SampleHistory.CLIENT.point)
         assertEquals(
-            listOf("POSITION place=집", "POSITION place=-", "POSITION place=가상상사"),
+            listOf("POSITION place=집", "POSITION place=-", "POSITION place=일양상사"),
             h.logs.filter { it.startsWith("POSITION") },
         )
         assertFalse("no coordinates in the log", h.logs.any { "37." in it || "127." in it })
@@ -64,10 +64,10 @@ class CoreFlowTest {
         h.gear(Gear.PARK); h.advance(60_000); h.gear(Gear.DRIVE); h.advance(20 * 60_000); h.odo(45_240.0)
         h.gear(Gear.PARK)
         h.advance(2_000)
-        h.at(SampleHistory.OFFICE.point) // 가상상사→회사
+        h.at(SampleHistory.OFFICE.point) // 일양상사→회사
         val purposes = h.core.trips.value.map { it.purpose }
         assertEquals(listOf(TripPurpose.COMMUTE, TripPurpose.BUSINESS, TripPurpose.BUSINESS), purposes)
-        val names = listOf("집", "회사", "가상상사", "우리집")
+        val names = listOf("집", "회사", "일양상사", "우리집")
         val leaks = h.logs.filter { line -> names.any { it in line } }
         assertTrue("place names in release logs: $leaks", leaks.isEmpty())
         assertTrue(h.logs.none { it.startsWith("POSITION") })
@@ -88,7 +88,7 @@ class CoreFlowTest {
         h.advance(2_000)
         h.at(SampleHistory.CLIENT.point)
         val row = h.core.trips.value.single()
-        assertEquals(TripPurpose.UNCLASSIFIED, row.purpose) // 회사→가상상사 needs the client registered in the app
+        assertEquals(TripPurpose.UNCLASSIFIED, row.purpose) // 회사→일양상사 needs the client registered in the app
         assertEquals("회사", row.startPlace)
         // with the client registered, the same arrival is business
         val h2 = Harness(base.copy(places = listOf(SampleHistory.CLIENT)))
@@ -133,12 +133,12 @@ class CoreFlowTest {
         val h = Harness(base)
         h.drive(0.0, 12.0, null, null)
         h.advance(AutoBriefCore.AUTO_WAIT_MS + 1); h.core.tick()
-        val reply = h.core.gleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("""{"purpose":"BUSINESS","memo":"가상고객사 미팅"}"""))
+        val reply = h.core.gleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("""{"purpose":"BUSINESS","memo":"일양상사 미팅"}"""))
         assertEquals("success", reply.status)
         val row = h.core.trips.value.single()
         assertEquals(TripPurpose.BUSINESS, row.purpose)
         assertEquals(ClassifiedBy.VOICE, row.classifiedBy)
-        assertEquals("가상고객사 미팅", row.memo)
+        assertEquals("일양상사 미팅", row.memo)
         h.advance(AutoBriefCore.VOICE_CLASSIFY_WINDOW_MS + 1)
         assertEquals("fail", h.core.gleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("""{"purpose":"PERSONAL"}""")).status)
         assertEquals("asking", h.core.gleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("{}")).status)
@@ -290,12 +290,12 @@ class CoreFlowTest {
 
     @Test fun placeRegistrationUsesTheCurrentNavigationPosition() {
         val h = Harness(base)
-        assertEquals(AutoBriefCore.PlaceResult.NO_LOCATION, h.core.registerPlaceHere("가상상사", PlaceKind.CLIENT))
+        assertEquals(AutoBriefCore.PlaceResult.NO_LOCATION, h.core.registerPlaceHere("일양상사", PlaceKind.CLIENT))
         h.at(SampleHistory.CLIENT.point)
-        assertEquals(AutoBriefCore.PlaceResult.SAVED, h.core.registerPlaceHere("가상상사", PlaceKind.CLIENT))
+        assertEquals(AutoBriefCore.PlaceResult.SAVED, h.core.registerPlaceHere("일양상사", PlaceKind.CLIENT))
         assertEquals(AutoBriefCore.PlaceResult.INVALID, h.core.registerPlaceHere("  ", PlaceKind.CLIENT))
-        assertEquals(listOf("가상상사"), h.core.settings.value.places.map { it.label })
-        assertTrue(h.core.allPlaces().any { it.label == "가상상사" })
+        assertEquals(listOf("일양상사"), h.core.settings.value.places.map { it.label })
+        assertTrue(h.core.allPlaces().any { it.label == "일양상사" })
     }
 
     /** The demo backfill queues ~1,000 ledger entries: one outbox write, not one per entry (that took minutes on the emulator). */

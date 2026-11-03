@@ -31,8 +31,8 @@ import java.util.zip.ZipInputStream
 
 /** 내 차 mode: the month's business distance at the car's cumulative fuel economy and the entered price. */
 class FuelSettlementTest {
-    private val user = CarUser("김예시", "영업팀")
-    private val company = AppSettings(entityName = "가상예시 주식회사", plateNumber = "00가 0000", users = listOf(user))
+    private val user = CarUser("김기현", "영업팀")
+    private val company = AppSettings(entityName = "한성물산 주식회사", plateNumber = "00가 0000", users = listOf(user))
     private val own = company.copy(carUse = CarUse.OWN, fuelPriceKrwPerLiter = 1_650)
     private val october = YearMonth.of(2026, 10)
 

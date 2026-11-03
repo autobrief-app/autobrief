@@ -22,9 +22,9 @@ import javax.xml.parsers.DocumentBuilderFactory
 
 /** The NTS form on small hand-made logbooks: real-car decimals, labels, layout. */
 class LogbookFormTest {
-    private val user = CarUser("김예시", "영업팀")
+    private val user = CarUser("김기현", "영업팀")
     private val settings = AppSettings(
-        entityName = "가상예시 주식회사",
+        entityName = "한성물산 주식회사",
         businessNumber = "000-00-00000",
         vehicleModel = "가상 예시 차량",
         plateNumber = "00가 0000",
@@ -96,7 +96,7 @@ class LogbookFormTest {
         val march = TaxPeriods.month(2026, 3)
         val sheet = LogbookExport.build(chainOf1004(), settings, march, "CODE", businessYear = false)
         assertEquals("업무용승용차 운행기록부 (기간 발췌)", sheet.title)
-        assertTrue(sheet.headerLines.toString(), sheet.headerLines.any { it.startsWith("사업연도: 2026-01-01 ~ 2026-12-31    법인명(상호): 가상예시 주식회사") })
+        assertTrue(sheet.headerLines.toString(), sheet.headerLines.any { it.startsWith("사업연도: 2026-01-01 ~ 2026-12-31    법인명(상호): 한성물산 주식회사") })
         assertTrue(sheet.headerLines.toString(), "발췌 기간: 2026-03-01 ~ 2026-03-31" in sheet.headerLines)
         assertEquals("⑪발췌 기간 총주행 거리(㎞)", sheet.totals.totalLabel)
         assertTrue(sheet.note, "세무 신고에 쓰는 ⑬업무사용비율은 이 발췌 기간이 아니라 사업연도 전체의 ⑫/⑪입니다." in sheet.note)
@@ -240,7 +240,7 @@ class LogbookFormTest {
         assertEquals(LogbookExport.COLUMNS.joinToString(","), lines[header])
         assertEquals(1, lines.count { it.startsWith("③사용일자(요일),") })
         assertFalse(lines.any { "운 행 내 역" in it })
-        assertEquals("2026-03-02(월),영업팀,김예시,100,110,10,10,,", lines[header + 1])
+        assertEquals("2026-03-02(월),영업팀,김기현,100,110,10,10,,", lines[header + 1])
         assertEquals("⑪사업연도 총주행 거리(㎞),30.1", lines[header + 4])
         assertEquals("⑫사업연도 업무용 사용거리(㎞),20.1", lines[header + 5])
         assertEquals("⑬업무사용비율(⑫/⑪),66.8%", lines[header + 6])
