@@ -56,19 +56,19 @@ data class Palette(
 
 // Every text colour below keeps WCAG 4.5:1 (AA) on bg, panel, panelHigh and on its own tint.
 val NightPalette = Palette(
-    bg = Color(0xFF0B0F17), panel = Color(0xFF151B26), panelHigh = Color(0xFF1D2533), line = Color(0xFF2A3445),
-    text = Color(0xFFE8EDF5), muted = Color(0xFF9AA6B8), accent = Color(0xFF4FD1C5),
-    commute = Color(0xFF6FB7FF), business = Color(0xFF4FD1C5), personal = Color(0xFFE59AC0),
-    pending = Color(0xFFFFB547), gap = Color(0xFFA99BD6), ok = Color(0xFF5BD68A), danger = Color(0xFFFF6B6B),
-    onAccent = Color(0xFF06231F), tint = 0.18f,
+    bg = Color(0xFF0A0C10), panel = Color(0xFF11151C), panelHigh = Color(0xFF181E27), line = Color(0xFF252E3D),
+    text = Color(0xFFF2F5F9), muted = Color(0xFF9AA6B8), accent = Color(0xFF66ADFF),
+    commute = Color(0xFF70B5FF), business = Color(0xFF3CC9B0), personal = Color(0xFFDDA77B),
+    pending = Color(0xFFF4A93B), gap = Color(0xFFA3B1C6), ok = Color(0xFF4FD685), danger = Color(0xFFF88078),
+    onAccent = Color(0xFF0A0C10), tint = 0.16f,
 )
 
 val DayPalette = Palette(
-    bg = Color(0xFFF3F5F9), panel = Color(0xFFFFFFFF), panelHigh = Color(0xFFEDF1F7), line = Color(0xFFD5DCE6),
-    text = Color(0xFF111827), muted = Color(0xFF5B6576), accent = Color(0xFF0A7369),
-    commute = Color(0xFF1F66C1), business = Color(0xFF0A7369), personal = Color(0xFFA8336A),
-    pending = Color(0xFF8F5200), gap = Color(0xFF6E5C9A), ok = Color(0xFF137036), danger = Color(0xFFB3261E),
-    onAccent = Color(0xFFFFFFFF), tint = 0.10f,
+    bg = Color(0xFFF3F5F8), panel = Color(0xFFFFFFFF), panelHigh = Color(0xFFE8ECF2), line = Color(0xFFCBD2DE),
+    text = Color(0xFF0E131B), muted = Color(0xFF4A5568), accent = Color(0xFF0051B8),
+    commute = Color(0xFF0B5394), business = Color(0xFF0B6B58), personal = Color(0xFF8A4F1D),
+    pending = Color(0xFF965000), gap = Color(0xFF475569), ok = Color(0xFF166534), danger = Color(0xFFB91C1C),
+    onAccent = Color(0xFFFFFFFF), tint = 0.12f,
 )
 
 val LocalPalette = staticCompositionLocalOf { NightPalette }

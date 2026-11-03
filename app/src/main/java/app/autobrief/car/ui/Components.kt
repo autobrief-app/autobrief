@@ -106,13 +106,14 @@ fun Panel(
     padding: Dp = 28.dp,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    val shape = RoundedCornerShape(24.dp)
+    val p = LocalPalette.current
+    val shape = RoundedCornerShape(14.dp)
     Column(
         modifier
             .fillMaxWidth()
             .clip(shape)
             .background(color)
-            .then(if (border != null) Modifier.border(2.dp, border, shape) else Modifier)
+            .border(if (border != null) 2.dp else 1.dp, border ?: p.line, shape)
             .padding(padding),
         verticalArrangement = Arrangement.spacedBy(14.dp),
         content = content,
@@ -152,18 +153,20 @@ fun Txt(text: String, style: TextStyle = Type.body, color: Color = LocalPalette.
 @Composable
 fun Muted(text: String, style: TextStyle = Type.small) = Txt(text, style, LocalPalette.current.muted)
 
-/** A status pill: coloured dot + label. */
+/** An instrument status readout cell: vertical indicator bar + label inside a crisp architectural frame. */
 @Composable
 fun StatusPill(label: String, color: Color, filled: Boolean = false) {
     val p = LocalPalette.current
+    val shape = RoundedCornerShape(8.dp)
     Row(
         Modifier
-            .clip(RoundedCornerShape(50))
-            .background(if (filled) color.copy(alpha = p.tint) else p.panelHigh)
-            .padding(horizontal = 18.dp, vertical = 10.dp),
+            .clip(shape)
+            .background(if (filled) color.copy(alpha = p.tint) else p.panel)
+            .border(1.dp, if (filled) color.copy(alpha = 0.55f) else p.line, shape)
+            .padding(horizontal = 16.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(12.dp).clip(CircleShape).background(color))
+        Box(Modifier.size(width = 3.dp, height = 20.dp).clip(RoundedCornerShape(1.5.dp)).background(color))
         Spacer(Modifier.width(10.dp))
         Txt(label, Type.label, if (filled) color else p.text)
     }
@@ -173,12 +176,19 @@ fun StatusPill(label: String, color: Color, filled: Boolean = false) {
 fun PurposeChip(purpose: TripPurpose) {
     val p = LocalPalette.current
     val c = p.purpose(purpose)
-    Box(
+    val shape = RoundedCornerShape(6.dp)
+    Row(
         Modifier
-            .clip(RoundedCornerShape(12.dp))
+            .clip(shape)
             .background(c.copy(alpha = p.tint))
-            .padding(horizontal = 14.dp, vertical = 6.dp),
-    ) { Txt(purpose.label, Type.label, c) }
+            .border(1.dp, c.copy(alpha = 0.45f), shape)
+            .padding(horizontal = 12.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(width = 3.dp, height = 18.dp).clip(RoundedCornerShape(1.5.dp)).background(c))
+        Spacer(Modifier.width(8.dp))
+        Txt(purpose.label, Type.label, c)
+    }
 }
 
 /** Large touch target (AAOS asks for at least 76dp). */
@@ -190,35 +200,50 @@ fun BigButton(
     onColor: Color = LocalPalette.current.onAccent,
     sub: String? = null,
     outlined: Boolean = false,
+    tonal: Boolean = false,
     enabled: Boolean = true,
     height: Dp = 96.dp,
     onClick: () -> Unit,
 ) {
     val p = LocalPalette.current
-    val shape = RoundedCornerShape(20.dp)
+    val shape = RoundedCornerShape(10.dp)
     val bg = when {
         !enabled -> p.panelHigh
-        outlined -> Color.Transparent
+        tonal -> color.copy(alpha = p.tint)
+        outlined -> p.panelHigh.copy(alpha = 0.5f)
         else -> color
     }
     val fg = when {
         !enabled -> p.muted
+        tonal -> p.text
         outlined -> color
         else -> onColor
+    }
+    val subFg = when {
+        !enabled -> p.muted
+        tonal -> color
+        outlined -> color
+        else -> onColor
+    }
+    val borderMod = when {
+        !enabled -> Modifier.border(1.dp, p.line, shape)
+        tonal -> Modifier.border(1.5.dp, color.copy(alpha = 0.65f), shape)
+        outlined -> Modifier.border(1.5.dp, color, shape)
+        else -> Modifier
     }
     Column(
         modifier
             .heightIn(min = height)
             .clip(shape)
             .background(bg)
-            .then(if (outlined) Modifier.border(3.dp, if (enabled) color else p.line, shape) else Modifier)
+            .then(borderMod)
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .padding(horizontal = 24.dp, vertical = 14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         Txt(label, Type.heading.copy(textAlign = TextAlign.Center), fg)
-        if (sub != null) Txt(sub, Type.small.copy(textAlign = TextAlign.Center), fg)
+        if (sub != null) Txt(sub, Type.small.copy(textAlign = TextAlign.Center), subFg)
     }
 }
 
@@ -226,13 +251,13 @@ fun BigButton(
 @Composable
 fun Choice(label: String, selected: Boolean, onClick: () -> Unit) {
     val p = LocalPalette.current
-    val shape = RoundedCornerShape(16.dp)
+    val shape = RoundedCornerShape(8.dp)
     Box(
         Modifier
             .heightIn(min = 76.dp)
             .clip(shape)
             .background(if (selected) p.accent.copy(alpha = p.tint) else p.panelHigh)
-            .border(2.dp, if (selected) p.accent else Color.Transparent, shape)
+            .border(if (selected) 1.5.dp else 1.dp, if (selected) p.accent else p.line, shape)
             .clickable(role = Role.RadioButton, onClick = onClick)
             .padding(horizontal = 22.dp, vertical = 12.dp),
         contentAlignment = Alignment.Center,
@@ -273,7 +298,7 @@ fun KeyValue(key: String, value: String, valueColor: Color = LocalPalette.curren
 /** Stacked bar of the period's distance by purpose, with a legend underneath. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun PurposeBar(s: LogbookSummary, height: Dp = 26.dp) {
+fun PurposeBar(s: LogbookSummary, height: Dp = 22.dp) {
     val p = LocalPalette.current
     val parts = listOf(
         TripPurpose.COMMUTE to s.commuteKm,
@@ -283,7 +308,8 @@ fun PurposeBar(s: LogbookSummary, height: Dp = 26.dp) {
         TripPurpose.UNLOGGED_GAP to s.gapKm,
     ).filter { it.second > 0.0 }
     val total = parts.sumOf { it.second }.takeIf { it > 0 } ?: 1.0
-    Row(Modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(12.dp)).background(p.panelHigh)) {
+    val barShape = RoundedCornerShape(6.dp)
+    Row(Modifier.fillMaxWidth().height(height).clip(barShape).background(p.panelHigh).border(1.dp, p.line, barShape)) {
         parts.forEach { (purpose, km) ->
             Box(Modifier.weight((km / total).toFloat().coerceAtLeast(0.004f)).fillMaxHeight().background(p.purpose(purpose)))
         }
@@ -291,7 +317,7 @@ fun PurposeBar(s: LogbookSummary, height: Dp = 26.dp) {
     FlowRow(horizontalArrangement = Arrangement.spacedBy(22.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         parts.forEach { (purpose, km) ->
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(14.dp).clip(CircleShape).background(p.purpose(purpose)))
+                Box(Modifier.size(width = 4.dp, height = 18.dp).clip(RoundedCornerShape(2.dp)).background(p.purpose(purpose)))
                 Spacer(Modifier.width(8.dp))
                 Txt("${purpose.label} ${km1(km)} km", Type.small, p.muted)
             }
@@ -313,12 +339,14 @@ fun ChipRow(lead: String? = null, content: @Composable () -> Unit) {
 @Composable
 fun ToggleRow(label: String, checked: Boolean, trackColor: Color = LocalPalette.current.accent, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
     val p = LocalPalette.current
+    val shape = RoundedCornerShape(10.dp)
     Row(
         Modifier
             .fillMaxWidth()
             .heightIn(min = 76.dp)
-            .clip(RoundedCornerShape(16.dp))
+            .clip(shape)
             .background(p.panelHigh)
+            .border(1.dp, if (checked) trackColor.copy(alpha = 0.55f) else p.line, shape)
             .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange)
             .padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -354,7 +382,7 @@ fun PurposeButtons(
         PICKABLE_PURPOSES.forEach { purpose ->
             BigButton(
                 purpose.label, Modifier.weight(1f), color = p.purpose(purpose), onColor = p.bg, sub = purposeSub(purpose),
-                outlined = outlined, enabled = enabled, height = height,
+                outlined = outlined, tonal = !outlined, enabled = enabled, height = height,
             ) { onPick(purpose) }
         }
     }

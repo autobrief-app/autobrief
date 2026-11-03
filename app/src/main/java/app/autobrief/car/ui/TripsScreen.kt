@@ -1,6 +1,7 @@
 package app.autobrief.car.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -74,12 +75,14 @@ fun TripsScreen(core: AutoBriefCore) {
 @Composable
 private fun TripRow(t: TripRecord, onClick: () -> Unit) {
     val p = LocalPalette.current
+    val shape = RoundedCornerShape(12.dp)
     Row(
         Modifier
             .fillMaxWidth()
             .heightIn(min = 88.dp)
-            .clip(RoundedCornerShape(18.dp))
+            .clip(shape)
             .background(p.panel)
+            .border(1.dp, p.line, shape)
             .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = 26.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,

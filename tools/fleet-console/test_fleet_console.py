@@ -375,7 +375,7 @@ class HttpTests(Base):
         for bad in ("/fonts/../fleet_console.py", "/fonts/pretendard_regular.ttf", "/fonts/", "/fonts/%2e%2e/fleet_console.py"):
             self.assertEqual(self.req("GET", bad)[0], 404, bad)
         page = self.req("GET", "/")[2].decode("utf-8")
-        for needle in ("@font-face", "/fonts/Pretendard-Regular.ttf", "/fonts/Pretendard-Bold.ttf", "--personal:#E59AC0", "변조 시도", "banner"):
+        for needle in ("@font-face", "/fonts/Pretendard-Regular.ttf", "/fonts/Pretendard-Bold.ttf", "--personal:#DDA77B", "변조 시도", "banner"):
             self.assertIn(needle, page)
 
     def test_oversized_content_length_gets_413_before_any_body(self):

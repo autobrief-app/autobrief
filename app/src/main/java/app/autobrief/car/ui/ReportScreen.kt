@@ -1,7 +1,10 @@
 package app.autobrief.car.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -195,7 +198,16 @@ private fun previewCells(r: TripRecord): List<String> {
 @Composable
 private fun FormRow(label: String, value: String, strong: Boolean = false) {
     val p = LocalPalette.current
-    Row(Modifier.fillMaxWidth().background(p.panelHigh).padding(horizontal = 20.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+    val shape = RoundedCornerShape(8.dp)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(p.panelHigh)
+            .border(1.dp, if (strong) p.accent.copy(alpha = 0.55f) else p.line, shape)
+            .padding(horizontal = 20.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Txt(label, Type.body)
         Spring()
         Txt(value, if (strong) Type.title else Type.heading, if (strong) p.accent else p.text)

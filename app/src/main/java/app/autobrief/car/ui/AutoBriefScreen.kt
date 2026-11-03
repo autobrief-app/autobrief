@@ -1,6 +1,7 @@
 package app.autobrief.car.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -155,7 +156,8 @@ private fun Root(core: AutoBriefCore, tab: MutableState<Tab>, restricted: Boolea
         }
         Row(Modifier.fillMaxSize()) {
             NavRail(tab)
-            Column(Modifier.fillMaxSize().padding(start = 8.dp, end = 36.dp, top = 28.dp)) {
+            Box(Modifier.fillMaxHeight().width(1.dp).background(p.line))
+            Column(Modifier.fillMaxSize().padding(start = 24.dp, end = 36.dp, top = 28.dp)) {
                 StatusBar(core)
                 Gap(20.dp)
                 Box(Modifier.fillMaxSize()) {
@@ -175,24 +177,26 @@ private fun Root(core: AutoBriefCore, tab: MutableState<Tab>, restricted: Boolea
 private fun NavRail(tab: MutableState<Tab>) {
     val p = LocalPalette.current
     Column(
-        Modifier.fillMaxHeight().width(150.dp).padding(vertical = 28.dp, horizontal = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        Modifier.fillMaxHeight().width(152.dp).background(p.panel).padding(vertical = 28.dp, horizontal = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         AppMark()
         Gap(18.dp)
         Tab.values().forEach { t ->
             val selected = tab.value == t
+            val shape = RoundedCornerShape(10.dp)
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(if (selected) p.accent.copy(alpha = p.tint) else p.bg)
+                    .clip(shape)
+                    .background(if (selected) p.accent.copy(alpha = p.tint) else p.panel)
+                    .border(1.dp, if (selected) p.accent.copy(alpha = 0.55f) else p.line.copy(alpha = 0.45f), shape)
                     .clickable(role = Role.Tab) { tab.value = t }
                     .padding(vertical = 18.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Icon(t.icon, contentDescription = null, tint = if (selected) p.accent else p.muted, modifier = Modifier.size(40.dp))
+                Icon(t.icon, contentDescription = null, tint = if (selected) p.accent else p.muted, modifier = Modifier.size(38.dp))
                 Gap(6.dp)
                 Txt(t.label, Type.label, if (selected) p.accent else p.muted)
             }
@@ -200,14 +204,22 @@ private fun NavRail(tab: MutableState<Tab>) {
     }
 }
 
-/** The app mark drawn with layout only (no bitmap): an odometer window with a tick. */
+/** The app mark drawn with layout only (no bitmap): an OEM cockpit odometer emblem. */
 @Composable
 fun AppMark(size: Int = 72) {
     val p = LocalPalette.current
-    Box(Modifier.size(size.dp).clip(RoundedCornerShape((size / 4).dp)).background(p.accent), contentAlignment = Alignment.Center) {
-        Box(Modifier.size((size * 0.62).dp, (size * 0.3).dp).clip(RoundedCornerShape(6.dp)).background(p.onAccent), contentAlignment = Alignment.Center) {
+    val outerShape = RoundedCornerShape((size / 6).dp)
+    val innerShape = RoundedCornerShape(6.dp)
+    Box(
+        Modifier.size(size.dp).clip(outerShape).background(p.panelHigh).border(1.5.dp, p.accent, outerShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier.size((size * 0.66).dp, (size * 0.34).dp).clip(innerShape).background(p.bg).border(1.dp, p.line, innerShape),
+            contentAlignment = Alignment.Center,
+        ) {
             // a logo glyph scaled with the mark, not running text
-            Txt("km", TextStyle(fontFamily = Pretendard, fontWeight = FontWeight.Bold, fontSize = (size * 0.3).sp, lineHeight = (size * 0.3).sp), p.accent)
+            Txt("km", TextStyle(fontFamily = Pretendard, fontWeight = FontWeight.Bold, fontSize = (size * 0.28).sp, lineHeight = (size * 0.28).sp), p.accent)
         }
     }
 }
@@ -270,32 +282,50 @@ fun DrivingView(core: AutoBriefCore) {
     val open by core.openTrip.collectAsState()
     val v by core.vehicle.collectAsState()
     val trips by core.trips.collectAsState()
+    val cardShape = RoundedCornerShape(16.dp)
+    val noteShape = RoundedCornerShape(10.dp)
     Column(
         Modifier.fillMaxSize().padding(64.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        AppMark(96)
-        Gap(28.dp)
-        val o = open
-        if (o != null) {
-            if (o.family) {
-                StatusPill(FAMILY_BADGE, p.personal, filled = true)
-                Gap(16.dp)
+        Column(
+            Modifier
+                .widthIn(min = 960.dp, max = 1280.dp)
+                .clip(cardShape)
+                .background(p.panel)
+                .border(1.dp, p.line, cardShape)
+                .padding(horizontal = 64.dp, vertical = 48.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            AppMark(88)
+            Gap(24.dp)
+            val o = open
+            if (o != null) {
+                if (o.family) {
+                    StatusPill(FAMILY_BADGE, p.personal, filled = true)
+                    Gap(16.dp)
+                }
+                Txt("운행 기록 중", Type.title, p.accent)
+                Gap(8.dp)
+                val delta = (v.odometerKm ?: o.startOdometerKm) - o.startOdometerKm
+                Txt("+${km1(delta)} km", Type.hero.copy(fontSize = Type.hero.fontSize * 1.6f, lineHeight = Type.hero.lineHeight * 1.6f))
+                Txt("출발 ${km1(o.startOdometerKm)} km" + (o.startPlace?.let { " · $it" } ?: "") + " · ${hm(o.startEpochMs)}", Type.body, p.muted)
+            } else {
+                Txt("주행 중에는 화면 조작을 줄였습니다", Type.title)
+                val month = core.summary(TaxPeriods.month(YearMonth.from(core.today())))
+                if (month.rowCount > 0 && trips.isNotEmpty()) Txt("이번 달 업무사용비율 ${pct(month.businessUseRatio)}", Type.heading, p.muted)
             }
-            Txt("운행 기록 중", Type.title, p.accent)
-            Gap(8.dp)
-            val delta = (v.odometerKm ?: o.startOdometerKm) - o.startOdometerKm
-            Txt("+${km1(delta)} km", Type.hero.copy(fontSize = Type.hero.fontSize * 1.6f, lineHeight = Type.hero.lineHeight * 1.6f))
-            Txt("출발 ${km1(o.startOdometerKm)} km" + (o.startPlace?.let { " · $it" } ?: "") + " · ${hm(o.startEpochMs)}", Type.body, p.muted)
-        } else {
-            Txt("주행 중에는 화면 조작을 줄였습니다", Type.title)
-            val month = core.summary(TaxPeriods.month(YearMonth.from(core.today())))
-            if (month.rowCount > 0 && trips.isNotEmpty()) Txt("이번 달 업무사용비율 ${pct(month.businessUseRatio)}", Type.heading, p.muted)
-        }
-        Gap(36.dp)
-        Box(Modifier.widthIn(max = 1100.dp).clip(RoundedCornerShape(20.dp)).background(p.panel).padding(horizontal = 36.dp, vertical = 24.dp)) {
-            Txt(if (o?.family == true) "도착해서 P에 두면 거리만 비업무로 남깁니다" else "도착해서 P에 두면 목적을 여쭙니다", Type.heading, p.muted)
+            Gap(32.dp)
+            Box(
+                Modifier
+                    .clip(noteShape)
+                    .background(p.panelHigh)
+                    .border(1.dp, p.line, noteShape)
+                    .padding(horizontal = 36.dp, vertical = 20.dp),
+            ) {
+                Txt(if (o?.family == true) "도착해서 P에 두면 거리만 비업무로 남깁니다" else "도착해서 P에 두면 목적을 여쭙니다", Type.heading, p.muted)
+            }
         }
         Spacer(Modifier.height(1.dp).fillMaxWidth())
     }
