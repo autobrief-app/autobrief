@@ -10,6 +10,10 @@
 #
 # Needs in the repository: demo/, app/ (Gradle project) and tools/fleet-console/fleet_console.py
 # (the webhook receiver the demo sample posts to, reached from the emulator as 10.0.2.2:8787).
+#
+# Changes reach main only through a pull request (CONTRIBUTING.md): the job runs on every push to a PR into main,
+# then once more on the merged main commit. A newer push to the same PR cancels the older PR run; runs on main
+# are never cancelled, so every main commit keeps its own result. Failed runs are kept, never deleted.
 
 name: emulator-e2e
 
@@ -21,9 +25,19 @@ on:
       - "app/**"
       - "demo/**"
       - ".github/workflows/emulator-e2e.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "demo/**"
+      - ".github/workflows/emulator-e2e.yml"
 
 permissions:
   contents: read
+
+concurrency:
+  group: emulator-e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   e2e:
