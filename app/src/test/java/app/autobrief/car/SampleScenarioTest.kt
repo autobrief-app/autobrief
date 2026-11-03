@@ -33,11 +33,11 @@ object DocsSample {
         h.core.loadSampleHistoryNow(webhook)
         // 10:20 → 10:58, 45,200 → 45,218 km to a client, labelled by voice right after parking
         h.now = Harness.at(TODAY, 10, 20)
-        h.core.onNavi(NaviEvent.RouteStarted("가상고객사 판교 사옥", 1_800))
+        h.core.onNavi(NaviEvent.RouteStarted("일양상사 판교 사옥", 1_800))
         h.odo(45_200.0); h.gear(Gear.PARK); h.gear(Gear.DRIVE)
         h.now = Harness.at(TODAY, 10, 58)
         h.odo(45_218.0); h.gear(Gear.PARK)
-        val voice = h.core.gleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("""{"purpose":"BUSINESS","memo":"가상고객사 미팅"}"""))
+        val voice = h.core.gleo(GleoContract.LOG_TRIP_PURPOSE, GleoContract.parseParams("""{"purpose":"BUSINESS","memo":"일양상사 미팅"}"""))
         check(voice.status == "success") { voice.message }
         h.core.onNavi(NaviEvent.RouteEnded)
         // 22:40 → 23:06, 11 km, purpose not given yet

@@ -120,11 +120,16 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
                     Panel {
                         ToggleRow("장소로 목적 자동 분류", autoClassify) { autoClassify = it }
-                        Muted("집→회사, 회사→집은 출퇴근, 거래처 도착은 일반 업무로 적습니다. 위치는 장소를 알아보는 데만 쓰고 운행기록에는 장소 이름만 남깁니다.")
+                        Muted("내비게이션 목적지·즐겨찾기를 자동 연동해 일일이 누르지 않아도 출퇴근·일반 업무를 자동 반영합니다. 위치는 장소를 알아보는 데만 쓰고 운행기록에는 장소 이름만 남깁니다.")
                         val home = navi.bookmarks.any { it.kind == PlaceKind.HOME }
                         val office = navi.bookmarks.any { it.kind == PlaceKind.OFFICE }
+                        val clientBookmarks = navi.bookmarks.filter { it.kind == PlaceKind.CLIENT }
+                        KeyValue("내비 목적지 입력 연동", if (autoClassify) "자동 반영 켜짐" else "꺼짐", if (autoClassify) p.ok else p.muted)
                         KeyValue("내비 즐겨찾기 집", if (home) "있음" else "없음", if (home) p.ok else p.muted)
                         KeyValue("내비 즐겨찾기 회사", if (office) "있음" else "없음", if (office) p.ok else p.muted)
+                        if (clientBookmarks.isNotEmpty()) {
+                            KeyValue("내비 즐겨찾기 거래처", clientBookmarks.joinToString(", ") { it.name }, p.ok)
+                        }
                         if (navi.bookmarks.isEmpty() && settings.places.isEmpty()) Txt("등록한 장소가 없어 운행마다 목적을 여쭙니다", Type.body, p.pending)
                         settings.places.forEach { place ->
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -135,7 +140,7 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                                 Choice("삭제", false) { core.removePlace(place.label) }
                             }
                         }
-                        Field("지금 위치에 붙일 이름 (예: 가상상사)", placeName, Modifier.fillMaxWidth()) { placeName = it }
+                        Field("지금 위치에 붙일 이름 (예: 일양상사)", placeName, Modifier.fillMaxWidth()) { placeName = it }
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             listOf(PlaceKind.HOME to "집으로", PlaceKind.OFFICE to "회사로", PlaceKind.CLIENT to "거래처로").forEach { (kind, label) ->
                                 BigButton("지금 위치를 $label", Modifier.weight(1f), outlined = true, height = 76.dp) {

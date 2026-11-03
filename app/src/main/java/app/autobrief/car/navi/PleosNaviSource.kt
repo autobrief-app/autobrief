@@ -51,6 +51,10 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
         private set
 
     private val listener = object : NaviHelperEventListener {
+        override fun onDestinationChanged() {
+            quiet.heard()
+            refreshDestination()
+        }
         override fun onRouteStarted(info: RouteStartInfo) {
             quiet.heard()
             emit(NaviEvent.RouteStarted(info.name, info.tollFare))
@@ -58,7 +62,10 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
         }
         override fun onDestinationInfo(info: DestinationInfo) {
             quiet.heard()
-            emit(NaviEvent.Destination(info.name, info.remainDistance, info.remainTime, info.tollFare))
+            val point = GeoPoint(info.latitude, info.longitude).takeIf {
+                it.lat.isFinite() && it.lon.isFinite() && (it.lat != 0.0 || it.lon != 0.0)
+            }
+            emit(NaviEvent.Destination(info.name, info.remainDistance, info.remainTime, info.tollFare, point))
         }
         override fun onDestinationArrived(info: DestinationArrivedInfo) {
             quiet.heard()
@@ -192,12 +199,14 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
     }
 
     private fun BookmarkInfo.toBookmark(): NaviBookmark? {
+        val label = name.trim()
         val kind = when (category) {
             BookmarkType.HOME -> PlaceKind.HOME
             BookmarkType.OFFICE -> PlaceKind.OFFICE
+            BookmarkType.DEFAULT -> if (label.isNotBlank()) PlaceKind.CLIENT else return null
             else -> return null
         }
-        return NaviBookmark(kind, name ?: "", GeoPoint(latitude, longitude))
+        return NaviBookmark(kind, label, GeoPoint(latitude, longitude))
     }
 
     companion object {

@@ -27,7 +27,7 @@ import java.security.MessageDigest
 import java.time.LocalDate
 
 class TripLogbookTest {
-    private val user = CarUser("김예시", "영업팀")
+    private val user = CarUser("김기현", "영업팀")
 
     @Test fun gearCycleWritesOneRowWithDashboardValues() {
         val lb = TripLogbook()
@@ -230,7 +230,7 @@ class AutoClassifierTest {
     @Test fun clientArrivalAndReturnAreBusiness() {
         val toClient = AutoClassifier.classify(SampleHistory.OFFICE.point, SampleHistory.CLIENT.point, places)
         assertEquals(TripPurpose.BUSINESS, toClient.purpose)
-        assertEquals("가상상사 방문", toClient.memo)
+        assertEquals("일양상사 방문", toClient.memo)
         assertEquals(TripPurpose.BUSINESS, AutoClassifier.classify(SampleHistory.CLIENT.point, SampleHistory.OFFICE.point, places).purpose)
     }
 
@@ -257,6 +257,35 @@ class AutoClassifierTest {
         val a = Place("A", PlaceKind.CLIENT, GeoPoint(37.0, 127.0))
         val b = Place("B", PlaceKind.CLIENT, GeoPoint(37.0015, 127.0))
         assertEquals("B", AutoClassifier.nearest(GeoPoint(37.0012, 127.0), listOf(a, b))?.label)
+    }
+
+    @Test fun navigationDestinationClassifiesWithoutPreRegisteredCoordinates() {
+        // Registered client matched by name even without arrival GPS coordinates
+        val byRegisteredName = AutoClassifier.classify(SampleHistory.OFFICE.point, null, places, "일양상사 판교 사옥")
+        assertEquals(TripPurpose.BUSINESS, byRegisteredName.purpose)
+        assertEquals("일양상사", byRegisteredName.endLabel)
+        assertEquals("일양상사 방문", byRegisteredName.memo)
+        assertEquals("내비 목적지(일양상사)", byRegisteredName.reason)
+
+        // Brand-new client entered in Navigation with zero registered places in Settings
+        val unregisteredClient = AutoClassifier.classify(null, null, emptyList(), "한빛정밀 화성 공장")
+        assertEquals(TripPurpose.BUSINESS, unregisteredClient.purpose)
+        assertEquals("한빛정밀 화성 공장", unregisteredClient.endLabel)
+        assertEquals("한빛정밀 화성 공장 방문", unregisteredClient.memo)
+
+        // Commute via Navigation destination input ("회사", "우리집", or own corporate entity name)
+        val toOffice = AutoClassifier.classify(null, null, emptyList(), "한성물산 본사", entityName = "한성물산 주식회사")
+        assertEquals(TripPurpose.COMMUTE, toOffice.purpose)
+        assertEquals("회사", toOffice.endLabel)
+
+        val toHome = AutoClassifier.classify(null, null, emptyList(), "우리집")
+        assertEquals(TripPurpose.COMMUTE, toHome.purpose)
+        assertEquals("집", toHome.endLabel)
+
+        // Private/medical destination in Navigation is never auto-classified or stored
+        val hospital = AutoClassifier.classify(null, null, places, "비밀동 123번지 가상병원")
+        assertNull(hospital.purpose)
+        assertNull(hospital.endLabel)
     }
 }
 

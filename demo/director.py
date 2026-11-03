@@ -132,7 +132,7 @@ class Place:
 # fictional demo places (labels only; the app's debug demo sample registers the same ones)
 HOME = Place("집", 37.5444, 127.0374)
 OFFICE = Place("회사", 37.3947, 127.1112)
-CLIENT = Place("가상상사", 37.5126, 127.0590)
+CLIENT = Place("일양상사", 37.5126, 127.0590)
 UNREGISTERED = Place("미등록 장소", 37.5665, 126.9780, registered=False)
 
 
@@ -201,7 +201,7 @@ SCENARIOS = (
     ),
     Scenario(
         "client",
-        "고객사 방문 (회사 -> 가상상사)",
+        "고객사 방문 (회사 -> 일양상사)",
         OFFICE,
         CLIENT,
         45218,
@@ -211,7 +211,7 @@ SCENARIOS = (
     ),
     Scenario(
         "personal",
-        "개인 이동 (가상상사 -> 미등록 장소)",
+        "개인 이동 (일양상사 -> 미등록 장소)",
         CLIENT,
         UNREGISTERED,
         45229,
@@ -238,7 +238,7 @@ OPTIONAL_SCENARIOS = (
     ),
     Scenario(
         "fuel",
-        "내 차 유류비 정산 (회사 -> 가상상사)",
+        "내 차 유류비 정산 (회사 -> 일양상사)",
         OFFICE,
         CLIENT,
         45248,
@@ -1146,10 +1146,10 @@ def build_parser() -> argparse.ArgumentParser:
             "(Play scripted drives on the Pleos Vehicle Virtual Console.)"
         ),
         epilog=(
-            "시나리오: commute 집->회사 18km(출퇴근), client 회사->가상상사 11km(업무), "
-            "personal 가상상사->미등록 장소 7km(미분류). "
+            "시나리오: commute 집->회사 18km(출퇴근), client 회사->일양상사 11km(업무), "
+            "personal 일양상사->미등록 장소 7km(미분류). "
             "선택 장면(디버그 APK): family 가족 운행 12km(비업무, 위치 안 읽음), "
-            "fuel 내 차 모드와 유가 1,650원/L를 넣고 회사->가상상사 11km(업무). "
+            "fuel 내 차 모드와 유가 1,650원/L를 넣고 회사->일양상사 11km(업무). "
             "종료 코드: 0 성공, 1 --verify 실패, 2 adb/SDK 없음 또는 사용법 오류, 3 콘솔 연결/요청 실패, "
             "4 앱을 화면 앞에 띄우지 못함"
         ),

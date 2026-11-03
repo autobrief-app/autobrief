@@ -15,7 +15,7 @@ import java.time.LocalDate
 
 /** The automatic month close: once per month, after the workbook is really written, never across an open trip. */
 class MonthCloseTest {
-    private val base = AppSettings(entityName = "가상예시 주식회사", plateNumber = "00가 0000")
+    private val base = AppSettings(entityName = "한성물산 주식회사", plateNumber = "00가 0000")
     private var now = Harness.at(LocalDate.of(2026, 10, 30), 9, 0)
     private var failWrites = false
     private val written = mutableListOf<String>()
