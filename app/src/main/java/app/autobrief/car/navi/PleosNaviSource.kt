@@ -92,9 +92,14 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
         }
         override fun onBookmarkInfo(bookmarkInfoList: List<BookmarkInfo>) {
             quiet.heard()
+            if (locationPaused) return
             emit(NaviEvent.Bookmarks(bookmarkInfoList.mapNotNull { it.toBookmark() }))
         }
-        override fun onBookMarkChanged() = requestBookmarks()
+        override fun onBookMarkChanged() {
+            quiet.heard()
+            if (locationPaused) return
+            requestBookmarks()
+        }
     }
 
     fun start(initialDelayMs: Long = INITIAL_DELAY_MS) {
@@ -145,10 +150,13 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
         if (!stopped) sdk.postDelayed({ initialize(attempt + 1) }, Backoff.delayMs(attempt))
     }
 
-    /** Resuming asks for the position at once (the requests skipped meanwhile are not made up later). */
+    /** Resuming asks for the position and bookmarks at once (the requests skipped meanwhile are not made up later). */
     fun setLocationPaused(on: Boolean) {
         locationPaused = on
-        if (!on) requestLocation()
+        if (!on) {
+            requestBookmarks()
+            requestLocation()
+        }
     }
 
     /** The answer comes back through onCurrentLocationInfo; nothing is asked while [locationPaused]. */
@@ -162,9 +170,9 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
     }
 
     fun requestBookmarks() {
-        if (!ready) return
+        if (!ready || locationPaused) return
         sdk.post {
-            if (!stopped && ready) {
+            if (!stopped && ready && !locationPaused) {
                 runCatching { navi?.getBookmarkInfo() }.onFailure { Log.w(TAG, "bookmarks: ${it.message}") }
             }
         }

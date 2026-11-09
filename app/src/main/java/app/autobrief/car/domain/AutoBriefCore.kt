@@ -567,7 +567,7 @@ class AutoBriefCore private constructor(
                 logPosition(now)
                 pendingAuto?.let { p -> if (now > p.askedAt) resolvePendingAuto(freshLocation(now, LOCATION_FRESH_MS) ?: e.point) }
             }
-            is NaviEvent.Bookmarks -> {
+            is NaviEvent.Bookmarks -> if (!familyOn) {
                 _navi.update { it.copy(ready = true, bookmarks = e.places) }
                 refreshNaviDestinationLabel()
             }

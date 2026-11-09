@@ -308,6 +308,10 @@ class AutoClassifierTest {
         val aptFactory = AutoClassifier.classify(null, null, emptyList(), "성수동 아파트형공장")
         assertEquals(TripPurpose.BUSINESS, aptFactory.purpose)
         assertEquals("성수동 아파트형공장", aptFactory.endLabel)
+        // Short business tokens inside retail/personal shop names remain private (unclassified)
+        assertNull(AutoClassifier.classify(null, null, emptyList(), "롯데하이마트 전자관").purpose)
+        assertNull(AutoClassifier.classify(null, null, emptyList(), "동네전기 철물점").purpose)
+        assertNull(AutoClassifier.classify(null, null, emptyList(), "현대백화점그룹 판교점").purpose)
     }
 }
 
