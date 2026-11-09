@@ -868,7 +868,11 @@ class AutoBriefCore private constructor(
             val label = when (it.kind) {
                 PlaceKind.HOME -> "집"
                 PlaceKind.OFFICE -> "회사"
-                PlaceKind.CLIENT -> sanitizeMemo(DisplayMasking.mask(it.name)).take(20).ifBlank { return@mapNotNull null }
+                PlaceKind.CLIENT -> {
+                    val cleaned = sanitizeMemo(DisplayMasking.mask(it.name)).take(20)
+                    if (cleaned.isBlank() || AutoClassifier.isPrivatePlaceName(cleaned)) return@mapNotNull null
+                    cleaned
+                }
             }
             Place(label, it.kind, it.point, fromNavigation = true)
         } + _settings.value.places
@@ -1731,6 +1735,7 @@ class AutoBriefCore private constructor(
                 " The fuel reimbursement needs the car's fuel economy or one entered in the settings."
             else -> " The fuel reimbursement needs a fuel price in the settings."
         }
+        val tax = if (_settings.value.carUse == CarUse.COMPANY) taxBenefit() else null
         return GleoReply(
             "success",
             "${if (year) "This business year" else "This month"}: ${s.rowCount} trips, ${String.format(Locale.ROOT, "%.0f", s.totalKm)} km, business use $ratio percent.$pending$gaps$fuelText",
@@ -1742,6 +1747,10 @@ class AutoBriefCore private constructor(
                 if (s.gapRowCount > 0) {
                     put("gapCount", s.gapRowCount)
                     put("gapKm", s.gapKm)
+                }
+                tax?.let {
+                    put("extraDeductibleKrw", it.extraDeductibleKrw)
+                    put("taxEffectKrw", it.taxEffectKrw)
                 }
                 fuelKrw?.let { put("fuelReimbursementKrw", it) }
             })),

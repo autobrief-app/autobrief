@@ -24,14 +24,28 @@ object AutoClassifier {
     /** Parking spots sit around a building, not on its pin. */
     const val RADIUS_M = 300.0
 
-    private val PRIVATE_KEYWORDS = listOf(
+    internal val PRIVATE_KEYWORDS = listOf(
         "병원", "의원", "약국", "한의원", "치과", "산부인과", "소아과", "내과", "외과", "피부과", "안과",
-        "마트", "백화점", "아울렛", "면세점", "슈퍼", "편의점",
+        "마트", "백화점", "아울렛", "면세점", "슈퍼", "편의점", "다이소", "올리브영",
         "학교", "초등학교", "중학교", "고등학교", "대학교", "유치원", "어린이집", "학원",
         "공원", "캠핑", "호텔", "리조트", "펜션", "모텔", "골프", "컨트리클럽",
         "영화관", "극장", "성당", "교회", "사찰", "식당", "레스토랑", "카페", "베이커리", "맛집",
-        "아파트", "빌라", "주택", "단지", "마을",
+        "스타벅스", "투썸", "이디야", "메가커피", "빽다방", "폴바셋", "블루보틀", "할리스", "커피",
+        "맥도날드", "버거킹", "롯데리아", "주유소", "세차장",
+        "아파트", "빌라", "주택", "아파트단지", "주거단지", "빌라단지", "마을",
     )
+
+    fun isPrivatePlaceName(rawName: String): Boolean {
+        val cleaned = rawName.trim()
+        if (cleaned.isBlank()) return true
+        return PRIVATE_KEYWORDS.any { cleaned.contains(it, ignoreCase = true) }
+    }
+
+    fun isBusinessPlaceName(rawName: String): Boolean {
+        val cleaned = rawName.trim()
+        if (cleaned.isBlank() || isPrivatePlaceName(cleaned)) return false
+        return BUSINESS_KEYWORDS.any { cleaned.contains(it, ignoreCase = true) }
+    }
 
     private val HOME_KEYWORDS = setOf("집", "우리집", "우리 집", "자택", "마이홈", "홈")
     private val OFFICE_KEYWORDS = setOf("회사", "본사", "당사", "사무실", "오피스", "직장")

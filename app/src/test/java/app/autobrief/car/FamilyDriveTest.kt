@@ -69,6 +69,9 @@ class FamilyDriveTest {
         h.here(SampleHistory.HOME.point) // still arriving: dropped
         h.advance(60_000); h.gear(Gear.DRIVE)
         h.core.onNavi(NaviEvent.RouteStarted("가상 목적지", 1_800)) // a route on the map: its toll estimate is not kept either
+        h.core.onNavi(NaviEvent.Destination("일양상사 판교 사옥", 5_000, 600, 1_800, SampleHistory.CLIENT.point))
+        h.core.onNavi(NaviEvent.Arrived("일양상사 판교 사옥"))
+        assertNull("no destination label stored during family drive", h.core.navi.value.destinationLabel)
         val open = h.core.openTrip.value!!
         assertTrue(open.family)
         assertNull(open.startPlace)

@@ -351,10 +351,13 @@ class CoreFlowTest {
                     app.autobrief.car.domain.NaviBookmark(PlaceKind.HOME, "우리집", SampleHistory.HOME.point),
                     app.autobrief.car.domain.NaviBookmark(PlaceKind.OFFICE, "회사", SampleHistory.OFFICE.point),
                     app.autobrief.car.domain.NaviBookmark(PlaceKind.CLIENT, "한빛정밀", SampleHistory.CLIENT.point),
+                    app.autobrief.car.domain.NaviBookmark(PlaceKind.CLIENT, "강남 성모병원", SampleHistory.CLIENT.point),
+                    app.autobrief.car.domain.NaviBookmark(PlaceKind.CLIENT, "스타벅스 판교역점", SampleHistory.CLIENT.point),
                 ),
             ),
         )
         assertTrue(h.core.allPlaces().any { it.label == "한빛정밀" && it.kind == PlaceKind.CLIENT && it.fromNavigation })
+        assertFalse(h.core.allPlaces().any { it.label.contains("병원") || it.label.contains("스타벅스") })
         h.drive(45_200.0, 11.0, SampleHistory.OFFICE.point, SampleHistory.CLIENT.point)
         val row = h.core.trips.value.single()
         assertEquals(TripPurpose.BUSINESS, row.purpose)

@@ -14,6 +14,7 @@ import android.os.HandlerThread
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
+import app.autobrief.car.domain.AutoClassifier
 import app.autobrief.car.domain.NaviBookmark
 import app.autobrief.car.domain.NaviEvent
 import app.autobrief.car.model.Gear
@@ -57,11 +58,13 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
         }
         override fun onRouteStarted(info: RouteStartInfo) {
             quiet.heard()
+            if (locationPaused) return
             emit(NaviEvent.RouteStarted(info.name, info.tollFare))
             refreshDestination()
         }
         override fun onDestinationInfo(info: DestinationInfo) {
             quiet.heard()
+            if (locationPaused) return
             val point = GeoPoint(info.latitude, info.longitude).takeIf {
                 it.lat.isFinite() && it.lon.isFinite() && (it.lat != 0.0 || it.lon != 0.0)
             }
@@ -69,6 +72,7 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
         }
         override fun onDestinationArrived(info: DestinationArrivedInfo) {
             quiet.heard()
+            if (locationPaused) return
             emit(NaviEvent.Arrived(info.name))
         }
         override fun onRouteEnded() {
@@ -81,6 +85,7 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
         }
         override fun onCurrentLocationInfo(currentLocationInfo: CurrentLocationInfo) {
             quiet.heard()
+            if (locationPaused) return
             emit(NaviEvent.Location(GeoPoint(currentLocationInfo.latitude, currentLocationInfo.longitude)))
         }
         override fun onBookmarkInfo(bookmarkInfoList: List<BookmarkInfo>) {
@@ -164,8 +169,9 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
     }
 
     private fun refreshDestination() {
+        if (!ready || locationPaused) return
         sdk.post {
-            if (!stopped && ready) {
+            if (!stopped && ready && !locationPaused) {
                 runCatching { navi?.getDestinationInfo() }.onFailure { Log.w(TAG, "destination: ${it.message}") }
             }
         }
@@ -203,7 +209,7 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
         val kind = when (category) {
             BookmarkType.HOME -> PlaceKind.HOME
             BookmarkType.OFFICE -> PlaceKind.OFFICE
-            BookmarkType.DEFAULT -> if (label.isNotBlank()) PlaceKind.CLIENT else return null
+            BookmarkType.DEFAULT -> if (label.isNotBlank() && !AutoClassifier.isPrivatePlaceName(label)) PlaceKind.CLIENT else return null
             else -> return null
         }
         return NaviBookmark(kind, label, GeoPoint(latitude, longitude))
