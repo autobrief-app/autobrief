@@ -77,10 +77,12 @@ class PleosNaviSource(context: Context, private val emit: (NaviEvent) -> Unit) {
         }
         override fun onRouteEnded() {
             quiet.heard()
+            if (locationPaused) return
             emit(NaviEvent.RouteEnded)
         }
         override fun onRouteCancelled() {
             quiet.heard()
+            if (locationPaused) return
             emit(NaviEvent.RouteEnded)
         }
         override fun onCurrentLocationInfo(currentLocationInfo: CurrentLocationInfo) {

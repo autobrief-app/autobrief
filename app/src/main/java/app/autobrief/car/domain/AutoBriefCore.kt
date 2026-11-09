@@ -555,7 +555,7 @@ class AutoBriefCore private constructor(
                     resolvePendingAuto(freshLocation(clock(), LOCATION_FRESH_MS) ?: routeDestinationPoint)
                 }
             }
-            NaviEvent.RouteEnded -> {
+            NaviEvent.RouteEnded -> if (!familyOn) {
                 routeToll = null
                 if (logbook.openTrip == null && pendingAuto == null) clearRouteDestination()
             }

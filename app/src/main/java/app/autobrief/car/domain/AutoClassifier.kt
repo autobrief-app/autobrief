@@ -38,7 +38,10 @@ object AutoClassifier {
     fun isPrivatePlaceName(rawName: String): Boolean {
         val cleaned = rawName.trim()
         if (cleaned.isBlank()) return true
-        return PRIVATE_KEYWORDS.any { cleaned.contains(it, ignoreCase = true) }
+        val withoutBizCompound = cleaned
+            .replace("아파트형공장", "")
+            .replace("아파트형 공장", "")
+        return PRIVATE_KEYWORDS.any { withoutBizCompound.contains(it, ignoreCase = true) }
     }
 
     fun isBusinessPlaceName(rawName: String): Boolean {
@@ -56,7 +59,7 @@ object AutoClassifier {
         "통신", "네트웍스", "네트워크", "소프트", "랩스", "코퍼레이션", "홀딩스", "그룹", "파트너스",
         "컨설팅", "회계법인", "법무법인", "세무법인", "특허법인", "노무법인", "감정평가",
         "주식회사", "(주)", "㈜",
-        "사옥", "공장", "연구소", "R&D", "물류센터", "유통센터", "지사", "지점", "영업소", "사업소",
+        "사옥", "아파트형공장", "아파트형 공장", "지식산업센터", "공장", "연구소", "R&D", "물류센터", "유통센터", "지사", "지점", "영업소", "사업소",
         "테크노밸리", "산업단지", "산단", "공단", "비즈니스센터", "트레이드센터", "컨벤션", "전시장",
         "시청", "구청", "도청", "군청", "세무서", "법원", "검찰청", "등기소", "특허청", "진흥원", "연구원",
         "협회", "조합", "은행", "증권", "보험", "캐피탈", "금고", "거래처", "고객사", "협력사",
@@ -64,6 +67,14 @@ object AutoClassifier {
 
     private val STREET_PREFIX = Regex("^(?:\\S+[시군구동읍면리가로길]\\s+)*\\d+(?:-\\d+)?(?:번지|번길)?\\s*")
     private val CORP_AFFIX = Regex("(?:주식회사|\\(주\\)|㈜)")
+
+    private fun isHomeInput(rawTrimmed: String): Boolean =
+        rawTrimmed in HOME_KEYWORDS || HOME_KEYWORDS.any { rawTrimmed.startsWith("$it:") || rawTrimmed.startsWith("$it：") }
+
+    private fun isOfficeInput(cleaned: String, entityName: String): Boolean {
+        val ownCorp = entityName.replace(CORP_AFFIX, "").trim()
+        return cleaned in OFFICE_KEYWORDS || (ownCorp.length >= 2 && cleaned.contains(ownCorp) && !isPrivatePlaceName(cleaned))
+    }
 
     data class Result(
         val purpose: TripPurpose?,
@@ -85,7 +96,14 @@ object AutoClassifier {
         entityName: String = "",
     ): Result {
         val from = start?.let { nearest(it, places) }
-        val toByPoint = (end?.let { nearest(it, places) }) ?: (naviDestinationPoint?.let { nearest(it, places) })
+        val rawNaviTrimmed = naviDestinationName?.replace(Regex("[\\p{Cntrl}]"), " ")?.trim().orEmpty()
+        val maskedNavi = DisplayMasking.mask(rawNaviTrimmed).trim()
+        val naviIsPrivate = rawNaviTrimmed.isNotEmpty() &&
+            !isHomeInput(rawNaviTrimmed) &&
+            !isOfficeInput(maskedNavi, entityName) &&
+            isPrivatePlaceName(maskedNavi)
+        val rawToByPoint = (end?.let { nearest(it, places) }) ?: (naviDestinationPoint?.let { nearest(it, places) })
+        val toByPoint = if (naviIsPrivate && rawToByPoint?.kind == PlaceKind.CLIENT) null else rawToByPoint
         val pointRule = evaluatePointRule(from, toByPoint)
         if (pointRule != null) return pointRule
 
@@ -133,31 +151,33 @@ object AutoClassifier {
         entityName: String = "",
         point: GeoPoint? = null,
     ): Place? {
+        val rawTrimmed = rawName?.replace(Regex("[\\p{Cntrl}]"), " ")?.trim().orEmpty()
+        if (rawTrimmed.isNotEmpty()) {
+            if (isHomeInput(rawTrimmed)) {
+                return places.firstOrNull { it.kind == PlaceKind.HOME }
+                    ?: Place("집", PlaceKind.HOME, point ?: GeoPoint(0.0, 0.0), fromNavigation = true)
+            }
+            val cleaned = DisplayMasking.mask(rawTrimmed).trim()
+            if (cleaned.isBlank()) return null
+            if (isOfficeInput(cleaned, entityName)) {
+                return places.firstOrNull { it.kind == PlaceKind.OFFICE }
+                    ?: Place("회사", PlaceKind.OFFICE, point ?: GeoPoint(0.0, 0.0), fromNavigation = true)
+            }
+            // Never store or auto-classify private, medical, retail, or residential destinations,
+            // even when they sit next to a registered client or contain a client's name (e.g. "일양상사 앞 스타벅스")
+            if (isPrivatePlaceName(cleaned)) return null
+        }
+
         if (point != null) {
             nearest(point, places)?.let { return it }
         }
-        if (rawName.isNullOrBlank()) return null
-        val rawTrimmed = rawName.replace(Regex("[\\p{Cntrl}]"), " ").trim()
-        if (rawTrimmed.isBlank()) return null
-
-        if (rawTrimmed in HOME_KEYWORDS || HOME_KEYWORDS.any { rawTrimmed.startsWith("$it:") || rawTrimmed.startsWith("$it：") }) {
-            return places.firstOrNull { it.kind == PlaceKind.HOME }
-                ?: Place("집", PlaceKind.HOME, point ?: GeoPoint(0.0, 0.0), fromNavigation = true)
-        }
+        if (rawTrimmed.isEmpty()) return null
         val cleaned = DisplayMasking.mask(rawTrimmed).trim()
-        if (cleaned.isBlank()) return null
-        val ownCorp = entityName.replace(CORP_AFFIX, "").trim()
-        if (cleaned in OFFICE_KEYWORDS || (ownCorp.length >= 2 && cleaned.contains(ownCorp))) {
-            return places.firstOrNull { it.kind == PlaceKind.OFFICE }
-                ?: Place("회사", PlaceKind.OFFICE, point ?: GeoPoint(0.0, 0.0), fromNavigation = true)
-        }
+
         // Match against registered or bookmarked client places by name
         places.firstOrNull {
             it.kind == PlaceKind.CLIENT && it.label.length >= 2 && (cleaned.contains(it.label) || it.label.contains(cleaned))
         }?.let { return it }
-
-        // Never store or auto-classify private, medical, retail, or residential destinations
-        if (PRIVATE_KEYWORDS.any { cleaned.contains(it) }) return null
 
         // Recognize corporate/business/institutional destinations entered in Navigation without prior registration
         if (BUSINESS_KEYWORDS.any { cleaned.contains(it, ignoreCase = true) }) {

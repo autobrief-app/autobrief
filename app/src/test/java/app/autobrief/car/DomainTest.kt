@@ -286,14 +286,28 @@ class AutoClassifierTest {
         val hospital = AutoClassifier.classify(null, null, places, "비밀동 123번지 가상병원")
         assertNull(hospital.purpose)
         assertNull(hospital.endLabel)
+        // Even when a private POI sits within 300m of a registered client or contains the client's name, it stays unclassified
+        val cafeNearClient = AutoClassifier.classify(
+            SampleHistory.OFFICE.point,
+            SampleHistory.CLIENT.point,
+            places,
+            "일양상사 앞 스타벅스",
+            SampleHistory.CLIENT.point,
+        )
+        assertNull(cafeNearClient.purpose)
+        assertNull(cafeNearClient.endLabel)
         assertTrue(AutoClassifier.isPrivatePlaceName("강남 성모병원"))
         assertTrue(AutoClassifier.isPrivatePlaceName("스타벅스 판교역점"))
         assertTrue(AutoClassifier.isPrivatePlaceName("래미안 아파트단지"))
         assertFalse(AutoClassifier.isPrivatePlaceName("일양상사 판교 사옥"))
         assertFalse(AutoClassifier.isPrivatePlaceName("시화국가산업단지"))
+        assertFalse(AutoClassifier.isPrivatePlaceName("성수동 아파트형공장"))
         val indComplex = AutoClassifier.classify(null, null, emptyList(), "시화국가산업단지")
         assertEquals(TripPurpose.BUSINESS, indComplex.purpose)
         assertEquals("시화국가산업단지", indComplex.endLabel)
+        val aptFactory = AutoClassifier.classify(null, null, emptyList(), "성수동 아파트형공장")
+        assertEquals(TripPurpose.BUSINESS, aptFactory.purpose)
+        assertEquals("성수동 아파트형공장", aptFactory.endLabel)
     }
 }
 
