@@ -61,6 +61,16 @@ jobs:
           ls -l /dev/kvm
           google-chrome --version || echo "no google-chrome: the console screenshots will be missing"
 
+      - name: Add swap for the emulator and the browser
+        # the runner has 7 GB and 2 GB of swap: the emulator's 4 GB guest, the Speech Service it runs and headless Chrome
+        # together went past it twice on 11-14 (the emulator vanished mid-scene); host-mem.txt below shows the peak
+        run: |
+          sudo fallocate -l 4G /swapfile-rehearsal
+          sudo chmod 600 /swapfile-rehearsal
+          sudo mkswap /swapfile-rehearsal
+          sudo swapon /swapfile-rehearsal
+          free -m
+
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
@@ -83,7 +93,8 @@ jobs:
 
       - name: Build the debug APK
         # the debug build carries the demo hooks (sample load, the Gleo relay); the release APK has none
-        run: ./gradlew --no-daemon assembleDebug
+        # in-process Kotlin compile: no compile daemon left holding memory while the emulator runs
+        run: ./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process assembleDebug
 
       - name: Start the fleet console
         run: |
@@ -108,6 +119,10 @@ jobs:
           setsid nohup bash -c 'while true; do adb wait-for-device logcat -v time -s AutoBriefLog:V AutoBriefVehicle:V AutoBriefNavi:V ActivityManager:I ActivityTaskManager:I; sleep 1; done' \
             > "$OUT/logcat-autobrief.txt" 2>&1 < /dev/null &
           echo $! > /tmp/logcat-autobrief.pid
+          # host memory every 15 s (free + the five largest processes), to tell a host kill from a guest hang
+          setsid nohup bash -c 'while true; do echo "== $(date -u +%T)"; free -m | sed -n 2,3p; ps -eo rss,comm --sort=-rss | head -6; sleep 15; done' \
+            > "$OUT/host-mem.txt" 2>&1 < /dev/null &
+          echo $! > /tmp/host-mem.pid
 
       - name: Boot the emulator and install the app
         run: >
@@ -165,7 +180,8 @@ jobs:
           } > "$OUT/device-state-end.txt" 2>&1 || echo "device state incomplete"
           curl -s --max-time 10 http://127.0.0.1:8787/api/state > "$OUT/fleet_state.json" || echo "no fleet state"
           cp /tmp/fleet-console.log "$OUT/fleet-console.log" || echo "no fleet console log"
-          for name in logcat-all logcat-autobrief; do
+          timeout 20 sudo dmesg -T | grep -i -E "oom|killed process|out of memory" > "$OUT/host-oom.txt" || echo "no host memory kill in dmesg" > "$OUT/host-oom.txt"
+          for name in logcat-all logcat-autobrief host-mem; do
             if [ -f "/tmp/$name.pid" ]; then kill -- "-$(cat "/tmp/$name.pid")" 2>/dev/null || true; fi
           done
 
