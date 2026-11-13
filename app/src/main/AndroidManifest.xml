@@ -15,6 +15,8 @@
     <!-- Pleos FusedLocation: the car's own position when navigation has no fresh one (asked once, at the first launch;
          optional): read by the monitor service only while it runs, positions are compared with places and dropped -->
     <uses-permission android:name="pleos.car.permission.FUSED_LOCATION" />
+    <!-- Pleos TextToSpeech: the parked screen's one line is also spoken when a trip closes (on-device, no network) -->
+    <uses-permission android:name="pleos.car.permission.TTS_SERVICE" />
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
