@@ -42,6 +42,8 @@ jobs:
         run: |
           df -h /
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:?}/CodeQL"
+          # room for the 4 GB swap file below as well as the AVD's 7.4 GB userdata partition (/mnt is the same disk)
+          sudo rm -rf /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell
           df -h /
 
       - name: Enable KVM
@@ -64,14 +66,13 @@ jobs:
       - name: Add swap for the emulator and the browser
         # the runner has 7 GB and 2 GB of swap: the emulator's 4 GB guest, the Speech Service it runs and headless Chrome
         # together went past it twice on 11-14 (the emulator vanished mid-scene); host-mem.txt below shows the peak
-        # on the runner's temp disk (/mnt): the root disk keeps its room for the AVD's 7.4 GB userdata partition
         run: |
-          df -h / /mnt
-          sudo fallocate -l 4G /mnt/swapfile-rehearsal
-          sudo chmod 600 /mnt/swapfile-rehearsal
-          sudo mkswap /mnt/swapfile-rehearsal
-          sudo swapon /mnt/swapfile-rehearsal
+          sudo fallocate -l 4G /swapfile-rehearsal
+          sudo chmod 600 /swapfile-rehearsal
+          sudo mkswap /swapfile-rehearsal
+          sudo swapon /swapfile-rehearsal
           free -m
+          df -h /
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
