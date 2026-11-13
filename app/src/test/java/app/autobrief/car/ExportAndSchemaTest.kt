@@ -155,6 +155,8 @@ class GleoSchemaTest {
                 "android.permission.FOREGROUND_SERVICE_SPECIAL_USE", "android.permission.RECEIVE_BOOT_COMPLETED",
                 // Pleos FusedLocation: the car's position when navigation has no fresh one (optional, asked once)
                 "pleos.car.permission.FUSED_LOCATION",
+                // Pleos TextToSpeech: the trip line is spoken at parking
+                "pleos.car.permission.TTS_SERVICE",
             ),
             perms,
         )

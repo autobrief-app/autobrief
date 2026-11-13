@@ -2,7 +2,7 @@
   "packageName": "app.autobrief.car",
   "appDescription": "A business-car logbook that writes itself: it records the dashboard odometer at every ignition cycle, classifies commutes and client visits from the places the owner registered, and produces the National Tax Service vehicle logbook.",
   "invokeWord": "오토브리프",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "actionCalls": [
     {
       "type": "function",

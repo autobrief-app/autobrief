@@ -208,6 +208,13 @@ class AutoBriefCore private constructor(
     /** Asked after every trip that closes; the vehicle source also reads the figures once when it connects. */
     var energyControl: EnergyControl? = null
 
+    /** Says one line once a parked trip's purpose is settled (set by the monitor: Pleos TextToSpeech). */
+    fun interface SpeechControl {
+        fun say(text: String)
+    }
+
+    var speechControl: SpeechControl? = null
+
     /** A usable reading of the car's cumulative fuel economy (L/100 km) and when it arrived (epoch ms). */
     data class EconomyReading(val litersPer100Km: Double, val atMs: Long)
 
@@ -763,6 +770,7 @@ class AutoBriefCore private constructor(
         if (_settings.value.familyNext) writeSettings(_settings.value.copy(familyNext = false))
         updateLocationPaused()
         logClosed(updated)
+        announce(updated)
         closeMonthIfDue()
     }
 
@@ -789,7 +797,14 @@ class AutoBriefCore private constructor(
         } else if (writeTrip) {
             logClosed(placed)
         }
+        announce(logbook.find(placed.id) ?: placed)
         closeMonthIfDue()
+    }
+
+    /** The parked screen's line, spoken: called once per trip, when the place rules have run (or family drive closed it). */
+    private fun announce(trip: TripRecord) {
+        val control = speechControl ?: return
+        TripAnnouncement.text(trip)?.let(control::say)
     }
 
     private fun logClosed(r: TripRecord) {

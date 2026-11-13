@@ -16,6 +16,7 @@ import app.autobrief.car.domain.AutoBriefCore
 import app.autobrief.car.domain.VehicleEvent
 import app.autobrief.car.model.Gear
 import app.autobrief.car.navi.PleosNaviSource
+import app.autobrief.car.notify.PleosSpeaker
 import app.autobrief.car.notify.WebhookSender
 import app.autobrief.car.vehicle.CarServices
 import app.autobrief.car.vehicle.PleosFusedLocationSource
@@ -51,6 +52,7 @@ class VehicleMonitorService : Service() {
     private lateinit var car: CarServices
     private lateinit var gps: PleosFusedLocationSource
     private lateinit var sender: WebhookSender
+    private lateinit var speaker: PleosSpeaker
     private lateinit var loops: MonitorLoops
 
     override fun onCreate() {
@@ -87,6 +89,10 @@ class VehicleMonitorService : Service() {
         c.naviControl = AutoBriefCore.NaviControl { navi.requestLocation() }
         // the car's fuel economy again after every trip (off the main thread, on the vehicle source's own)
         c.energyControl = AutoBriefCore.EnergyControl { vehicle.requestEnergy() }
+        // the parked screen's line, spoken through the Pleos TextToSpeech SDK when a trip's purpose is settled
+        speaker = PleosSpeaker(this)
+        // the core may settle a purpose from its tick loop: the speaker is touched on the main thread only
+        c.speechControl = AutoBriefCore.SpeechControl { line -> scope.launch { speaker.say(line) } }
         inputs.open(c)
         loops.start()
         scope.launch {
@@ -151,6 +157,8 @@ class VehicleMonitorService : Service() {
             core.setRestricted(null)
             core.naviControl = null
             core.energyControl = null
+            core.speechControl = null
+            speaker.release()
         }
         super.onDestroy()
     }

@@ -42,6 +42,8 @@ jobs:
         run: |
           df -h /
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:?}/CodeQL"
+          # room for the 4 GB swap file below as well as the AVD's 7.4 GB userdata partition (/mnt is the same disk)
+          sudo rm -rf /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell
           df -h /
 
       - name: Enable KVM
@@ -60,6 +62,17 @@ jobs:
           df -h /
           ls -l /dev/kvm
           google-chrome --version || echo "no google-chrome: the console screenshots will be missing"
+
+      - name: Add swap for the emulator and the browser
+        # the runner has 7 GB and 2 GB of swap: the emulator's 4 GB guest, the Speech Service it runs and headless Chrome
+        # together went past it twice on 11-14 (the emulator vanished mid-scene); host-mem.txt below shows the peak
+        run: |
+          sudo fallocate -l 4G /swapfile-rehearsal
+          sudo chmod 600 /swapfile-rehearsal
+          sudo mkswap /swapfile-rehearsal
+          sudo swapon /swapfile-rehearsal
+          free -m
+          df -h /
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -83,7 +96,8 @@ jobs:
 
       - name: Build the debug APK
         # the debug build carries the demo hooks (sample load, the Gleo relay); the release APK has none
-        run: ./gradlew --no-daemon assembleDebug
+        # in-process Kotlin compile: no compile daemon left holding memory while the emulator runs
+        run: ./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process assembleDebug
 
       - name: Start the fleet console
         run: |
@@ -108,6 +122,10 @@ jobs:
           setsid nohup bash -c 'while true; do adb wait-for-device logcat -v time -s AutoBriefLog:V AutoBriefVehicle:V AutoBriefNavi:V ActivityManager:I ActivityTaskManager:I; sleep 1; done' \
             > "$OUT/logcat-autobrief.txt" 2>&1 < /dev/null &
           echo $! > /tmp/logcat-autobrief.pid
+          # host memory every 15 s (free + the five largest processes), to tell a host kill from a guest hang
+          setsid nohup bash -c 'while true; do echo "== $(date -u +%T)"; free -m | sed -n 2,3p; ps -eo rss,comm --sort=-rss | head -6; sleep 15; done' \
+            > "$OUT/host-mem.txt" 2>&1 < /dev/null &
+          echo $! > /tmp/host-mem.pid
 
       - name: Boot the emulator and install the app
         run: >
@@ -144,31 +162,35 @@ jobs:
 
       - name: Collect the recording, logcat and console state
         if: always()
+        # a wedged emulator must not hold adb or curl until the job's limit: the upload step below has to run
+        timeout-minutes: 10
         run: |
           mkdir -p "$OUT"
           touch /tmp/stop-recording
-          adb shell pkill -SIGINT screenrecord || echo "screenrecord was not running"
+          timeout 20 adb shell pkill -SIGINT screenrecord || echo "screenrecord was not running"
           sleep 3
           for i in $(seq 1 24); do
-            adb pull "/sdcard/rehearsal-$i.mp4" "$OUT/rehearsal-$i.mp4" 2>/dev/null || break
+            timeout 120 adb pull "/sdcard/rehearsal-$i.mp4" "$OUT/rehearsal-$i.mp4" 2>/dev/null || break
           done
           ls "$OUT"/rehearsal-*.mp4 > /dev/null 2>&1 || echo "no screen recording to pull"
-          adb logcat -d > "$OUT/logcat.txt" || echo "no logcat to dump"
+          timeout 120 adb logcat -d > "$OUT/logcat.txt" || echo "no logcat to dump"
           {
-            echo "## am get-current-user"; adb shell am get-current-user
-            echo "## dumpsys activity activities (resumed)"; adb shell dumpsys activity activities | grep -E "ResumedActivity|topResumed"
-            echo "## app processes"; adb shell ps -A -o USER,PID,NAME | grep -E "autobrief|vehicle" || true
+            echo "## am get-current-user"; timeout 20 adb shell am get-current-user
+            echo "## dumpsys activity activities (resumed)"; timeout 20 adb shell dumpsys activity activities | grep -E "ResumedActivity|topResumed"
+            echo "## app processes"; timeout 20 adb shell ps -A -o USER,PID,NAME | grep -E "autobrief|vehicle" || true
             echo "## console archives (the workbooks '지금 보내기' sent)"; ls -l /tmp/fleet/archives/ || true
-            echo "## console /vehicle/state"; curl -s http://127.0.0.1:8088/vehicle/state; echo
+            echo "## console /vehicle/state"; curl -s --max-time 5 http://127.0.0.1:8088/vehicle/state; echo
           } > "$OUT/device-state-end.txt" 2>&1 || echo "device state incomplete"
-          curl -s http://127.0.0.1:8787/api/state > "$OUT/fleet_state.json" || echo "no fleet state"
+          curl -s --max-time 10 http://127.0.0.1:8787/api/state > "$OUT/fleet_state.json" || echo "no fleet state"
           cp /tmp/fleet-console.log "$OUT/fleet-console.log" || echo "no fleet console log"
-          for name in logcat-all logcat-autobrief; do
+          timeout 20 sudo dmesg -T | grep -i -E "oom|killed process|out of memory" > "$OUT/host-oom.txt" || echo "no host memory kill in dmesg" > "$OUT/host-oom.txt"
+          for name in logcat-all logcat-autobrief host-mem; do
             if [ -f "/tmp/$name.pid" ]; then kill -- "-$(cat "/tmp/$name.pid")" 2>/dev/null || true; fi
           done
 
       - name: Keep a bug report after a failure
         if: failure()
+        timeout-minutes: 7
         # An ANR's VM traces (every thread's stack when Android declared it) stay on the device: /data/anr is not
         # readable on this user build, but the bug report carries it (FS/data/anr/*) with the CPU and event log of that
         # moment. The zip is kept as it is; the traces are also unpacked so they can be read without it.
