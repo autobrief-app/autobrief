@@ -40,6 +40,10 @@
 
 ## 3. 테스트 환경과 설정
 
+- 심사 환경: 실제 차량은 필요하지 않습니다. 개발과 시험에 쓴 에뮬레이터는 **Pleos Connect v2.1.0**
+  (Android 14, API 34, Automotive 폼팩터, Pleos Connect v2.1.0 APIs 이미지)이고, 가상 기기 화면 규격은
+  **2560x1440 가로형, 160dpi**, RAM 4 GB, 콜드 부팅입니다(`demo/setup_emulator.py`가 만드는 가상 기기와 같은 설정).
+  앱 화면은 세로형 화면에서도 깨지지 않는지 화면 캡처 시험으로 확인합니다.
 - 단위 테스트: `./gradlew testDebugUnitTest` (기록 엔진, 해시 원장 위변조 감지, 장소 자동 분류, 절세 계산,
   엑셀 형식, Gleo 스키마, 시연 공간 분리, 월말 자동 마감, Robolectric 실행 시험, 화면 캡처)
 - 화면 캡처: `app/build/outputs/roborazzi/*.png` (2560x1440 차량 화면과 세로형 화면, 밤과 낮 테마)
