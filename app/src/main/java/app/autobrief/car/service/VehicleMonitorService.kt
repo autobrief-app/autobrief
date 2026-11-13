@@ -18,7 +18,7 @@ import app.autobrief.car.model.Gear
 import app.autobrief.car.navi.PleosNaviSource
 import app.autobrief.car.notify.WebhookSender
 import app.autobrief.car.vehicle.CarServices
-import app.autobrief.car.vehicle.PlatformLocationSource
+import app.autobrief.car.vehicle.PleosFusedLocationSource
 import app.autobrief.car.vehicle.PleosVehicleSource
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -49,12 +49,9 @@ class VehicleMonitorService : Service() {
     private lateinit var vehicle: PleosVehicleSource
     private lateinit var navi: PleosNaviSource
     private lateinit var car: CarServices
-    private lateinit var gps: PlatformLocationSource
+    private lateinit var gps: PleosFusedLocationSource
     private lateinit var sender: WebhookSender
     private lateinit var loops: MonitorLoops
-
-    /** Running as a foreground service of the location type, which keeps GNSS fixes coming while navigation is in front. */
-    private var locationForeground = false
 
     override fun onCreate() {
         super.onCreate()
@@ -70,7 +67,7 @@ class VehicleMonitorService : Service() {
             }
         })
         car = CarServices(this) { r -> dispatch("driving restrictions") { it.setRestricted(r) } }
-        gps = PlatformLocationSource(this) { fix -> dispatch("gnss fix") { it.onPlatformFix(fix) } }
+        gps = PleosFusedLocationSource(this) { fix -> dispatch("gnss fix") { it.onPlatformFix(fix) } }
         // no position is asked for until the logbook is read: 가족 운행 may be on (see attach)
         navi.setLocationPaused(true)
         gps.setPaused(true)
@@ -134,12 +131,8 @@ class VehicleMonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // the location permission may have been granted since the service started, or the service was started in the
-        // background (boot, app update) and could not take the location type then: MainActivity starts it again
-        if (PlatformLocationSource.permitted(this)) {
-            if (!locationForeground) startAsForeground()
-            gps.start()
-        }
+        // the FusedLocation permission may have been granted since the service started: MainActivity starts it again
+        if (PleosFusedLocationSource.permitted(this)) gps.start()
         if (intent?.action == ACTION_FLUSH) loops.requestFlush()
         return START_STICKY
     }
@@ -171,23 +164,12 @@ class VehicleMonitorService : Service() {
             .setContentText(getString(R.string.monitor_text))
             .setOngoing(true)
             .build()
+        // special use only: the car's position comes from the Pleos FusedLocation Service over its SDK binding, not from
+        // Android's location providers, so the service needs no location type (nor Android's location permissions)
         if (Build.VERSION.SDK_INT >= 34) {
-            // the location type keeps the GNSS fixes coming while navigation is in front
-            val types = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
-                if (PlatformLocationSource.permitted(this)) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
-            locationForeground = try {
-                startForeground(NOTIFICATION_ID, notification, types)
-                types and ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION != 0
-            } catch (e: SecurityException) {
-                // Android 14 refuses the location type to a service started in the background (boot, app update):
-                // it gets no GNSS fixes while the app is not in front, until the app is opened and starts it again
-                Log.w(TAG, "foreground without location: ${e.message}")
-                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-                false
-            }
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
-            startForeground(NOTIFICATION_ID, notification) // the manifest's types
-            locationForeground = true
+            startForeground(NOTIFICATION_ID, notification) // the manifest's type
         }
     }
 

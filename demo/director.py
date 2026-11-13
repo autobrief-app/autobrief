@@ -96,7 +96,8 @@ POSITION_WAIT_DRIVING_S = 30.0
 # only while it is on screen (it shares the home's one driver slot with AutoBrief). The director
 # shows the map while the app has a position to learn and AutoBrief when the trip opens and closes.
 # On the emulator image the map never follows the injected GPS at all; the app then takes the
-# platform GPS fix (LocationManager, every 5 s, granted by `install -g`), which does follow it,
+# car's own position from the Pleos FusedLocation SDK (at most every 5 s, granted by `install -g`),
+# which does follow it,
 # and logs `POSITION place=<label> source=gps`.
 NAV_PACKAGE = "ai.umos.maps.android.navigation.app"
 NAV_SHOW_WAIT_S = 30.0

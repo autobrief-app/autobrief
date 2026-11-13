@@ -1,6 +1,5 @@
 package app.autobrief.car.ui
 
-import android.Manifest
 import android.app.AlertDialog
 import android.os.Bundle
 import android.os.Handler
@@ -12,7 +11,7 @@ import androidx.compose.runtime.mutableStateOf
 import app.autobrief.car.R
 import app.autobrief.car.autoBrief
 import app.autobrief.car.service.VehicleMonitorService
-import app.autobrief.car.vehicle.PlatformLocationSource
+import app.autobrief.car.vehicle.PleosFusedLocationSource
 
 class MainActivity : ComponentActivity() {
 
@@ -78,7 +77,7 @@ class MainActivity : ComponentActivity() {
      * from navigation's position alone.
      */
     private fun askLocationOnce() {
-        if (PlatformLocationSource.permitted(this)) return
+        if (PleosFusedLocationSource.permitted(this)) return
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         if (prefs.getBoolean(KEY_LOCATION_ASKED, false)) return
         prefs.edit().putBoolean(KEY_LOCATION_ASKED, true).apply()
@@ -86,7 +85,7 @@ class MainActivity : ComponentActivity() {
             .setTitle(R.string.location_title)
             .setMessage(R.string.location_rationale)
             .setPositiveButton(R.string.location_continue) { _, _ ->
-                askLocation.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                askLocation.launch(arrayOf(PleosFusedLocationSource.PERMISSION))
             }
             .setNegativeButton(R.string.location_later, null)
             .show()

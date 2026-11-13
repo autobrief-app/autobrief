@@ -42,7 +42,7 @@ sealed interface NaviEvent {
 data class NaviBookmark(val kind: PlaceKind, val name: String, val point: GeoPoint)
 
 /**
- * A fix from the car's own GNSS (Android LocationManager), used when navigation has no fresh position: [epochMs] is
- * when the fix was taken, [accuracyM] its horizontal accuracy when the platform knows it. Kept in memory only.
+ * A fix from the car's own position (Pleos FusedLocation SDK), used when navigation has no fresh position: [epochMs] is
+ * when the fix was taken, [accuracyM] its horizontal accuracy when the source documents one (FusedLocation does not: null). Kept in memory only.
  */
 data class PlatformFix(val point: GeoPoint, val epochMs: Long, val accuracyM: Float? = null)

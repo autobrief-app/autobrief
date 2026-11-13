@@ -605,7 +605,7 @@ class AutoBriefCore private constructor(
     }
 
     /**
-     * A fix from the car's own GNSS (PlatformLocationSource). Only a usable one counts: real coordinates, not (0, 0),
+     * A fix from the car's own position (PleosFusedLocationSource). Only a usable one counts: real coordinates, not (0, 0),
      * and precise enough to tell places apart. Like navigation's position it stays in memory.
      */
     fun onPlatformFix(fix: PlatformFix) {

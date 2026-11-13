@@ -1792,7 +1792,7 @@ def quiet_emulator_navigation(adb: Adb, user: int) -> None:
     shell's MANAGE_APPOPS grant prevents both IGnss::startSvStatus and the Datatransport job ANR,
     while extending ActivityManager's cached-idle kill window to 2 hours prevents OomAdjuster
     from killing the background-restricted process after 10 minutes (CI run 41387159188), leaving
-    AutoBrief's own PlatformLocationSource (app.autobrief.car) untouched.
+    AutoBrief's own PleosFusedLocationSource (app.autobrief.car) untouched.
     """
     for op in NAV_UID_OPS:
         try:

@@ -12,8 +12,8 @@ android {
         applicationId = "app.autobrief.car"
         minSdk = 28
         targetSdk = 34
-        versionCode = 7
-        versionName = "2.0.0"
+        versionCode = 8
+        versionName = "2.0.1"
     }
 
     // AAOS car API (CarUxRestrictionsManager for the driving layout)
@@ -75,6 +75,7 @@ android {
 dependencies {
     implementation("ai.pleos.playground:Vehicle:2.3.2")
     implementation("ai.pleos.playground:NaviHelper:3.0.5")
+    implementation("ai.pleos.playground:FusedLocation:1.1.3")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.02.02")
     implementation(composeBom)

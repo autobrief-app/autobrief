@@ -21,7 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Where the car is: NaviHelper's position when it is fresh, else the car's own GNSS (LocationManager). On the Pleos
+ * Where the car is: NaviHelper's position when it is fresh, else the car's own position (Pleos FusedLocation). On the Pleos
  * Connect emulator NaviHelper answers every request at once with a position that never moves (CI run 40278245470:
  * 37.4127, 127.0947, 2.5 km from the demo office), while the platform GNSS follows the injected fixes.
  */
