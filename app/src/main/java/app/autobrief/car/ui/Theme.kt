@@ -21,7 +21,6 @@ import app.autobrief.car.R
 
 /** Bundled Pretendard (SIL OFL 1.1, unmodified; licence in assets/licenses). */
 val Pretendard = FontFamily(
-    Font(R.font.pretendard_extralight, FontWeight.ExtraLight),
     Font(R.font.pretendard_light, FontWeight.Light),
     Font(R.font.pretendard_regular, FontWeight.Normal),
     Font(R.font.pretendard_medium, FontWeight.Medium),
@@ -29,9 +28,9 @@ val Pretendard = FontFamily(
     Font(R.font.pretendard_bold, FontWeight.Bold),
 )
 
-// The look the app shipped with (v2.0.1). Every text colour keeps WCAG 4.5:1 (AA) on background, surface, surfaceVariant
+// The look up to v2.0.1. Every text colour keeps WCAG 4.5:1 (AA) on background, surface, surfaceVariant
 // and on its own tint.
-internal val CurrentNight = ColorRoles(
+private val CurrentNight = ColorRoles(
     background = Color(0xFF0A0C10), surface = Color(0xFF11151C), surfaceVariant = Color(0xFF181E27), surfaceRaised = Color(0xFF11151C),
     outline = Color(0xFF252E3D), hairline = Color(0xFF252E3D).copy(alpha = 0.45f),
     textPrimary = Color(0xFFF2F5F9), textSecondary = Color(0xFF9AA6B8), textTertiary = Color(0xFF9AA6B8),
@@ -43,7 +42,7 @@ internal val CurrentNight = ColorRoles(
     tintAlpha = 0.16f, emphasisBorderAlpha = 0.55f, chipBorderAlpha = 0.45f, tonalBorderAlpha = 0.65f, outlinedFillAlpha = 0.5f,
 )
 
-internal val CurrentDay = ColorRoles(
+private val CurrentDay = ColorRoles(
     background = Color(0xFFF3F5F8), surface = Color(0xFFFFFFFF), surfaceVariant = Color(0xFFE8ECF2), surfaceRaised = Color(0xFFFFFFFF),
     outline = Color(0xFFCBD2DE), hairline = Color(0xFFCBD2DE).copy(alpha = 0.45f),
     textPrimary = Color(0xFF0E131B), textSecondary = Color(0xFF4A5568), textTertiary = Color(0xFF4A5568),
@@ -81,21 +80,15 @@ private val CurrentTokens = AutoBriefTokens(
 )
 
 /**
- * The design variants. The build picks one ([BUILD], from BuildConfig.THEME_VARIANT: `-Pautobrief.themeVariant=A`);
- * the screenshot test draws any of them by providing [LocalThemeVariant].
+ * The looks the app can be drawn in. The build picks one ([BUILD], from BuildConfig.THEME_VARIANT:
+ * `-Pautobrief.themeVariant=CURRENT`); the screenshot test draws any of them by providing [LocalThemeVariant].
  */
 enum class ThemeVariant(val tokens: AutoBriefTokens) {
-    /** The look the app shipped with. */
+    /** The look up to v2.0.1: bordered pills and boxes, purpose colours. */
     CURRENT(CurrentTokens),
 
-    /** Midnight navy and sand (ui/ThemeVariants.kt). */
-    A(VariantATokens),
-
-    /** White minimal and deep navy. */
-    B(VariantBTokens),
-
-    /** Glass HUD. */
-    C(VariantCTokens);
+    /** The shipped look since v2.1.0: white plates on light grey, one deep-navy voice, the square pip (ui/ThemeVariants.kt). */
+    B(VariantBTokens);
 
     companion object {
         /** The variant this build draws with. */

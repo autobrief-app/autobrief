@@ -74,13 +74,15 @@ fun HomeScreen(core: AutoBriefCore, wide: Boolean, vehicleStalled: Boolean, onOp
         // an employee's own car used for work: the fuel reimbursement replaces the company car's tax meter
         if (settings.carUse == CarUse.OWN) FuelCard(core, TaxPeriods.month(YearMonth.from(today)), "유류비 정산", onOpen) else TaxCard(core, onOpen)
     }
+    // QUIET: more air between the cards
+    val gap = if (AutoBriefTheme.quiet) 32.dp else 24.dp
     if (wide) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(28.dp)) {
-            Column(Modifier.weight(1.3f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(24.dp)) { main() }
-            Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(24.dp)) { side() }
+            Column(Modifier.weight(1.3f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(gap)) { main() }
+            Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(gap)) { side() }
         }
     } else {
-        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(gap)) {
             main()
             side()
         }
@@ -308,7 +310,8 @@ private fun MonthCard(core: AutoBriefCore) {
     Panel {
         Muted("${month.monthValue}월 업무사용비율", Type.body)
         if (s.rowCount > 0) {
-            Txt(pct(s.businessUseRatio), Type.display, p.accent)
+            // QUIET: the ratio is the one large figure of the home screen
+            Txt(pct(s.businessUseRatio), if (AutoBriefTheme.quiet) Type.glance else Type.display, p.accent)
             PurposeBar(s)
             Txt("총 ${km1(s.totalKm)} km · ${s.rowCount}건 · 업무용(출퇴근 포함) ${km1(s.businessUseKm)} km", Type.body)
             Muted("자동 분류 ${s.autoCount}건 · 음성 ${s.voiceCount}건 · 미분류 ${s.unclassifiedCount}건" + if (s.gapRowCount > 0) " · 미기록 구간 ${s.gapRowCount}건" else "")

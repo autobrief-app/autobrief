@@ -12,15 +12,13 @@ android {
         applicationId = "app.autobrief.car"
         minSdk = 28
         targetSdk = 34
-        versionCode = 8
-        versionName = "2.0.1"
+        versionCode = 9
+        versionName = "2.1.0"
 
-        // The design variant the UI draws with (ui/Theme.kt ThemeVariant): -Pautobrief.themeVariant=A, default CURRENT
-        val themeVariant = (project.findProperty("autobrief.themeVariant") as String?) ?: "CURRENT"
-        require(themeVariant in setOf("CURRENT", "A", "B", "C")) { "autobrief.themeVariant is one of the ThemeVariant names, got $themeVariant" }
+        // The look the UI draws with (ui/Theme.kt ThemeVariant): B, or -Pautobrief.themeVariant=CURRENT for the look up to 2.0.1
+        val themeVariant = (project.findProperty("autobrief.themeVariant") as String?) ?: "B"
+        require(themeVariant in setOf("CURRENT", "B")) { "autobrief.themeVariant is one of the ThemeVariant names, got $themeVariant" }
         buildConfigField("String", "THEME_VARIANT", "\"$themeVariant\"")
-        // the design variants share one launcher icon (the pixel mark); CURRENT keeps the shipped one
-        manifestPlaceholders["appIcon"] = if (themeVariant == "CURRENT") "@mipmap/ic_launcher" else "@mipmap/ic_launcher_pixel"
     }
 
     // AAOS car API (CarUxRestrictionsManager for the driving layout)
@@ -75,7 +73,7 @@ android {
             // Roborazzi writes the screen images (build/outputs/roborazzi) that the UI review reads
             it.systemProperty("roborazzi.test.record", "true")
             // the variants ScreenshotTest also draws the key screens in (build/outputs/roborazzi/<VARIANT>/):
-            // -Pautobrief.variants=CURRENT,A or =all; empty = the build's own variant
+            // -Pautobrief.variants=CURRENT,B or =all; empty = the build's own variant
             it.systemProperty("autobrief.variants", (project.findProperty("autobrief.variants") as String?) ?: "")
             it.maxHeapSize = "4g"
         }

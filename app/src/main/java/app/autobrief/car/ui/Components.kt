@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.selection.toggleable
@@ -180,7 +181,12 @@ fun Txt(text: String, style: TextStyle = Type.body, color: Color = AutoBriefThem
 }
 
 @Composable
-fun Muted(text: String, style: TextStyle = Type.caption, color: Color = AutoBriefTheme.colors.textSecondary) = Txt(text, style, color)
+fun Muted(
+    text: String,
+    style: TextStyle = Type.caption,
+    // QUIET: explanations step back to the tertiary tone, so figures and titles lead
+    color: Color = if (AutoBriefTheme.quiet) AutoBriefTheme.colors.textTertiary else AutoBriefTheme.colors.textSecondary,
+) = Txt(text, style, color)
 
 /** An instrument status readout cell: the label in a frame decorated per [ChipStyle] (LEADING_BAR: a vertical indicator bar). */
 @Composable
@@ -323,7 +329,8 @@ fun BigButton(
     }
     Column(
         modifier
-            .heightIn(min = height)
+            // never narrower than the 76dp touch floor (the month arrows' glyph alone is narrower)
+            .sizeIn(minWidth = 76.dp, minHeight = height)
             .clip(shape)
             .background(bg)
             .then(borderMod)
