@@ -1,5 +1,6 @@
 package app.autobrief.car
 
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
@@ -11,7 +12,9 @@ import app.autobrief.car.model.CarUse
 import app.autobrief.car.model.Gear
 import app.autobrief.car.model.GeoPoint
 import app.autobrief.car.ui.AutoBriefScreen
+import app.autobrief.car.ui.LocalThemeVariant
 import app.autobrief.car.ui.Tab
+import app.autobrief.car.ui.ThemeVariant
 import app.autobrief.car.ui.VEHICLE_WAIT_MS
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.Rule
@@ -26,6 +29,7 @@ import java.time.LocalDate
  * Renders the real Compose screens on a car-display-sized canvas (2560x1440 at 160 dpi, the Pleos Connect
  * emulator's display) and a portrait form factor, from a core driven by the same events the car sends.
  * The images (build/outputs/roborazzi) are reviewed by eye; the test fails only if a screen cannot render.
+ * The key screens are also drawn in each design variant of [variants], night and day, into build/outputs/roborazzi/<VARIANT>/.
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -50,15 +54,41 @@ class ScreenshotTest {
         return h
     }
 
-    /** [waitMs]: screen time to let pass before the shot (the test clock, so on-screen timers fire). */
-    private fun shoot(core: AutoBriefCore, tab: Tab, name: String, night: Boolean = true, waitMs: Long = 0) {
-        compose.setContent { AutoBriefScreen(core, mutableStateOf(tab), onFlush = {}, night = night) }
+    /** The variants the key screens are drawn in: -Pautobrief.variants=CURRENT,A (or =all); unset, the build's own. */
+    private val variants: List<ThemeVariant> = System.getProperty("autobrief.variants").orEmpty().trim().let { prop ->
+        when {
+            prop.isEmpty() -> listOf(ThemeVariant.BUILD)
+            prop.equals("all", ignoreCase = true) -> ThemeVariant.values().toList()
+            else -> prop.split(',').map { ThemeVariant.valueOf(it.trim().uppercase()) }
+        }
+    }
+
+    /**
+     * [waitMs]: screen time to let pass before the shot (the test clock, so on-screen timers fire). [inVariants]: a key screen,
+     * then also drawn in every [variants] entry, night and day, by switching the theme of the same composition.
+     */
+    private fun shoot(core: AutoBriefCore, tab: Tab, name: String, night: Boolean = true, waitMs: Long = 0, inVariants: Boolean = false) {
+        val look = mutableStateOf(ThemeVariant.BUILD to night)
+        val tabState = mutableStateOf(tab)
+        compose.setContent {
+            CompositionLocalProvider(LocalThemeVariant provides look.value.first) {
+                AutoBriefScreen(core, tabState, onFlush = {}, night = look.value.second)
+            }
+        }
         compose.waitForIdle()
         if (waitMs > 0) {
             compose.mainClock.advanceTimeBy(waitMs)
             compose.waitForIdle()
         }
         compose.onRoot().captureRoboImage("build/outputs/roborazzi/$name.png")
+        if (!inVariants) return
+        for (variant in variants) {
+            for (n in listOf(true, false)) {
+                look.value = variant to n
+                compose.waitForIdle()
+                compose.onRoot().captureRoboImage("build/outputs/roborazzi/${variant.name}/${name}_${if (n) "night" else "day"}.png")
+            }
+        }
     }
 
     @Test fun homeReady() = shoot(demoHarness().core, Tab.HOME, "01_home_ready")
@@ -68,7 +98,7 @@ class ScreenshotTest {
         val h = demoHarness()
         h.core.onNavi(NaviEvent.RouteStarted("회사", 1_200))
         h.advance(60_000); h.gear(Gear.DRIVE)
-        shoot(h.core, Tab.HOME, "02_home_trip_in_progress")
+        shoot(h.core, Tab.HOME, "02_home_trip_in_progress", inVariants = true)
     }
 
     @Test fun drivingRestrictedView() {
@@ -76,7 +106,7 @@ class ScreenshotTest {
         h.core.onNavi(NaviEvent.RouteStarted("회사", 1_200))
         h.advance(60_000); h.gear(Gear.DRIVE); h.advance(12 * 60_000); h.odo(45_212.0)
         h.core.setRestricted(true)
-        shoot(h.core, Tab.HOME, "03_driving_restricted")
+        shoot(h.core, Tab.HOME, "03_driving_restricted", inVariants = true)
     }
 
     private fun commuted(): Harness {
@@ -86,7 +116,7 @@ class ScreenshotTest {
         return h
     }
 
-    @Test fun homeAutoCommute() = shoot(commuted().core, Tab.HOME, "04_home_auto_commute")
+    @Test fun homeAutoCommute() = shoot(commuted().core, Tab.HOME, "04_home_auto_commute", inVariants = true)
 
     @Test fun homeAutoCommuteDay() = shoot(commuted().core, Tab.HOME, "05_home_auto_commute_day", night = false)
 
@@ -104,7 +134,7 @@ class ScreenshotTest {
     @Config(qualifiers = "w1200dp-h1920dp-xlarge-port-mdpi")
     @Test fun homeAskPurposePortrait() = shoot(unknownPlace().core, Tab.HOME, "07_home_ask_purpose_portrait")
 
-    @Test fun tripsList() = shoot(unknownPlace().core, Tab.TRIPS, "08_trips")
+    @Test fun tripsList() = shoot(unknownPlace().core, Tab.TRIPS, "08_trips", inVariants = true)
 
     /**
      * The report on the documents' sample day (DocsSample, 2026-10-23 23:06), so it shows the totals and code the text quotes,
@@ -115,7 +145,7 @@ class ScreenshotTest {
         h.core.onVehicle(VehicleEvent.Connection(true))
         h.core.onNavi(NaviEvent.Ready(true))
         h.core.markDeliveries(h.core.outbox.value.map { AutoBriefCore.Delivery(it.key, delivered = true, error = null) })
-        shoot(h.core, Tab.REPORT, "09_report")
+        shoot(h.core, Tab.REPORT, "09_report", inVariants = true)
     }
 
     @Test fun settings() {
@@ -129,7 +159,7 @@ class ScreenshotTest {
                 ),
             ),
         )
-        shoot(h.core, Tab.SETTINGS, "10_settings")
+        shoot(h.core, Tab.SETTINGS, "10_settings", inVariants = true)
     }
 
     @Test fun liveFirstRun() {

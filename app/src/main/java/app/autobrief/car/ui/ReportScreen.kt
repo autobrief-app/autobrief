@@ -42,7 +42,7 @@ private data class PeriodOption(val label: String, val range: ClosedRange<LocalD
 
 @Composable
 fun ReportScreen(core: AutoBriefCore, onFlush: () -> Unit) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     val trips by core.trips.collectAsState()
     val settings by core.settings.collectAsState()
     val check by core.integrity.collectAsState()
@@ -80,7 +80,7 @@ fun ReportScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                 ChipRow { options.forEachIndexed { i, o -> Choice(o.label, i == choice) { choice = i; core.dismissWorkbook() } } }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                     Panel(Modifier.weight(1.2f)) {
-                        Txt("업무용승용차 운행기록부", Type.title)
+                        Txt("업무용승용차 운행기록부", Type.headline)
                         Muted("$unit ${opt.range.start} ~ ${opt.range.endInclusive} · ${settings.entityName.ifBlank { "법인명 미입력" }} · ${settings.plateNumber.ifBlank { "등록번호 미입력" }}", Type.body)
                         Gap(4.dp)
                         FormRow("⑪ $unit 총주행 거리", "${km1(s.totalKm)} km")
@@ -107,24 +107,24 @@ fun ReportScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                             }
                         }
                         workbook?.let { w ->
-                            Txt(workbookMessage(w), Type.body, if (w is AutoBriefCore.WorkbookRequest.Failed) p.danger else p.accent)
+                            Txt(workbookMessage(w), Type.body, if (w is AutoBriefCore.WorkbookRequest.Failed) p.critical else p.accent)
                         }
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
-                        Panel(border = if (check.ok) null else p.danger) {
-                            Txt("기록 원장", Type.heading)
-                            Txt(if (check.ok) "정상" else "확인 필요", Type.hero, if (check.ok) p.ok else p.danger)
+                        Panel(border = if (check.ok) null else p.critical) {
+                            Txt("기록 원장", Type.title)
+                            Txt(if (check.ok) "정상" else "확인 필요", Type.display, if (check.ok) p.positive else p.critical)
                             KeyValue("검증 코드", check.code, strong = true)
                             KeyValue("원장 항목", "${check.entryCount}건")
                             if (check.ok) {
                                 Muted("계기판 값은 기록 뒤에 바꿀 수 없고, 목적을 고친 내역은 지우지 않고 남습니다. 엑셀의 '검증 기록' 시트와 회사 서버의 사본으로 대조할 수 있습니다.")
                             } else {
-                                check.problems.take(5).forEach { Txt("• $it", Type.body, p.danger) }
+                                check.problems.take(5).forEach { Txt("• $it", Type.body, p.critical) }
                             }
                         }
                         if (settings.carUse == CarUse.OWN) FuelCard(core, opt.range, "유류비 정산 ($unit ${opt.range.start} ~ ${opt.range.endInclusive})")
                         Panel {
-                            Txt("보내기 상태", Type.heading)
+                            Txt("보내기 상태", Type.title)
                             val pending = outbox.count { it.deliveredEpochMs == null }
                             val delivered = outbox.count { it.deliveredEpochMs != null }
                             KeyValue("보내기 주소", if (settings.archiveWebhookUrl.isBlank()) "미설정" else "설정됨")
@@ -160,16 +160,16 @@ private data class PreviewMetrics(val header: Dp, val row: Dp, val chrome: Dp)
 @Composable
 private fun previewMetrics(): PreviewMetrics = with(LocalDensity.current) {
     val header = Type.label.lineHeight.toDp() + 20.dp
-    val row = Type.small.lineHeight.toDp() + 16.dp
+    val row = Type.caption.lineHeight.toDp() + 16.dp
     // panel padding 2 x 28, the title, the header, the closing note and the panel's two 14dp gaps
-    PreviewMetrics(header, row, 56.dp + Type.heading.lineHeight.toDp() + header + Type.small.lineHeight.toDp() + 28.dp)
+    PreviewMetrics(header, row, 56.dp + Type.title.lineHeight.toDp() + header + Type.caption.lineHeight.toDp() + 28.dp)
 }
 
 @Composable
 private fun PreviewPanel(rows: List<TripRecord>, count: Int, m: PreviewMetrics) {
     val shown = rows.take(count)
     Panel {
-        Txt(if (shown.size < rows.size) "미리보기 (처음 ${shown.size}행)" else "미리보기 (${shown.size}행)", Type.heading)
+        Txt(if (shown.size < rows.size) "미리보기 (처음 ${shown.size}행)" else "미리보기 (${shown.size}행)", Type.title)
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             // stretch the form columns to the panel; on a narrow display keep their widths and scroll sideways
             val natural = PREVIEW_WIDTHS.fold(0.dp) { sum, w -> sum + w }
@@ -197,20 +197,21 @@ private fun previewCells(r: TripRecord): List<String> {
 
 @Composable
 private fun FormRow(label: String, value: String, strong: Boolean = false) {
-    val p = LocalPalette.current
-    val shape = RoundedCornerShape(8.dp)
+    val p = AutoBriefTheme.colors
+    val s = AutoBriefTheme.shape
+    val shape = RoundedCornerShape(s.cornerControl)
     Row(
         Modifier
             .fillMaxWidth()
             .clip(shape)
-            .background(p.panelHigh)
-            .border(1.dp, if (strong) p.accent.copy(alpha = 0.55f) else p.line, shape)
+            .background(p.surfaceVariant)
+            .border(s.strokeHairline, if (strong) p.accent.copy(alpha = p.emphasisBorderAlpha) else p.outline, shape)
             .padding(horizontal = 20.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Txt(label, Type.body)
         Spring()
-        Txt(value, if (strong) Type.title else Type.heading, if (strong) p.accent else p.text)
+        Txt(value, if (strong) Type.headline else Type.title, if (strong) p.accent else p.textPrimary)
     }
 }
 
@@ -220,15 +221,15 @@ private val PREVIEW_WIDTHS: List<Dp> = listOf(210.dp, 180.dp, 150.dp, 150.dp, 14
 
 @Composable
 private fun PreviewHeader(stretch: Float, height: Dp) {
-    val p = LocalPalette.current
-    Row(Modifier.height(height).background(p.panelHigh).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        PREVIEW_COLS.forEachIndexed { i, c -> Txt(c, Type.label, p.muted, Modifier.width(PREVIEW_WIDTHS[i] * stretch)) }
+    val p = AutoBriefTheme.colors
+    Row(Modifier.height(height).background(p.surfaceVariant).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        PREVIEW_COLS.forEachIndexed { i, c -> Txt(c, Type.label, p.textSecondary, Modifier.width(PREVIEW_WIDTHS[i] * stretch)) }
     }
 }
 
 @Composable
 private fun PreviewRow(cells: List<String>, stretch: Float, height: Dp) {
     Row(Modifier.height(height).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        cells.forEachIndexed { i, c -> Txt(c, Type.small, modifier = Modifier.width(PREVIEW_WIDTHS[i] * stretch)) }
+        cells.forEachIndexed { i, c -> Txt(c, Type.caption, modifier = Modifier.width(PREVIEW_WIDTHS[i] * stretch)) }
     }
 }

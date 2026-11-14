@@ -43,8 +43,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.autobrief.car.domain.AutoBriefCore
@@ -79,15 +77,15 @@ fun AutoBriefRoot(core: StateFlow<AutoBriefCore?>, tab: MutableState<Tab>, onFlu
 
 @Composable
 private fun Loading() {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     Column(
-        Modifier.fillMaxSize().background(p.bg),
+        Modifier.fillMaxSize().background(p.background),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         AppMark(96)
         Gap(28.dp)
-        Txt("불러오는 중", Type.title, p.muted)
+        Txt("불러오는 중", Type.headline, p.textSecondary)
     }
 }
 
@@ -123,7 +121,7 @@ fun rememberVehicleStalled(v: VehicleSnapshot): Boolean {
 
 @Composable
 private fun Root(core: AutoBriefCore, tab: MutableState<Tab>, restricted: Boolean, onFlush: () -> Unit) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     val v by core.vehicle.collectAsState()
     val vehicleStalled = rememberVehicleStalled(v)
     val wide = LocalConfiguration.current.screenWidthDp >= 1400
@@ -138,7 +136,7 @@ private fun Root(core: AutoBriefCore, tab: MutableState<Tab>, restricted: Boolea
             fieldWarmed = true
         }
     }
-    Box(Modifier.fillMaxSize().background(p.bg)) {
+    Box(Modifier.fillMaxSize().background(p.background)) {
         if (drivingLayout(restricted, v.gear)) {
             DrivingView(core)
             return@Box
@@ -156,7 +154,7 @@ private fun Root(core: AutoBriefCore, tab: MutableState<Tab>, restricted: Boolea
         }
         Row(Modifier.fillMaxSize()) {
             NavRail(tab)
-            Box(Modifier.fillMaxHeight().width(1.dp).background(p.line))
+            Box(Modifier.fillMaxHeight().width(AutoBriefTheme.shape.strokeHairline).background(p.outline))
             Column(Modifier.fillMaxSize().padding(start = 24.dp, end = 36.dp, top = 28.dp)) {
                 StatusBar(core)
                 Gap(20.dp)
@@ -175,9 +173,10 @@ private fun Root(core: AutoBriefCore, tab: MutableState<Tab>, restricted: Boolea
 
 @Composable
 private fun NavRail(tab: MutableState<Tab>) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
+    val s = AutoBriefTheme.shape
     Column(
-        Modifier.fillMaxHeight().width(152.dp).background(p.panel).padding(vertical = 28.dp, horizontal = 14.dp),
+        Modifier.fillMaxHeight().width(152.dp).background(p.surface).padding(vertical = 28.dp, horizontal = 14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -185,20 +184,20 @@ private fun NavRail(tab: MutableState<Tab>) {
         Gap(18.dp)
         Tab.values().forEach { t ->
             val selected = tab.value == t
-            val shape = RoundedCornerShape(10.dp)
+            val shape = RoundedCornerShape(s.cornerMedium)
             Column(
                 Modifier
                     .fillMaxWidth()
                     .clip(shape)
-                    .background(if (selected) p.accent.copy(alpha = p.tint) else p.panel)
-                    .border(1.dp, if (selected) p.accent.copy(alpha = 0.55f) else p.line.copy(alpha = 0.45f), shape)
+                    .background(if (selected) p.primary.copy(alpha = p.tintAlpha) else p.surface)
+                    .border(s.strokeHairline, if (selected) p.primary.copy(alpha = p.emphasisBorderAlpha) else p.hairline, shape)
                     .clickable(role = Role.Tab) { tab.value = t }
                     .padding(vertical = 18.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Icon(t.icon, contentDescription = null, tint = if (selected) p.accent else p.muted, modifier = Modifier.size(38.dp))
+                Icon(t.icon, contentDescription = null, tint = if (selected) p.primary else p.textSecondary, modifier = Modifier.size(38.dp))
                 Gap(6.dp)
-                Txt(t.label, Type.label, if (selected) p.accent else p.muted)
+                Txt(t.label, Type.label, if (selected) p.primary else p.textSecondary)
             }
         }
     }
@@ -207,19 +206,21 @@ private fun NavRail(tab: MutableState<Tab>) {
 /** The app mark drawn with layout only (no bitmap): an OEM cockpit odometer emblem. */
 @Composable
 fun AppMark(size: Int = 72) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
+    val s = AutoBriefTheme.shape
+    // the outer corner keeps the logo's proportion (a sixth of the mark) in every variant
     val outerShape = RoundedCornerShape((size / 6).dp)
-    val innerShape = RoundedCornerShape(6.dp)
+    val innerShape = RoundedCornerShape(s.cornerSmall)
     Box(
-        Modifier.size(size.dp).clip(outerShape).background(p.panelHigh).border(1.5.dp, p.accent, outerShape),
+        Modifier.size(size.dp).clip(outerShape).background(p.surfaceVariant).border(s.strokeEmphasis, p.accent, outerShape),
         contentAlignment = Alignment.Center,
     ) {
         Box(
-            Modifier.size((size * 0.66).dp, (size * 0.34).dp).clip(innerShape).background(p.bg).border(1.dp, p.line, innerShape),
+            Modifier.size((size * 0.66).dp, (size * 0.34).dp).clip(innerShape).background(p.background).border(s.strokeHairline, p.outline, innerShape),
             contentAlignment = Alignment.Center,
         ) {
             // a logo glyph scaled with the mark, not running text
-            Txt("km", TextStyle(fontFamily = Pretendard, fontWeight = FontWeight.Bold, fontSize = (size * 0.28).sp, lineHeight = (size * 0.28).sp), p.accent)
+            Txt("km", Type.display.copy(fontSize = (size * 0.28).sp, lineHeight = (size * 0.28).sp), p.accent)
         }
     }
 }
@@ -228,7 +229,7 @@ fun AppMark(size: Int = 72) {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun StatusBar(core: AutoBriefCore) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     val v by core.vehicle.collectAsState()
     val navi by core.navi.collectAsState()
     val position by core.positionSource.collectAsState()
@@ -236,16 +237,16 @@ private fun StatusBar(core: AutoBriefCore) {
     val check by core.integrity.collectAsState()
     val space by core.activeSpace.collectAsState()
     FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Txt("오토브리프", Type.title, modifier = Modifier.align(Alignment.CenterVertically).padding(end = 8.dp))
-        if (space == AutoBriefCore.Space.DEMO) StatusPill("시연 모드 · 가상 예시", p.pending, filled = true)
-        StatusPill(if (v.sdkConnected) "차량 연결됨" else "차량 연결 대기", if (v.sdkConnected) p.ok else p.pending)
+        Txt("오토브리프", Type.headline, modifier = Modifier.align(Alignment.CenterVertically).padding(end = 8.dp))
+        if (space == AutoBriefCore.Space.DEMO) StatusPill("시연 모드 · 가상 예시", p.warning, filled = true)
+        StatusPill(if (v.sdkConnected) "차량 연결됨" else "차량 연결 대기", if (v.sdkConnected) p.positive else p.warning)
         // a value the car has not sent yet is "being checked", with a muted dot, never a bare dash
-        if (v.gear == Gear.UNKNOWN) StatusPill("기어 확인 중", p.muted)
-        else StatusPill("기어 ${gearLabel(v.gear)}", if (v.gear == Gear.PARK) p.muted else p.accent)
-        StatusPill(v.odometerKm?.let { "계기판 ${km1(it)} km" } ?: "계기판 확인 중", if (v.odometerKm != null) p.commute else p.muted)
+        if (v.gear == Gear.UNKNOWN) StatusPill("기어 확인 중", p.textTertiary)
+        else StatusPill("기어 ${gearLabel(v.gear)}", if (v.gear == Gear.PARK) p.textTertiary else p.accent)
+        StatusPill(v.odometerKm?.let { "계기판 ${km1(it)} km" } ?: "계기판 확인 중", if (v.odometerKm != null) p.purposeCommute else p.textTertiary)
         // navigation's position, else the car's own GPS (the fallback when navigation does not follow the car)
         if (paused) {
-            StatusPill("위치 읽지 않음 (가족 운행)", p.personal, filled = true)
+            StatusPill("위치 읽지 않음 (가족 운행)", p.purposePersonal, filled = true)
         } else {
             StatusPill(
                 when (position) {
@@ -253,7 +254,7 @@ private fun StatusBar(core: AutoBriefCore) {
                     AutoBriefCore.PositionSource.GPS -> "차량 GPS 위치 받는 중"
                     null -> "위치 정보 없음"
                 },
-                if (position != null) p.ok else p.muted,
+                if (position != null) p.positive else p.textTertiary,
             )
             navi.destinationLabel?.let { dest ->
                 StatusPill("내비 목적지 · $dest", p.accent)
@@ -265,7 +266,7 @@ private fun StatusBar(core: AutoBriefCore) {
                 check.entryCount == 0 -> "기록 원장 준비됨"
                 else -> "원장 정상 · 검증 코드 ${check.code}"
             },
-            if (check.ok) p.ok else p.danger,
+            if (check.ok) p.positive else p.critical,
             filled = !check.ok,
         )
     }
@@ -282,13 +283,14 @@ fun gearLabel(g: Gear) = when (g) {
 /** While driving (out of P, or UX restrictions active): glanceable status only, no lists, no text entry, no voice tips. */
 @Composable
 fun DrivingView(core: AutoBriefCore) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     val open by core.openTrip.collectAsState()
     val v by core.vehicle.collectAsState()
     val navi by core.navi.collectAsState()
     val trips by core.trips.collectAsState()
-    val cardShape = RoundedCornerShape(16.dp)
-    val noteShape = RoundedCornerShape(10.dp)
+    val s = AutoBriefTheme.shape
+    val cardShape = RoundedCornerShape(s.cornerHero)
+    val noteShape = RoundedCornerShape(s.cornerMedium)
     Column(
         Modifier.fillMaxSize().padding(64.dp),
         verticalArrangement = Arrangement.Center,
@@ -297,9 +299,7 @@ fun DrivingView(core: AutoBriefCore) {
         Column(
             Modifier
                 .widthIn(min = 960.dp, max = 1280.dp)
-                .clip(cardShape)
-                .background(p.panel)
-                .border(1.dp, p.line, cardShape)
+                .cardFrame(cardShape)
                 .padding(horizontal = 64.dp, vertical = 48.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -308,28 +308,28 @@ fun DrivingView(core: AutoBriefCore) {
             val o = open
             if (o != null) {
                 if (o.family) {
-                    StatusPill(FAMILY_BADGE, p.personal, filled = true)
+                    StatusPill(FAMILY_BADGE, p.purposePersonal, filled = true)
                     Gap(16.dp)
                 } else if (navi.destinationLabel != null) {
-                    StatusPill("내비 목적지 연동 · ${navi.destinationLabel}", p.ok, filled = true)
+                    StatusPill("내비 목적지 연동 · ${navi.destinationLabel}", p.positive, filled = true)
                     Gap(16.dp)
                 }
-                Txt("운행 기록 중", Type.title, p.accent)
+                Txt("운행 기록 중", Type.headline, p.accent)
                 Gap(8.dp)
                 val delta = (v.odometerKm ?: o.startOdometerKm) - o.startOdometerKm
-                Txt("+${km1(delta)} km", Type.hero.copy(fontSize = Type.hero.fontSize * 1.6f, lineHeight = Type.hero.lineHeight * 1.6f))
-                Txt("출발 ${km1(o.startOdometerKm)} km" + (o.startPlace?.let { " · $it" } ?: "") + (navi.destinationLabel?.let { " → $it" } ?: "") + " · ${hm(o.startEpochMs)}", Type.body, p.muted)
+                Txt("+${km1(delta)} km", Type.glance)
+                Txt("출발 ${km1(o.startOdometerKm)} km" + (o.startPlace?.let { " · $it" } ?: "") + (navi.destinationLabel?.let { " → $it" } ?: "") + " · ${hm(o.startEpochMs)}", Type.body, p.textSecondary)
             } else {
-                Txt("주행 중에는 화면 조작을 줄였습니다", Type.title)
+                Txt("주행 중에는 화면 조작을 줄였습니다", Type.headline)
                 val month = core.summary(TaxPeriods.month(YearMonth.from(core.today())))
-                if (month.rowCount > 0 && trips.isNotEmpty()) Txt("이번 달 업무사용비율 ${pct(month.businessUseRatio)}", Type.heading, p.muted)
+                if (month.rowCount > 0 && trips.isNotEmpty()) Txt("이번 달 업무사용비율 ${pct(month.businessUseRatio)}", Type.title, p.textSecondary)
             }
             Gap(32.dp)
             Box(
                 Modifier
                     .clip(noteShape)
-                    .background(p.panelHigh)
-                    .border(1.dp, p.line, noteShape)
+                    .background(p.surfaceVariant)
+                    .border(s.strokeHairline, p.outline, noteShape)
                     .padding(horizontal = 36.dp, vertical = 20.dp),
             ) {
                 Txt(
@@ -338,8 +338,8 @@ fun DrivingView(core: AutoBriefCore) {
                         navi.destinationLabel != null -> "내비 목적지(${navi.destinationLabel}) 연동 중 · 도착 후 P에 두면 목적을 자동 기록합니다"
                         else -> "도착해서 P에 두면 목적을 여쭙니다"
                     },
-                    Type.heading,
-                    p.muted,
+                    Type.title,
+                    p.textSecondary,
                 )
             }
         }

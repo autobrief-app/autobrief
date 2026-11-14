@@ -32,7 +32,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.text
@@ -101,24 +103,40 @@ fun manwon(krw: Long): String {
 @Composable
 fun Panel(
     modifier: Modifier = Modifier,
-    color: Color = LocalPalette.current.panel,
+    color: Color? = null,
     border: Color? = null,
     padding: Dp = 28.dp,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    val p = LocalPalette.current
-    val shape = RoundedCornerShape(14.dp)
     Column(
         modifier
             .fillMaxWidth()
-            .clip(shape)
-            .background(color)
-            .border(if (border != null) 2.dp else 1.dp, border ?: p.line, shape)
+            .cardFrame(RoundedCornerShape(AutoBriefTheme.shape.cornerLarge), emphasis = border, fill = color)
             .padding(padding),
         verticalArrangement = Arrangement.spacedBy(14.dp),
         content = content,
     )
 }
+
+/**
+ * A card's frame in the active [CardStyle]. OUTLINE: the surface inside a hairline outline, or a strong stroke of an
+ * [emphasis] colour. ELEVATED: the raised surface on a shadow, stroked only in an [emphasis] colour. [fill] replaces the
+ * style's surface.
+ */
+@Composable
+fun Modifier.cardFrame(shape: Shape, emphasis: Color? = null, fill: Color? = null): Modifier {
+    val t = AutoBriefTheme.tokens
+    val p = AutoBriefTheme.colors
+    val s = t.shape
+    return when (t.cardStyle) {
+        CardStyle.OUTLINE ->
+            clip(shape).background(fill ?: p.surface).border(if (emphasis != null) s.strokeStrong else s.strokeHairline, emphasis ?: p.outline, shape)
+        CardStyle.ELEVATED -> shadow(t.cardElevation, shape).background(fill ?: p.surfaceRaised).edge(s.strokeStrong, emphasis, shape)
+    }
+}
+
+/** A border of [color], or none when [color] is null. */
+private fun Modifier.edge(width: Dp, color: Color?, shape: Shape): Modifier = if (color == null) this else border(width, color, shape)
 
 /**
  * Korean wraps between words, never between the syllables of one ("다/음 해로"): an invisible U+2060 WORD JOINER,
@@ -143,7 +161,7 @@ fun keepWords(text: String): String {
 }
 
 @Composable
-fun Txt(text: String, style: TextStyle = Type.body, color: Color = LocalPalette.current.text, modifier: Modifier = Modifier) {
+fun Txt(text: String, style: TextStyle = Type.body, color: Color = AutoBriefTheme.colors.textPrimary, modifier: Modifier = Modifier) {
     // the semantics carry the plain text, so TalkBack and tests read the words without the joiners
     Box(modifier.clearAndSetSemantics { this.text = AnnotatedString(text) }) {
         Text(remember(text) { keepWords(text) }, style = style, color = color)
@@ -151,43 +169,57 @@ fun Txt(text: String, style: TextStyle = Type.body, color: Color = LocalPalette.
 }
 
 @Composable
-fun Muted(text: String, style: TextStyle = Type.small) = Txt(text, style, LocalPalette.current.muted)
+fun Muted(text: String, style: TextStyle = Type.caption) = Txt(text, style, AutoBriefTheme.colors.textSecondary)
 
-/** An instrument status readout cell: vertical indicator bar + label inside a crisp architectural frame. */
+/** An instrument status readout cell: the label in a frame decorated per [ChipStyle] (LEADING_BAR: a vertical indicator bar). */
 @Composable
 fun StatusPill(label: String, color: Color, filled: Boolean = false) {
-    val p = LocalPalette.current
-    val shape = RoundedCornerShape(8.dp)
-    Row(
-        Modifier
-            .clip(shape)
-            .background(if (filled) color.copy(alpha = p.tint) else p.panel)
-            .border(1.dp, if (filled) color.copy(alpha = 0.55f) else p.line, shape)
-            .padding(horizontal = 16.dp, vertical = 9.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(width = 3.dp, height = 20.dp).clip(RoundedCornerShape(1.5.dp)).background(color))
-        Spacer(Modifier.width(10.dp))
-        Txt(label, Type.label, if (filled) color else p.text)
+    val p = AutoBriefTheme.colors
+    val text = if (filled) color else p.textPrimary
+    val look = when (AutoBriefTheme.tokens.chipStyle) {
+        ChipStyle.LEADING_BAR -> ChipLook(
+            fill = if (filled) color.copy(alpha = p.tintAlpha) else p.surface,
+            edge = if (filled) color.copy(alpha = p.emphasisBorderAlpha) else p.outline,
+            label = text,
+            bar = true,
+        )
+        ChipStyle.OUTLINE -> ChipLook(fill = Color.Transparent, edge = color, label = text, bar = false)
+        ChipStyle.FILLED_SUBTLE -> ChipLook(fill = color.copy(alpha = p.tintAlpha), edge = null, label = text, bar = false)
     }
+    ChipFrame(label, color, look, RoundedCornerShape(AutoBriefTheme.shape.cornerControl), padH = 16.dp, padV = 9.dp, barHeight = 20.dp, barGap = 10.dp)
 }
 
 @Composable
 fun PurposeChip(purpose: TripPurpose) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     val c = p.purpose(purpose)
-    val shape = RoundedCornerShape(6.dp)
+    val look = when (AutoBriefTheme.tokens.chipStyle) {
+        ChipStyle.LEADING_BAR -> ChipLook(fill = c.copy(alpha = p.tintAlpha), edge = c.copy(alpha = p.chipBorderAlpha), label = c, bar = true)
+        ChipStyle.OUTLINE -> ChipLook(fill = Color.Transparent, edge = c, label = c, bar = false)
+        ChipStyle.FILLED_SUBTLE -> ChipLook(fill = c.copy(alpha = p.tintAlpha), edge = null, label = c, bar = false)
+    }
+    ChipFrame(purpose.label, c, look, RoundedCornerShape(AutoBriefTheme.shape.cornerSmall), padH = 12.dp, padV = 5.dp, barHeight = 18.dp, barGap = 8.dp)
+}
+
+/** How a coloured chip draws: its fill, its border (null: none), its label colour and whether the leading bar shows. */
+private data class ChipLook(val fill: Color, val edge: Color?, val label: Color, val bar: Boolean)
+
+@Composable
+private fun ChipFrame(label: String, color: Color, look: ChipLook, shape: Shape, padH: Dp, padV: Dp, barHeight: Dp, barGap: Dp) {
+    val s = AutoBriefTheme.shape
     Row(
         Modifier
             .clip(shape)
-            .background(c.copy(alpha = p.tint))
-            .border(1.dp, c.copy(alpha = 0.45f), shape)
-            .padding(horizontal = 12.dp, vertical = 5.dp),
+            .background(look.fill)
+            .edge(s.strokeHairline, look.edge, shape)
+            .padding(horizontal = padH, vertical = padV),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(width = 3.dp, height = 18.dp).clip(RoundedCornerShape(1.5.dp)).background(c))
-        Spacer(Modifier.width(8.dp))
-        Txt(purpose.label, Type.label, c)
+        if (look.bar) {
+            Box(Modifier.size(width = s.indicatorWidth, height = barHeight).clip(RoundedCornerShape(s.indicatorWidth / 2)).background(color))
+            Spacer(Modifier.width(barGap))
+        }
+        Txt(label, Type.label, look.label)
     }
 }
 
@@ -196,8 +228,8 @@ fun PurposeChip(purpose: TripPurpose) {
 fun BigButton(
     label: String,
     modifier: Modifier = Modifier,
-    color: Color = LocalPalette.current.accent,
-    onColor: Color = LocalPalette.current.onAccent,
+    color: Color = AutoBriefTheme.colors.primary,
+    onColor: Color = AutoBriefTheme.colors.onPrimary,
     sub: String? = null,
     outlined: Boolean = false,
     tonal: Boolean = false,
@@ -205,30 +237,31 @@ fun BigButton(
     height: Dp = 96.dp,
     onClick: () -> Unit,
 ) {
-    val p = LocalPalette.current
-    val shape = RoundedCornerShape(10.dp)
+    val p = AutoBriefTheme.colors
+    val s = AutoBriefTheme.shape
+    val shape = RoundedCornerShape(s.cornerMedium)
     val bg = when {
-        !enabled -> p.panelHigh
-        tonal -> color.copy(alpha = p.tint)
-        outlined -> p.panelHigh.copy(alpha = 0.5f)
+        !enabled -> p.surfaceVariant
+        tonal -> color.copy(alpha = p.tintAlpha)
+        outlined -> p.surfaceVariant.copy(alpha = p.outlinedFillAlpha)
         else -> color
     }
     val fg = when {
-        !enabled -> p.muted
-        tonal -> p.text
+        !enabled -> p.textTertiary
+        tonal -> p.textPrimary
         outlined -> color
         else -> onColor
     }
     val subFg = when {
-        !enabled -> p.muted
+        !enabled -> p.textTertiary
         tonal -> color
         outlined -> color
         else -> onColor
     }
     val borderMod = when {
-        !enabled -> Modifier.border(1.dp, p.line, shape)
-        tonal -> Modifier.border(1.5.dp, color.copy(alpha = 0.65f), shape)
-        outlined -> Modifier.border(1.5.dp, color, shape)
+        !enabled -> Modifier.border(s.strokeHairline, p.outline, shape)
+        tonal -> Modifier.border(s.strokeEmphasis, color.copy(alpha = p.tonalBorderAlpha), shape)
+        outlined -> Modifier.border(s.strokeEmphasis, color, shape)
         else -> Modifier
     }
     Column(
@@ -242,56 +275,68 @@ fun BigButton(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Txt(label, Type.heading.copy(textAlign = TextAlign.Center), fg)
-        if (sub != null) Txt(sub, Type.small.copy(textAlign = TextAlign.Center), subFg)
+        Txt(label, Type.title.copy(textAlign = TextAlign.Center), fg)
+        if (sub != null) Txt(sub, Type.caption.copy(textAlign = TextAlign.Center), subFg)
     }
 }
 
-/** Selectable chip row item (period, user, tax bracket). */
+/** Selectable chip row item (period, user, tax bracket), decorated per [ChipStyle] (it never shows a leading bar). */
 @Composable
 fun Choice(label: String, selected: Boolean, onClick: () -> Unit) {
-    val p = LocalPalette.current
-    val shape = RoundedCornerShape(8.dp)
+    val p = AutoBriefTheme.colors
+    val s = AutoBriefTheme.shape
+    val shape = RoundedCornerShape(s.cornerControl)
+    val style = AutoBriefTheme.tokens.chipStyle
+    val fill = when {
+        style == ChipStyle.OUTLINE -> Color.Transparent
+        selected -> p.primary.copy(alpha = p.tintAlpha)
+        else -> p.chipBg
+    }
+    val edge = when {
+        style == ChipStyle.FILLED_SUBTLE -> null
+        selected -> p.primary
+        else -> p.outline
+    }
     Box(
         Modifier
             .heightIn(min = 76.dp)
             .clip(shape)
-            .background(if (selected) p.accent.copy(alpha = p.tint) else p.panelHigh)
-            .border(if (selected) 1.5.dp else 1.dp, if (selected) p.accent else p.line, shape)
+            .background(fill)
+            .edge(if (selected) s.strokeEmphasis else s.strokeHairline, edge, shape)
             .clickable(role = Role.RadioButton, onClick = onClick)
             .padding(horizontal = 22.dp, vertical = 12.dp),
         contentAlignment = Alignment.Center,
-    ) { Txt(label, Type.label, if (selected) p.accent else p.text) }
+    ) { Txt(label, Type.label, if (selected) p.primary else p.chipText) }
 }
 
 @Composable
 fun Field(label: String, value: String, modifier: Modifier = Modifier, numeric: Boolean = false, decimal: Boolean = false, onChange: (String) -> Unit) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     OutlinedTextField(
         value = value,
         onValueChange = onChange,
-        label = { Text(label, style = Type.small) },
+        label = { Text(label, style = Type.caption) },
         singleLine = true,
-        textStyle = Type.body.copy(color = p.text),
+        textStyle = Type.body.copy(color = p.textPrimary),
         keyboardOptions = when {
             decimal -> KeyboardOptions(keyboardType = KeyboardType.Decimal)
             numeric -> KeyboardOptions(keyboardType = KeyboardType.Number)
             else -> KeyboardOptions.Default
         },
         colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = p.accent, unfocusedBorderColor = p.line,
-            focusedLabelColor = p.accent, unfocusedLabelColor = p.muted, cursorColor = p.accent,
+            focusedBorderColor = p.primary, unfocusedBorderColor = p.outline,
+            focusedLabelColor = p.primary, unfocusedLabelColor = p.textSecondary, cursorColor = p.primary,
         ),
         modifier = modifier.heightIn(min = 76.dp),
     )
 }
 
 @Composable
-fun KeyValue(key: String, value: String, valueColor: Color = LocalPalette.current.text, strong: Boolean = false) {
+fun KeyValue(key: String, value: String, valueColor: Color = AutoBriefTheme.colors.textPrimary, strong: Boolean = false) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Muted(key, Type.body)
         Spacer(Modifier.weight(1f))
-        Txt(value, if (strong) Type.heading else Type.bodyBold, valueColor)
+        Txt(value, if (strong) Type.title else Type.bodyStrong, valueColor)
     }
 }
 
@@ -299,7 +344,7 @@ fun KeyValue(key: String, value: String, valueColor: Color = LocalPalette.curren
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PurposeBar(s: LogbookSummary, height: Dp = 22.dp) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     val parts = listOf(
         TripPurpose.COMMUTE to s.commuteKm,
         TripPurpose.BUSINESS to s.businessKm,
@@ -308,8 +353,9 @@ fun PurposeBar(s: LogbookSummary, height: Dp = 22.dp) {
         TripPurpose.UNLOGGED_GAP to s.gapKm,
     ).filter { it.second > 0.0 }
     val total = parts.sumOf { it.second }.takeIf { it > 0 } ?: 1.0
-    val barShape = RoundedCornerShape(6.dp)
-    Row(Modifier.fillMaxWidth().height(height).clip(barShape).background(p.panelHigh).border(1.dp, p.line, barShape)) {
+    val shapes = AutoBriefTheme.shape
+    val barShape = RoundedCornerShape(shapes.cornerSmall)
+    Row(Modifier.fillMaxWidth().height(height).clip(barShape).background(p.surfaceVariant).border(shapes.strokeHairline, p.outline, barShape)) {
         parts.forEach { (purpose, km) ->
             Box(Modifier.weight((km / total).toFloat().coerceAtLeast(0.004f)).fillMaxHeight().background(p.purpose(purpose)))
         }
@@ -317,9 +363,9 @@ fun PurposeBar(s: LogbookSummary, height: Dp = 22.dp) {
     FlowRow(horizontalArrangement = Arrangement.spacedBy(22.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         parts.forEach { (purpose, km) ->
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(width = 4.dp, height = 18.dp).clip(RoundedCornerShape(2.dp)).background(p.purpose(purpose)))
+                Box(Modifier.size(width = shapes.swatchWidth, height = 18.dp).clip(RoundedCornerShape(shapes.swatchWidth / 2)).background(p.purpose(purpose)))
                 Spacer(Modifier.width(8.dp))
-                Txt("${purpose.label} ${km1(km)} km", Type.small, p.muted)
+                Txt("${purpose.label} ${km1(km)} km", Type.caption, p.textSecondary)
             }
         }
     }
@@ -337,21 +383,22 @@ fun ChipRow(lead: String? = null, content: @Composable () -> Unit) {
 
 /** A switch whose whole 76dp row is the touch target; the Switch itself only shows the state. */
 @Composable
-fun ToggleRow(label: String, checked: Boolean, trackColor: Color = LocalPalette.current.accent, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
-    val p = LocalPalette.current
-    val shape = RoundedCornerShape(10.dp)
+fun ToggleRow(label: String, checked: Boolean, trackColor: Color = AutoBriefTheme.colors.primary, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
+    val p = AutoBriefTheme.colors
+    val s = AutoBriefTheme.shape
+    val shape = RoundedCornerShape(s.cornerMedium)
     Row(
         Modifier
             .fillMaxWidth()
             .heightIn(min = 76.dp)
             .clip(shape)
-            .background(p.panelHigh)
-            .border(1.dp, if (checked) trackColor.copy(alpha = 0.55f) else p.line, shape)
+            .background(p.surfaceVariant)
+            .border(s.strokeHairline, if (checked) trackColor.copy(alpha = p.emphasisBorderAlpha) else p.outline, shape)
             .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange)
             .padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Txt(label, Type.heading, modifier = Modifier.weight(1f))
+        Txt(label, Type.title, modifier = Modifier.weight(1f))
         Spacer(Modifier.width(16.dp))
         Switch(checked = checked, onCheckedChange = null, enabled = enabled, colors = SwitchDefaults.colors(checkedTrackColor = trackColor))
     }
@@ -377,11 +424,11 @@ fun PurposeButtons(
     height: Dp = 96.dp,
     onPick: (TripPurpose) -> Unit,
 ) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         PICKABLE_PURPOSES.forEach { purpose ->
             BigButton(
-                purpose.label, Modifier.weight(1f), color = p.purpose(purpose), onColor = p.bg, sub = purposeSub(purpose),
+                purpose.label, Modifier.weight(1f), color = p.purpose(purpose), onColor = p.background, sub = purposeSub(purpose),
                 outlined = outlined, tonal = !outlined, enabled = enabled, height = height,
             ) { onPick(purpose) }
         }

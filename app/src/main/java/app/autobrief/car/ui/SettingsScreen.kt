@@ -28,7 +28,7 @@ import app.autobrief.car.model.TaxRate
 
 @Composable
 fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     val settings by core.settings.collectAsState()
     val navi by core.navi.collectAsState()
     val space by core.activeSpace.collectAsState()
@@ -62,7 +62,7 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
                     Panel {
-                        Txt("운행기록부 머리글", Type.heading)
+                        Txt("운행기록부 머리글", Type.title)
                         Field("법인명(상호)", entity, Modifier.fillMaxWidth()) { entity = it }
                         Field("사업자등록번호", bizNo, Modifier.fillMaxWidth()) { bizNo = it }
                         Field("① 차종", model, Modifier.fillMaxWidth()) { model = it }
@@ -70,7 +70,7 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                         Field("사업연도 시작 월 (1~12)", fyStart, Modifier.fillMaxWidth(), numeric = true) { fyStart = it.filter(Char::isDigit).take(2) }
                     }
                     Panel {
-                        Txt("④ 사용자", Type.heading)
+                        Txt("④ 사용자", Type.title)
                         Muted("고른 사람이 기본값입니다. 자동 분류된 운행에도 이 사람이 들어갑니다.")
                         ChipRow { users.forEachIndexed { i, u -> Choice("${u.name}(${u.department})", i == defaultUser) { defaultUser = i } } }
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -83,7 +83,7 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                         }
                     }
                     Panel {
-                        Txt("연간 차량비용과 세율 (절세 효과 계산)", Type.heading)
+                        Txt("연간 차량비용과 세율 (절세 효과 계산)", Type.title)
                         Field("연간 차량 관련비용 (만원)", cost, Modifier.fillMaxWidth(), numeric = true) { cost = it.filter(Char::isDigit).take(6) }
                         Field("그중 감가상각비 또는 리스·렌트료의 감가상각비 상당액 (만원)", dep, Modifier.fillMaxWidth(), numeric = true) { dep = it.filter(Char::isDigit).take(6) }
                         Muted("관련비용 = 감가상각비(리스·렌트료), 유류비, 보험료, 수리비, 자동차세, 통행료 등. 세율은 지방소득세를 포함합니다.")
@@ -100,13 +100,13 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                         val home = navi.bookmarks.any { it.kind == PlaceKind.HOME }
                         val office = navi.bookmarks.any { it.kind == PlaceKind.OFFICE }
                         val clientBookmarks = navi.bookmarks.filter { it.kind == PlaceKind.CLIENT }
-                        KeyValue("내비 목적지 입력 연동", if (autoClassify) "자동 반영 켜짐" else "꺼짐", if (autoClassify) p.ok else p.muted)
-                        KeyValue("내비 즐겨찾기 집", if (home) "있음" else "없음", if (home) p.ok else p.muted)
-                        KeyValue("내비 즐겨찾기 회사", if (office) "있음" else "없음", if (office) p.ok else p.muted)
+                        KeyValue("내비 목적지 입력 연동", if (autoClassify) "자동 반영 켜짐" else "꺼짐", if (autoClassify) p.positive else p.textTertiary)
+                        KeyValue("내비 즐겨찾기 집", if (home) "있음" else "없음", if (home) p.positive else p.textTertiary)
+                        KeyValue("내비 즐겨찾기 회사", if (office) "있음" else "없음", if (office) p.positive else p.textTertiary)
                         if (clientBookmarks.isNotEmpty()) {
-                            KeyValue("내비 즐겨찾기 거래처", clientBookmarks.joinToString(", ") { it.name }, p.ok)
+                            KeyValue("내비 즐겨찾기 거래처", clientBookmarks.joinToString(", ") { it.name }, p.positive)
                         }
-                        if (navi.bookmarks.isEmpty() && settings.places.isEmpty()) Txt("등록한 장소가 없어 운행마다 목적을 여쭙니다", Type.body, p.pending)
+                        if (navi.bookmarks.isEmpty() && settings.places.isEmpty()) Txt("등록한 장소가 없어 운행마다 목적을 여쭙니다", Type.body, p.warning)
                         settings.places.forEach { place ->
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 val kindLabel = when (place.kind) { PlaceKind.HOME -> "집"; PlaceKind.OFFICE -> "회사"; PlaceKind.CLIENT -> "거래처" }
@@ -132,18 +132,18 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                         }
                     }
                     Panel {
-                        Txt("보내기 주소 (회사 서버)", Type.heading)
+                        Txt("보내기 주소 (회사 서버)", Type.title)
                         Field("https:// 로 시작하는 회사 서버 주소", webhook, Modifier.fillMaxWidth()) { webhook = it.trim() }
                         Muted("기록이 생길 때마다 원장 한 줄과 해시가 이 주소로 갑니다. 차 안의 기록을 나중에 고쳐도 회사 쪽 사본과 맞지 않아 드러납니다.")
                     }
                     Panel {
-                        Txt("관리자 PIN", Type.heading)
+                        Txt("관리자 PIN", Type.title)
                         Field("새 PIN 4~8자리 (바꿀 때만)", newPin, Modifier.fillMaxWidth(), numeric = true) { newPin = it.filter(Char::isDigit).take(8) }
                         if (core.adminPinSet) Field("현재 PIN (보내기 주소, PIN, 시연 모드를 바꿀 때)", currentPin, Modifier.fillMaxWidth(), numeric = true) { currentPin = it.filter(Char::isDigit).take(8) }
                     }
-                    Panel(border = if (space == AutoBriefCore.Space.DEMO) p.pending else null) {
+                    Panel(border = if (space == AutoBriefCore.Space.DEMO) p.warning else null) {
                         // the other space is read off the main thread: the controls wait until the change is made
-                        ToggleRow("시연 모드", space == AutoBriefCore.Space.DEMO, trackColor = p.pending, enabled = !changing) { on ->
+                        ToggleRow("시연 모드", space == AutoBriefCore.Space.DEMO, trackColor = p.warning, enabled = !changing) { on ->
                             val pin = currentPin.ifBlank { null }
                             changing = true
                             message = if (on) "시연 모드로 바꾸는 중…" else "실제 운행기록으로 돌아가는 중…"
@@ -164,7 +164,7 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                         Muted("시연 기록은 실제 운행기록부와 다른 저장 공간에 따로 남습니다. 시연 중 차량이 움직인 거리는 실제 기록부에 '미기록 구간(비업무)'으로 남습니다.")
                         if (space == AutoBriefCore.Space.DEMO) {
                             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                BigButton("가상 예시 이력 불러오기", Modifier.weight(1f), color = p.pending, onColor = p.bg, enabled = !changing, height = 76.dp) {
+                                BigButton("가상 예시 이력 불러오기", Modifier.weight(1f), color = p.warning, onColor = p.background, enabled = !changing, height = 76.dp) {
                                     val url = webhook.takeIf { AutoBriefCore.isAllowedEndpoint(it) } ?: ""
                                     changing = true
                                     message = "가상 예시 이력을 불러오는 중…"
@@ -178,7 +178,7 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                                         }
                                     }
                                 }
-                                BigButton("시연 기록 지우기", Modifier.weight(1f), outlined = true, color = p.danger, enabled = !changing, height = 76.dp) {
+                                BigButton("시연 기록 지우기", Modifier.weight(1f), outlined = true, color = p.critical, enabled = !changing, height = 76.dp) {
                                     changing = true
                                     core.launch {
                                         try {
@@ -197,7 +197,7 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
             Muted("오픈소스: AndroidX, Jetpack Compose, Kotlin, kotlinx.coroutines, kotlinx.serialization (Apache 2.0), Pretendard (SIL OFL 1.1). Pleos Connect SDK는 Pleos Playground 이용 조건을 따릅니다.")
             Gap(24.dp)
         }
-        Box(Modifier.fillMaxWidth().height(2.dp).background(p.line))
+        Box(Modifier.fillMaxWidth().height(AutoBriefTheme.shape.strokeStrong).background(p.outline))
         Row(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 20.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
             BigButton("저장", Modifier.fillMaxWidth(0.3f)) {
                 val next = settings.copy(
@@ -218,7 +218,7 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                 newPin = ""; currentPin = ""
                 onFlush()
             }
-            message?.let { Txt(it, Type.bodyBold, p.accent) }
+            message?.let { Txt(it, Type.bodyStrong, p.accent) }
         }
     }
 }

@@ -34,7 +34,7 @@ fun fuelLine(m: FuelReimbursement.Month, withCommute: Boolean, label: String = "
  */
 @Composable
 fun FuelCard(core: AutoBriefCore, period: ClosedRange<LocalDate>, title: String, onOpen: ((Tab) -> Unit)? = null) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     val trips by core.trips.collectAsState()
     val energy by core.energy.collectAsState()
     val settings by core.settings.collectAsState()
@@ -45,24 +45,24 @@ fun FuelCard(core: AutoBriefCore, period: ClosedRange<LocalDate>, title: String,
         Muted(title, Type.body)
         val missing = months.firstOrNull { it.result.missing != null }?.result?.missing
         when {
-            months.isEmpty() -> Txt("이 기간에는 정산할 달이 없습니다", Type.heading)
+            months.isEmpty() -> Txt("이 기간에는 정산할 달이 없습니다", Type.title)
             missing == FuelReimbursement.Missing.ECONOMY && core.electricOnly -> {
-                Txt("전기차 정산은 다음 버전", Type.heading)
+                Txt("전기차 정산은 다음 버전", Type.title)
                 Muted("차량이 전비(km/kWh)만 알려 줍니다. 충전 요금으로 정산하는 기능은 다음 버전에서 제공합니다.")
             }
             missing == FuelReimbursement.Missing.ECONOMY -> {
-                Txt("차량 연비 값을 받지 못했습니다", Type.heading)
+                Txt("차량 연비 값을 받지 못했습니다", Type.title)
                 Muted("차량이 누적 연비를 알려 주면 그 값으로 계산합니다. 그 전에는 직접 넣은 연비로 계산할 수 있습니다.")
                 onOpen?.let { open -> BigButton("연비 직접 입력(km/L)", outlined = true, height = 76.dp) { open(Tab.SETTINGS) } }
             }
             missing == FuelReimbursement.Missing.PRICE -> {
-                Txt("유가를 넣으면 계산합니다", Type.heading)
+                Txt("유가를 넣으면 계산합니다", Type.title)
                 Muted("설정의 유가(원/L)에 오피넷 지역 평균가를 넣으세요. 예: 1,650")
                 onOpen?.let { open -> BigButton("설정 열기", outlined = true, height = 76.dp) { open(Tab.SETTINGS) } }
             }
             else -> {
                 val total = months.sumOf { it.result.amountKrw ?: 0L }
-                Txt("${comma(total)}원", Type.hero, p.accent)
+                Txt("${comma(total)}원", Type.display, p.accent)
                 months.takeLast(3).forEach { m ->
                     Txt(fuelLine(m, withCommute, if (m.month == thisMonth) "이번 달" else "${m.month.year}년 ${m.month.monthValue}월"), Type.body)
                 }

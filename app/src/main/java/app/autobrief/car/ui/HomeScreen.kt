@@ -62,8 +62,8 @@ fun HomeScreen(core: AutoBriefCore, wide: Boolean, vehicleStalled: Boolean, onOp
     }
     val side: @Composable () -> Unit = {
         notice?.let { n ->
-            Panel(border = LocalPalette.current.accent) {
-                Txt(n.text, Type.bodyBold)
+            Panel(border = AutoBriefTheme.colors.accent) {
+                Txt(n.text, Type.bodyStrong)
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     BigButton("운행기록부 보기", Modifier.weight(1f), height = 76.dp) { core.dismissNotice(); onOpen(Tab.REPORT) }
                     BigButton("닫기", Modifier.weight(1f), outlined = true, height = 76.dp) { core.dismissNotice() }
@@ -90,9 +90,9 @@ fun HomeScreen(core: AutoBriefCore, wide: Boolean, vehicleStalled: Boolean, onOp
 /** First run on a real car: what to fill in, or a one-tap tour with the labelled fictional year. */
 @Composable
 private fun SetupCard(core: AutoBriefCore, onOpen: (Tab) -> Unit) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     Panel(border = p.accent) {
-        Txt("처음 쓰시나요?", Type.title)
+        Txt("처음 쓰시나요?", Type.headline)
         Muted("설정에서 법인명, 차종, 자동차등록번호, 사용자(부서와 성명)를 넣으면 그다음 운행부터 국세청 서식 운행기록부가 채워집니다.", Type.body)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             BigButton("설정 열기", Modifier.weight(1f)) { onOpen(Tab.SETTINGS) }
@@ -107,13 +107,13 @@ private fun SetupCard(core: AutoBriefCore, onOpen: (Tab) -> Unit) {
 /** Today's rows, newest first: the logbook visibly growing during a drive day. */
 @Composable
 private fun TodayCard(todays: List<TripRecord>) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     Panel {
-        Txt("오늘 운행 ${todays.size}건", Type.heading)
+        Txt("오늘 운행 ${todays.size}건", Type.title)
         todays.take(5).forEach { t ->
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Txt("${hm(t.startEpochMs)}~${hm(t.endEpochMs)}", Type.body, p.muted)
-                Txt("${km1(TripLogbook.printedKm(t))} km", Type.bodyBold)
+                Txt("${hm(t.startEpochMs)}~${hm(t.endEpochMs)}", Type.body, p.textSecondary)
+                Txt("${km1(TripLogbook.printedKm(t))} km", Type.bodyStrong)
                 PurposeChip(t.purpose)
                 Muted(
                     listOfNotNull(
@@ -134,20 +134,20 @@ private fun TodayCard(todays: List<TripRecord>) {
 
 @Composable
 private fun InProgressCard(core: AutoBriefCore) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     val open by core.openTrip.collectAsState()
     val v by core.vehicle.collectAsState()
     val navi by core.navi.collectAsState()
     val o = open ?: return
     val delta = (v.odometerKm ?: o.startOdometerKm) - o.startOdometerKm
-    Panel(border = if (o.family) p.personal else p.accent) {
+    Panel(border = if (o.family) p.purposePersonal else p.accent) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             StatusPill("운행 기록 중", p.accent, filled = true)
-            if (o.family) StatusPill(FAMILY_BADGE, p.personal, filled = true)
-            else if (navi.destinationLabel != null) StatusPill("내비 목적지 · ${navi.destinationLabel}", p.ok, filled = true)
+            if (o.family) StatusPill(FAMILY_BADGE, p.purposePersonal, filled = true)
+            else if (navi.destinationLabel != null) StatusPill("내비 목적지 · ${navi.destinationLabel}", p.positive, filled = true)
         }
-        Txt("+${km1(delta)} km", Type.hero)
-        Txt("출발 ${hm(o.startEpochMs)} · 계기판 ${km1(o.startOdometerKm)} km" + (o.startPlace?.let { " · $it" } ?: "") + (navi.destinationLabel?.let { " → $it" } ?: ""), Type.body, p.muted)
+        Txt("+${km1(delta)} km", Type.display)
+        Txt("출발 ${hm(o.startEpochMs)} · 계기판 ${km1(o.startOdometerKm)} km" + (o.startPlace?.let { " · $it" } ?: "") + (navi.destinationLabel?.let { " → $it" } ?: ""), Type.body, p.textSecondary)
         Muted(
             when {
                 o.family -> "도착해서 기어를 P로 바꾸면 거리만 비업무로 한 줄 남깁니다. 이번 운행은 위치를 읽지 않습니다."
@@ -168,10 +168,10 @@ const val FAMILY_BADGE = "가족 운행 중 (위치 기록 안 함)"
  */
 @Composable
 private fun FamilyCard(core: AutoBriefCore) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     val settings by core.settings.collectAsState()
-    Panel(border = if (settings.familyNext) p.personal else null) {
-        ToggleRow("다음 운행은 가족 운행", settings.familyNext, trackColor = p.personal) { on ->
+    Panel(border = if (settings.familyNext) p.purposePersonal else null) {
+        ToggleRow("다음 운행은 가족 운행", settings.familyNext, trackColor = p.purposePersonal) { on ->
             if (on) core.startFamilyDrive() else core.cancelFamilyDrive()
         }
         Muted("위치를 읽지 않고 거리만 비업무로 남깁니다", Type.body)
@@ -180,20 +180,20 @@ private fun FamilyCard(core: AutoBriefCore) {
 
 @Composable
 private fun AskPurposeCard(core: AutoBriefCore, trip: TripRecord) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     val settings by core.settings.collectAsState()
     var memo by remember(trip.id) { mutableStateOf("") }
     var userIndex by remember(trip.id) { mutableStateOf(settings.defaultUserIndex.coerceIn(0, (settings.users.size - 1).coerceAtLeast(0))) }
-    Panel(border = p.pending) {
-        StatusPill("방금 끝난 운행", p.pending, filled = true)
-        Txt("${km1(TripLogbook.printedKm(trip))} km 운행했습니다", Type.hero)
+    Panel(border = p.warning) {
+        StatusPill("방금 끝난 운행", p.warning, filled = true)
+        Txt("${km1(TripLogbook.printedKm(trip))} km 운행했습니다", Type.display)
         Txt(
             "${hm(trip.startEpochMs)}~${hm(trip.endEpochMs)} · 계기판 ${km1(trip.startOdometerKm)} → ${km1(trip.endOdometerKm)} km" +
                 (trip.endPlace?.let { " · 도착 $it" } ?: ""),
-            Type.body, p.muted,
+            Type.body, p.textSecondary,
         )
         Gap(4.dp)
-        Txt("이번 운행의 목적을 골라 주세요", Type.heading)
+        Txt("이번 운행의 목적을 골라 주세요", Type.title)
         PurposeButtons { purpose -> core.classifyTrip(trip.id, purpose, settings.users.getOrNull(userIndex), memo, ClassifiedBy.SCREEN) }
         if (settings.users.isNotEmpty()) {
             ChipRow(lead = "④ 사용자") {
@@ -207,7 +207,7 @@ private fun AskPurposeCard(core: AutoBriefCore, trip: TripRecord) {
 
 @Composable
 private fun AutoConfirmCard(core: AutoBriefCore, trip: TripRecord) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     var changing by remember(trip.id) { mutableStateOf(false) }
     var reason by remember(trip.id) { mutableStateOf<String?>(null) }
     val auto = trip.classifiedBy == ClassifiedBy.AUTO
@@ -221,7 +221,7 @@ private fun AutoConfirmCard(core: AutoBriefCore, trip: TripRecord) {
             p.purpose(trip.purpose),
             filled = true,
         )
-        Txt("${withRo(trip.purpose.label)} 기록했습니다", Type.title)
+        Txt("${withRo(trip.purpose.label)} 기록했습니다", Type.headline)
         Txt(
             listOfNotNull(
                 trip.autoReason,
@@ -229,7 +229,7 @@ private fun AutoConfirmCard(core: AutoBriefCore, trip: TripRecord) {
                 "${hm(trip.startEpochMs)}~${hm(trip.endEpochMs)}",
                 trip.user?.let { "${it.name}(${it.department})" },
             ).joinToString(" · "),
-            Type.body, p.muted,
+            Type.body, p.textSecondary,
         )
         if (!changing) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -237,7 +237,7 @@ private fun AutoConfirmCard(core: AutoBriefCore, trip: TripRecord) {
                 BigButton("바꾸기", Modifier.weight(1f), outlined = true) { changing = true }
             }
         } else {
-            Txt("고치는 이유", Type.bodyBold)
+            Txt("고치는 이유", Type.bodyStrong)
             ReasonChips(reason) { reason = it }
             PurposeButtons(enabled = reason != null) { purpose ->
                 reason?.let { why -> core.classifyTrip(trip.id, purpose, trip.user, trip.memo, ClassifiedBy.SCREEN, why) }
@@ -249,20 +249,20 @@ private fun AutoConfirmCard(core: AutoBriefCore, trip: TripRecord) {
 
 @Composable
 private fun ReadyCard(core: AutoBriefCore, last: TripRecord?, vehicleStalled: Boolean) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     val v by core.vehicle.collectAsState()
     val navi by core.navi.collectAsState()
     val ready = v.sdkConnected && v.gear != Gear.UNKNOWN && v.odometerKm != null
     Panel {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            StatusPill(if (ready) "기록 준비 완료" else "차량 연결을 기다리는 중", if (ready) p.ok else p.pending, filled = true)
+            StatusPill(if (ready) "기록 준비 완료" else "차량 연결을 기다리는 중", if (ready) p.positive else p.warning, filled = true)
             navi.destinationLabel?.let { dest ->
                 StatusPill("내비 목적지 연동 · $dest", p.accent, filled = true)
             }
         }
         Txt(
             if (vehicleStalled) "차량 정보를 기다리고 있습니다. 1분이 넘으면 앱을 다시 열어 주세요" else "시동을 걸고 기어를 D로 바꾸면 기록이 시작됩니다",
-            Type.title,
+            Type.headline,
         )
         Muted("내비게이션 목적지·즐겨찾기와 계기판 누적거리를 자동 연동합니다. 도착 후 P로 바꾸면 일일이 누르지 않아도 출퇴근·업무 목적이 자동 반영됩니다.", Type.body)
         if (last != null) {
@@ -281,7 +281,7 @@ private fun PendingCard(core: AutoBriefCore, pending: List<TripRecord>, onOpen: 
     val settings by core.settings.collectAsState()
     Panel {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Txt("목적을 정해야 할 운행 ${pending.size}건", Type.heading)
+            Txt("목적을 정해야 할 운행 ${pending.size}건", Type.title)
             Spring()
             Choice("전체 보기", false) { onOpen(Tab.TRIPS) }
         }
@@ -290,7 +290,7 @@ private fun PendingCard(core: AutoBriefCore, pending: List<TripRecord>, onOpen: 
         pending.take(3).forEach { t ->
             Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Txt("${mdhm(t.startEpochMs)} · ${km1(TripLogbook.printedKm(t))} km", Type.bodyBold)
+                    Txt("${mdhm(t.startEpochMs)} · ${km1(TripLogbook.printedKm(t))} km", Type.bodyStrong)
                     Muted("계기판 ${km1(t.startOdometerKm)} → ${km1(t.endOdometerKm)}")
                 }
                 PurposeButtons(outlined = true, height = 76.dp) { purpose -> core.classifyTrip(t.id, purpose, user, t.memo, ClassifiedBy.SCREEN) }
@@ -301,14 +301,14 @@ private fun PendingCard(core: AutoBriefCore, pending: List<TripRecord>, onOpen: 
 
 @Composable
 private fun MonthCard(core: AutoBriefCore) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     val trips by core.trips.collectAsState()
     val month = YearMonth.from(core.today())
     val s = remember(trips, month) { core.summary(TaxPeriods.month(month)) }
     Panel {
         Muted("${month.monthValue}월 업무사용비율", Type.body)
         if (s.rowCount > 0) {
-            Txt(pct(s.businessUseRatio), Type.hero, p.accent)
+            Txt(pct(s.businessUseRatio), Type.display, p.accent)
             PurposeBar(s)
             Txt("총 ${km1(s.totalKm)} km · ${s.rowCount}건 · 업무용(출퇴근 포함) ${km1(s.businessUseKm)} km", Type.body)
             Muted("자동 분류 ${s.autoCount}건 · 음성 ${s.voiceCount}건 · 미분류 ${s.unclassifiedCount}건" + if (s.gapRowCount > 0) " · 미기록 구간 ${s.gapRowCount}건" else "")
@@ -320,7 +320,7 @@ private fun MonthCard(core: AutoBriefCore) {
 
 @Composable
 private fun TaxCard(core: AutoBriefCore, onOpen: (Tab) -> Unit) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     val trips by core.trips.collectAsState()
     val settings by core.settings.collectAsState()
     val year = core.currentBusinessYear()
@@ -328,17 +328,17 @@ private fun TaxCard(core: AutoBriefCore, onOpen: (Tab) -> Unit) {
     Panel {
         Muted("올해 운행기록부 효과 (사업연도 ${year.start} ~ ${year.endInclusive})", Type.body)
         if (r == null) {
-            Txt("연간 차량비용을 넣으면 계산합니다", Type.heading)
+            Txt("연간 차량비용을 넣으면 계산합니다", Type.title)
             Muted("설정에서 감가상각비(리스·렌트료 포함), 유류비, 보험료, 수리비, 자동차세, 통행료 합계를 넣어 주세요.")
             BigButton("설정 열기", outlined = true, height = 76.dp) { onOpen(Tab.SETTINGS) }
             return@Panel
         }
         if (r.extraDeductibleKrw > 0) {
-            Txt("+${manwon(r.extraDeductibleKrw)}", Type.hero, p.ok)
-            Txt("비용으로 더 인정 · 세금 약 ${manwon(r.taxEffectKrw)} 줄어듦", Type.heading)
-            Muted("세율 ${String.format(java.util.Locale.ROOT, "%.1f", r.ratePct)}%(지방소득세 포함) 가정", Type.small)
+            Txt("+${manwon(r.extraDeductibleKrw)}", Type.display, p.positive)
+            Txt("비용으로 더 인정 · 세금 약 ${manwon(r.taxEffectKrw)} 줄어듦", Type.title)
+            Muted("세율 ${String.format(java.util.Locale.ROOT, "%.1f", r.ratePct)}%(지방소득세 포함) 가정", Type.caption)
         } else {
-            Txt("기록부 없이도 비용 인정이 같거나 큰 구간", Type.heading)
+            Txt("기록부 없이도 비용 인정이 같거나 큰 구간", Type.title)
             val cap = manwon(TaxBenefit.NO_LOGBOOK_CAP_KRW)
             Muted(
                 when {

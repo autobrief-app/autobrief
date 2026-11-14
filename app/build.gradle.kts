@@ -14,6 +14,11 @@ android {
         targetSdk = 34
         versionCode = 8
         versionName = "2.0.1"
+
+        // The design variant the UI draws with (ui/Theme.kt ThemeVariant): -Pautobrief.themeVariant=A, default CURRENT
+        val themeVariant = (project.findProperty("autobrief.themeVariant") as String?) ?: "CURRENT"
+        require(themeVariant in setOf("CURRENT", "A", "B", "C")) { "autobrief.themeVariant is one of the ThemeVariant names, got $themeVariant" }
+        buildConfigField("String", "THEME_VARIANT", "\"$themeVariant\"")
     }
 
     // AAOS car API (CarUxRestrictionsManager for the driving layout)
@@ -54,7 +59,7 @@ android {
 
     buildFeatures {
         compose = true
-        buildConfig = true // BuildConfig.DEBUG: place labels are logged by debug builds only
+        buildConfig = true // BuildConfig.DEBUG: place labels are logged by debug builds only; THEME_VARIANT
     }
 
     composeOptions {
@@ -67,6 +72,9 @@ android {
         unitTests.all {
             // Roborazzi writes the screen images (build/outputs/roborazzi) that the UI review reads
             it.systemProperty("roborazzi.test.record", "true")
+            // the variants ScreenshotTest also draws the key screens in (build/outputs/roborazzi/<VARIANT>/):
+            // -Pautobrief.variants=CURRENT,A or =all; empty = the build's own variant
+            it.systemProperty("autobrief.variants", (project.findProperty("autobrief.variants") as String?) ?: "")
             it.maxHeapSize = "4g"
         }
     }

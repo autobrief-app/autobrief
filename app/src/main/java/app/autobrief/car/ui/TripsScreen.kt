@@ -1,7 +1,5 @@
 package app.autobrief.car.ui
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,7 +24,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -54,11 +51,11 @@ fun TripsScreen(core: AutoBriefCore) {
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             BigButton("◀", outlined = true, height = 76.dp) { month = month.minusMonths(1) }
-            Txt("${month.year}년 ${month.monthValue}월", Type.title, modifier = Modifier.widthIn(min = 260.dp).padding(horizontal = 8.dp))
+            Txt("${month.year}년 ${month.monthValue}월", Type.headline, modifier = Modifier.widthIn(min = 260.dp).padding(horizontal = 8.dp))
             BigButton("▶", outlined = true, height = 76.dp) { month = month.plusMonths(1) }
             Spring()
             Column(horizontalAlignment = Alignment.End) {
-                Txt("${s.rowCount}건 · ${km1(s.totalKm)} km · 업무 ${pct(s.businessUseRatio)}", Type.heading)
+                Txt("${s.rowCount}건 · ${km1(s.totalKm)} km · 업무 ${pct(s.businessUseRatio)}", Type.title)
                 Muted("미분류 ${s.unclassifiedCount}건 · 자동 분류 ${s.autoCount}건 · 음성 ${s.voiceCount}건")
             }
         }
@@ -74,33 +71,31 @@ fun TripsScreen(core: AutoBriefCore) {
 
 @Composable
 private fun TripRow(t: TripRecord, onClick: () -> Unit) {
-    val p = LocalPalette.current
-    val shape = RoundedCornerShape(12.dp)
+    val p = AutoBriefTheme.colors
+    val shape = RoundedCornerShape(AutoBriefTheme.shape.cornerRow)
     Row(
         Modifier
             .fillMaxWidth()
             .heightIn(min = 88.dp)
-            .clip(shape)
-            .background(p.panel)
-            .border(1.dp, p.line, shape)
+            .cardFrame(shape)
             .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = 26.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(22.dp),
     ) {
         Column(Modifier.width(210.dp)) {
-            Txt(LogbookExport.dateWithWeekday(TripLogbook.localDate(t.startEpochMs)), Type.bodyBold)
+            Txt(LogbookExport.dateWithWeekday(TripLogbook.localDate(t.startEpochMs)), Type.bodyStrong)
             Muted("${hm(t.startEpochMs)}~${hm(t.endEpochMs)}")
         }
         Column(Modifier.width(320.dp)) {
             Txt("${km1(t.startOdometerKm)} → ${km1(t.endOdometerKm)}", Type.body)
             Muted(listOfNotNull(t.startPlace, t.endPlace).joinToString(" → ").ifBlank { if (t.family) "위치 기록 안 함" else "장소 미등록" })
         }
-        Txt("${km1(TripLogbook.printedKm(t))} km", Type.heading, modifier = Modifier.width(170.dp))
+        Txt("${km1(TripLogbook.printedKm(t))} km", Type.title, modifier = Modifier.width(170.dp))
         // a fixed box, so the user column starts at the same x whatever the chip says
         Box(Modifier.width(PURPOSE_COLUMN)) { PurposeChip(t.purpose) }
         Column(Modifier.weight(1f)) {
-            if (t.purpose == TripPurpose.UNCLASSIFIED) Txt("목적 정하기 ›", Type.bodyBold, p.accent)
+            if (t.purpose == TripPurpose.UNCLASSIFIED) Txt("목적 정하기 ›", Type.bodyStrong, p.primary)
             else Txt(t.user?.let { "${it.name}(${it.department})" } ?: "-", Type.body)
             marks(t).ifBlank { t.memo }.takeIf { it.isNotBlank() }?.let { Muted(it) }
         }
@@ -124,7 +119,7 @@ private fun marks(t: TripRecord): String = buildList {
 
 @Composable
 private fun TripDialog(core: AutoBriefCore, t: TripRecord, onClose: () -> Unit) {
-    val p = LocalPalette.current
+    val p = AutoBriefTheme.colors
     val settings by core.settings.collectAsState()
     var purpose by remember(t.id) { mutableStateOf(t.purpose.takeIf { it.isUserPurpose }) }
     var memo by remember(t.id) { mutableStateOf(t.memo) }
@@ -137,7 +132,7 @@ private fun TripDialog(core: AutoBriefCore, t: TripRecord, onClose: () -> Unit) 
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Panel(Modifier.widthIn(max = 1500.dp).fillMaxWidth(0.9f).verticalScroll(rememberScrollState())) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Txt("${LogbookExport.dateWithWeekday(TripLogbook.localDate(t.startEpochMs))} ${hm(t.startEpochMs)}~${hm(t.endEpochMs)}", Type.title)
+                Txt("${LogbookExport.dateWithWeekday(TripLogbook.localDate(t.startEpochMs))} ${hm(t.startEpochMs)}~${hm(t.endEpochMs)}", Type.headline)
                 PurposeChip(t.purpose)
                 Spring()
                 BigButton("닫기", outlined = true, height = 76.dp, onClick = onClose)
@@ -154,7 +149,7 @@ private fun TripDialog(core: AutoBriefCore, t: TripRecord, onClose: () -> Unit) 
                 Muted("앱이 꺼져 있던 동안 계기판이 움직인 구간입니다. 업무로 바꿀 수 없고 비업무로 계산합니다.", Type.body)
             } else {
                 Gap(6.dp)
-                Txt(if (correcting) "목적 고치기" else "목적 정하기", Type.heading)
+                Txt(if (correcting) "목적 고치기" else "목적 정하기", Type.title)
                 ChipRow { PICKABLE_PURPOSES.forEach { c -> Choice(c.label, purpose == c) { purpose = c } } }
                 if (settings.users.isNotEmpty()) {
                     ChipRow(lead = "④ 사용자") {
@@ -163,7 +158,7 @@ private fun TripDialog(core: AutoBriefCore, t: TripRecord, onClose: () -> Unit) 
                 }
                 Field("비고", memo, Modifier.fillMaxWidth()) { memo = it }
                 if (correcting) {
-                    Txt("고치는 이유 (기록 원장에 남습니다)", Type.bodyBold)
+                    Txt("고치는 이유 (기록 원장에 남습니다)", Type.bodyStrong)
                     ReasonChips(reason) { reason = it }
                     Field("정정 메모 (선택)", reasonMemo, Modifier.fillMaxWidth()) { reasonMemo = it }
                 }
@@ -177,13 +172,13 @@ private fun TripDialog(core: AutoBriefCore, t: TripRecord, onClose: () -> Unit) 
                     }
                     if (result == AutoBriefCore.ClassifyResult.OK) onClose()
                 }
-                message?.let { Txt(it, Type.body, p.pending) }
+                message?.let { Txt(it, Type.body, p.warning) }
             }
             Gap(6.dp)
-            Txt("기록 원장", Type.heading)
+            Txt("기록 원장", Type.title)
             core.ledgerFor(t.id).forEach { e ->
                 Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                    Txt("#${e.seq}", Type.bodyBold, modifier = Modifier.width(110.dp))
+                    Txt("#${e.seq}", Type.bodyStrong, modifier = Modifier.width(110.dp))
                     Txt(mdhm(e.epochMs), Type.body, modifier = Modifier.width(240.dp))
                     Txt(kindLabel(e.kind), Type.body, modifier = Modifier.width(170.dp))
                     Muted(e.hash.take(16), Type.body)
