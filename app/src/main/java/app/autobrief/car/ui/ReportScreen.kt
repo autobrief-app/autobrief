@@ -5,6 +5,9 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -199,6 +202,21 @@ private fun previewCells(r: TripRecord): List<String> {
 private fun FormRow(label: String, value: String, strong: Boolean = false) {
     val p = AutoBriefTheme.colors
     val s = AutoBriefTheme.shape
+    if (AutoBriefTheme.quiet) {
+        // a ledger line: no box, one hairline under the row
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .drawBehind { drawRect(p.hairline, Offset(0f, size.height - s.strokeHairline.toPx()), Size(size.width, s.strokeHairline.toPx())) }
+                .padding(vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Txt(label, Type.body)
+            Spring()
+            Txt(value, if (strong) Type.headline else Type.title, if (strong) p.accent else p.textPrimary)
+        }
+        return
+    }
     val shape = RoundedCornerShape(s.cornerControl)
     Row(
         Modifier

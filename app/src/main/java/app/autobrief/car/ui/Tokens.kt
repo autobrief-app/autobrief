@@ -59,6 +59,8 @@ data class ColorRoles(
     val tonalBorderAlpha: Float = 0.65f,
     /** Alpha of [surfaceVariant] behind an outlined button. */
     val outlinedFillAlpha: Float = 0.5f,
+    /** The faint line under the top edge of a [CardStyle.GLASS] card. */
+    val glassHighlight: Color = Color.White.copy(alpha = 0.10f),
 ) {
     fun purpose(p: TripPurpose): Color = when (p) {
         TripPurpose.COMMUTE -> purposeCommute
@@ -84,12 +86,11 @@ data class TypeScale(
     val bodyStrong: TextStyle = body.copy(fontWeight = FontWeight.Bold),
     /** Secondary lines (button sub-labels, field labels, notes); AAOS keeps it at the body size. */
     val caption: TextStyle = body,
-    /** How much larger than [display] the driving view's distance is drawn (read at a glance while driving). */
+    /** How much larger than [display] the driving view's distance is drawn when [glance] is not set. */
     val glanceScale: Float = 1.6f,
-) {
-    /** The driving view's distance: [display] scaled by [glanceScale]. */
-    val glance: TextStyle = display.copy(fontSize = display.fontSize * glanceScale, lineHeight = display.lineHeight * glanceScale)
-}
+    /** The driving view's distance, read at a glance while driving. */
+    val glance: TextStyle = display.copy(fontSize = display.fontSize * glanceScale, lineHeight = display.lineHeight * glanceScale),
+)
 
 /**
  * Corner radii and stroke widths. A variant sets the four base values; the others follow them unless set too
@@ -119,6 +120,8 @@ data class ShapeTokens(
     val indicatorWidth: Dp = 3.dp,
     /** Width of a distance-bar legend swatch; its ends are fully rounded. */
     val swatchWidth: Dp = 4.dp,
+    /** Side of the square status pip of the PIXEL chip styles. */
+    val pipSize: Dp = 8.dp,
 )
 
 /** How status pills, purpose chips and choice chips are decorated. */
@@ -131,6 +134,25 @@ enum class ChipStyle {
 
     /** A tinted fill only: no border, no bar. */
     FILLED_SUBTLE,
+
+    /**
+     * A plain plate: [ColorRoles.chipBg] inside an [ColorRoles.outline] hairline, the label in [ColorRoles.chipText]. The only
+     * ornament is a square pip in the chip's colour, shown for a status (positive, warning, critical) and for a trip purpose.
+     * A selected choice chip fills with [ColorRoles.primary].
+     */
+    PIXEL_PLATE,
+
+    /** As [PIXEL_PLATE] without the fill: text inside an outline. */
+    PIXEL_TEXT,
+
+    /**
+     * As [PIXEL_PLATE] inside a [ColorRoles.hairline] light line; a selected choice chip keeps its fill and takes an
+     * [ColorRoles.accent] border and label.
+     */
+    PIXEL_GLASS;
+
+    /** The PIXEL styles: a square pip instead of colour fills and bars. */
+    val pixel: Boolean get() = this == PIXEL_PLATE || this == PIXEL_TEXT || this == PIXEL_GLASS
 }
 
 /** How cards (Panel, trip rows, the driving card) are set off from the background. */
@@ -140,6 +162,27 @@ enum class CardStyle {
 
     /** [ColorRoles.surfaceRaised] on a shadow of [AutoBriefTokens.cardElevation]; a border only for an emphasis colour. */
     ELEVATED,
+
+    /** [ColorRoles.surface] inside a [ColorRoles.hairline] border: depth comes from the tone steps, not from a line. */
+    HAIRLINE,
+
+    /** [ColorRoles.surface] with no border; a border only for an emphasis colour. */
+    FLAT,
+
+    /** A glass panel: a translucent [ColorRoles.surface] inside a [ColorRoles.hairline] light line, with a faint top highlight. */
+    GLASS,
+}
+
+/** How much framing the details carry. */
+enum class DetailStyle {
+    /** Bordered status pills, inset rows in their own boxes, purpose-coloured buttons, the "km" tile mark, filled icons. */
+    BOXED,
+
+    /**
+     * One hairline per group and no box inside a box: statuses and purposes as plain text after a square pip, the status
+     * header as one quiet line, rows on a rule, neutral purpose buttons, the pixel mark and line icons.
+     */
+    QUIET,
 }
 
 /** Everything the UI's look is made of, for one design variant. */
@@ -153,6 +196,7 @@ data class AutoBriefTokens(
     val cardStyle: CardStyle,
     /** Shadow depth of an ELEVATED card; OUTLINE cards ignore it. */
     val cardElevation: Dp = 4.dp,
+    val detail: DetailStyle = DetailStyle.BOXED,
 ) {
     fun colors(night: Boolean): ColorRoles = if (night) this.night else day
 }

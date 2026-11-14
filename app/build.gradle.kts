@@ -19,6 +19,8 @@ android {
         val themeVariant = (project.findProperty("autobrief.themeVariant") as String?) ?: "CURRENT"
         require(themeVariant in setOf("CURRENT", "A", "B", "C")) { "autobrief.themeVariant is one of the ThemeVariant names, got $themeVariant" }
         buildConfigField("String", "THEME_VARIANT", "\"$themeVariant\"")
+        // the design variants share one launcher icon (the pixel mark); CURRENT keeps the shipped one
+        manifestPlaceholders["appIcon"] = if (themeVariant == "CURRENT") "@mipmap/ic_launcher" else "@mipmap/ic_launcher_pixel"
     }
 
     // AAOS car API (CarUxRestrictionsManager for the driving layout)

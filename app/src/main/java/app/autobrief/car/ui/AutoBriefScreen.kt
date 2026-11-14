@@ -1,5 +1,6 @@
 package app.autobrief.car.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -39,6 +40,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.Role
@@ -175,6 +181,8 @@ private fun Root(core: AutoBriefCore, tab: MutableState<Tab>, restricted: Boolea
 private fun NavRail(tab: MutableState<Tab>) {
     val p = AutoBriefTheme.colors
     val s = AutoBriefTheme.shape
+    // QUIET: no rim round a tab and line icons; the selected tab is told by its tint alone
+    val quiet = AutoBriefTheme.quiet
     Column(
         Modifier.fillMaxHeight().width(152.dp).background(p.surface).padding(vertical = 28.dp, horizontal = 14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -189,13 +197,14 @@ private fun NavRail(tab: MutableState<Tab>) {
                 Modifier
                     .fillMaxWidth()
                     .clip(shape)
-                    .background(if (selected) p.primary.copy(alpha = p.tintAlpha) else p.surface)
-                    .border(s.strokeHairline, if (selected) p.primary.copy(alpha = p.emphasisBorderAlpha) else p.hairline, shape)
+                    .background(if (selected) p.primary.copy(alpha = p.tintAlpha) else if (quiet) Color.Transparent else p.surface)
+                    .then(if (quiet) Modifier else Modifier.border(s.strokeHairline, if (selected) p.primary.copy(alpha = p.emphasisBorderAlpha) else p.hairline, shape))
                     .clickable(role = Role.Tab) { tab.value = t }
                     .padding(vertical = 18.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Icon(t.icon, contentDescription = null, tint = if (selected) p.primary else p.textSecondary, modifier = Modifier.size(38.dp))
+                val tint = if (selected) p.primary else p.textSecondary
+                if (quiet) LineIcon(t, tint, Modifier.size(38.dp)) else Icon(t.icon, contentDescription = null, tint = tint, modifier = Modifier.size(38.dp))
                 Gap(6.dp)
                 Txt(t.label, Type.label, if (selected) p.primary else p.textSecondary)
             }
@@ -208,6 +217,10 @@ private fun NavRail(tab: MutableState<Tab>) {
 fun AppMark(size: Int = 72) {
     val p = AutoBriefTheme.colors
     val s = AutoBriefTheme.shape
+    if (AutoBriefTheme.quiet) {
+        PixelMark(size)
+        return
+    }
     // the outer corner keeps the logo's proportion (a sixth of the mark) in every variant
     val outerShape = RoundedCornerShape((size / 6).dp)
     val innerShape = RoundedCornerShape(s.cornerSmall)
@@ -225,6 +238,58 @@ fun AppMark(size: Int = 72) {
     }
 }
 
+/** The mark of the QUIET style: four squares rising to full strength over a horizon line, the odometer counting up. */
+@Composable
+private fun PixelMark(size: Int) {
+    val p = AutoBriefTheme.colors
+    val cell = (size / 6).dp
+    val gap = (size / 12).dp
+    Column(Modifier.size(size.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+        Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+            listOf(0.3f, 0.55f, 0.8f, 1f).forEach { strength -> Box(Modifier.size(cell).background(p.primary.copy(alpha = strength))) }
+        }
+        Spacer(Modifier.height(gap))
+        Box(Modifier.width(cell * 4 + gap * 3).height(AutoBriefTheme.shape.strokeEmphasis).background(p.outline))
+    }
+}
+
+/** The navigation icons of the QUIET style: thin lines and square pips on a 38-unit grid. */
+@Composable
+private fun LineIcon(tab: Tab, color: Color, modifier: Modifier) {
+    Canvas(modifier) {
+        val u = size.minDimension / 38f
+        val stroke = Stroke(1.75.dp.toPx())
+        fun line(x1: Float, y1: Float, x2: Float, y2: Float) = drawLine(color, Offset(x1 * u, y1 * u), Offset(x2 * u, y2 * u), stroke.width)
+        fun pip(x: Float, y: Float, side: Float) = drawRect(color, Offset(x * u, y * u), Size(side * u, side * u))
+        when (tab) {
+            Tab.HOME -> {
+                // a roof over the horizon
+                val roof = Path().apply { moveTo(6f * u, 19f * u); lineTo(19f * u, 7f * u); lineTo(32f * u, 19f * u) }
+                drawPath(roof, color, style = stroke)
+                line(10f, 16f, 10f, 31f)
+                line(28f, 16f, 28f, 31f)
+                line(5f, 31f, 33f, 31f)
+            }
+            Tab.TRIPS -> listOf(10f, 19f, 28f).forEach { y ->
+                pip(5f, y - 2.5f, 5f)
+                line(14f, y, 33f, y)
+            }
+            Tab.REPORT -> {
+                // a ruled sheet
+                drawRect(color, Offset(8f * u, 5f * u), Size(22f * u, 28f * u), style = stroke)
+                line(13f, 13f, 25f, 13f)
+                line(13f, 19f, 25f, 19f)
+                line(13f, 25f, 20f, 25f)
+            }
+            Tab.SETTINGS -> listOf(10f to 22f, 19f to 9f, 28f to 17f).forEach { (y, x) ->
+                // three sliders
+                line(5f, y, 33f, y)
+                pip(x, y - 3f, 6f)
+            }
+        }
+    }
+}
+
 /** The pills wrap onto a second line on a narrow (portrait) display instead of scrolling out of sight. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -236,19 +301,31 @@ private fun StatusBar(core: AutoBriefCore) {
     val paused by core.locationPaused.collectAsState()
     val check by core.integrity.collectAsState()
     val space by core.activeSpace.collectAsState()
+    val s = AutoBriefTheme.shape
+    val quiet = AutoBriefTheme.quiet
     FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // QUIET: one quiet line beside the title, every item after a hairline; else the pills
+        @Composable
+        fun item(label: String, color: Color, filled: Boolean = false) {
+            if (!quiet) {
+                StatusPill(label, color, filled)
+                return
+            }
+            Box(Modifier.align(Alignment.CenterVertically).width(s.strokeHairline).height(18.dp).background(p.hairline))
+            Box(Modifier.align(Alignment.CenterVertically)) { StatusPill(label, color, filled, header = true) }
+        }
         Txt("오토브리프", Type.headline, modifier = Modifier.align(Alignment.CenterVertically).padding(end = 8.dp))
-        if (space == AutoBriefCore.Space.DEMO) StatusPill("시연 모드 · 가상 예시", p.warning, filled = true)
-        StatusPill(if (v.sdkConnected) "차량 연결됨" else "차량 연결 대기", if (v.sdkConnected) p.positive else p.warning)
+        if (space == AutoBriefCore.Space.DEMO) item("시연 모드 · 가상 예시", p.warning, filled = true)
+        item(if (v.sdkConnected) "차량 연결됨" else "차량 연결 대기", if (v.sdkConnected) p.positive else p.warning)
         // a value the car has not sent yet is "being checked", with a muted dot, never a bare dash
-        if (v.gear == Gear.UNKNOWN) StatusPill("기어 확인 중", p.textTertiary)
-        else StatusPill("기어 ${gearLabel(v.gear)}", if (v.gear == Gear.PARK) p.textTertiary else p.accent)
-        StatusPill(v.odometerKm?.let { "계기판 ${km1(it)} km" } ?: "계기판 확인 중", if (v.odometerKm != null) p.purposeCommute else p.textTertiary)
+        if (v.gear == Gear.UNKNOWN) item("기어 확인 중", p.textTertiary)
+        else item("기어 ${gearLabel(v.gear)}", if (v.gear == Gear.PARK) p.textTertiary else p.accent)
+        item(v.odometerKm?.let { "계기판 ${km1(it)} km" } ?: "계기판 확인 중", if (v.odometerKm != null) p.purposeCommute else p.textTertiary)
         // navigation's position, else the car's own GPS (the fallback when navigation does not follow the car)
         if (paused) {
-            StatusPill("위치 읽지 않음 (가족 운행)", p.purposePersonal, filled = true)
+            item("위치 읽지 않음 (가족 운행)", p.purposePersonal, filled = true)
         } else {
-            StatusPill(
+            item(
                 when (position) {
                     AutoBriefCore.PositionSource.NAVIGATION -> "내비 위치 받는 중"
                     AutoBriefCore.PositionSource.GPS -> "차량 GPS 위치 받는 중"
@@ -257,10 +334,10 @@ private fun StatusBar(core: AutoBriefCore) {
                 if (position != null) p.positive else p.textTertiary,
             )
             navi.destinationLabel?.let { dest ->
-                StatusPill("내비 목적지 · $dest", p.accent)
+                item("내비 목적지 · $dest", p.accent)
             }
         }
-        StatusPill(
+        item(
             when {
                 !check.ok -> "기록 확인 필요"
                 check.entryCount == 0 -> "기록 원장 준비됨"
@@ -327,9 +404,8 @@ fun DrivingView(core: AutoBriefCore) {
             Gap(32.dp)
             Box(
                 Modifier
-                    .clip(noteShape)
-                    .background(p.surfaceVariant)
-                    .border(s.strokeHairline, p.outline, noteShape)
+                    // QUIET: plain text under the figure, no box inside the card
+                    .then(if (AutoBriefTheme.quiet) Modifier else Modifier.clip(noteShape).background(p.surfaceVariant).border(s.strokeHairline, p.outline, noteShape))
                     .padding(horizontal = 36.dp, vertical = 20.dp),
             ) {
                 Txt(

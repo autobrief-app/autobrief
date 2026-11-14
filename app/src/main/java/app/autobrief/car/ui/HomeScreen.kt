@@ -325,6 +325,9 @@ private fun TaxCard(core: AutoBriefCore, onOpen: (Tab) -> Unit) {
     val settings by core.settings.collectAsState()
     val year = core.currentBusinessYear()
     val r = remember(trips, settings, year) { core.taxBenefit() }
+    // QUIET: the saving is a plain figure and its assumptions step back, so the card does not shout in the first view
+    val quiet = AutoBriefTheme.quiet
+    val note = if (quiet) p.textTertiary else p.textSecondary
     Panel {
         Muted("올해 운행기록부 효과 (사업연도 ${year.start} ~ ${year.endInclusive})", Type.body)
         if (r == null) {
@@ -334,9 +337,9 @@ private fun TaxCard(core: AutoBriefCore, onOpen: (Tab) -> Unit) {
             return@Panel
         }
         if (r.extraDeductibleKrw > 0) {
-            Txt("+${manwon(r.extraDeductibleKrw)}", Type.display, p.positive)
+            Txt("+${manwon(r.extraDeductibleKrw)}", if (quiet) Type.headline else Type.display, if (quiet) p.textPrimary else p.positive)
             Txt("비용으로 더 인정 · 세금 약 ${manwon(r.taxEffectKrw)} 줄어듦", Type.title)
-            Muted("세율 ${String.format(java.util.Locale.ROOT, "%.1f", r.ratePct)}%(지방소득세 포함) 가정", Type.caption)
+            Muted("세율 ${String.format(java.util.Locale.ROOT, "%.1f", r.ratePct)}%(지방소득세 포함) 가정", Type.caption, note)
         } else {
             Txt("기록부 없이도 비용 인정이 같거나 큰 구간", Type.title)
             val cap = manwon(TaxBenefit.NO_LOGBOOK_CAP_KRW)
@@ -347,14 +350,16 @@ private fun TaxCard(core: AutoBriefCore, onOpen: (Tab) -> Unit) {
                     r.withLogbook.ratio <= r.withoutLogbook.ratio -> "업무사용비율이 $cap ÷ 차량비용보다 낮아 기록부 효과가 없습니다."
                     else -> "업무용 감가상각비 연 ${manwon(TaxBenefit.DEPRECIATION_CAP_KRW)} 한도에 걸려 기록부로 더 인정되는 금액이 없습니다."
                 },
+                color = note,
             )
         }
         KeyValue("운행기록부 없이 인정", "${manwon(r.withoutLogbook.deductibleKrw)} (비율 ${pct(r.withoutLogbook.ratio)})")
-        KeyValue("운행기록부로 인정", "${manwon(r.withLogbook.deductibleKrw)} (비율 ${pct(r.withLogbook.ratio)})", p.accent)
+        KeyValue("운행기록부로 인정", "${manwon(r.withLogbook.deductibleKrw)} (비율 ${pct(r.withLogbook.ratio)})", if (quiet) p.textPrimary else p.accent)
         Muted(
             "연간 차량비용 ${manwon(settings.annualCarCostKrw)}, 감가상각비 ${manwon(settings.annualDepreciationKrw)} 기준. " +
                 "업무용 감가상각비의 연 ${manwon(TaxBenefit.DEPRECIATION_CAP_KRW)} 초과분은 다음 해로 넘어갑니다. 최종 판단은 세무 대리인과 확인하세요.",
+            color = note,
         )
-        Muted("일반 법인 기준(임대업 중심 법인 500만/400만 규정, 연중 취득 차량 제외)")
+        Muted("일반 법인 기준(임대업 중심 법인 500만/400만 규정, 연중 취득 차량 제외)", color = note)
     }
 }

@@ -21,13 +21,17 @@ import app.autobrief.car.R
 
 /** Bundled Pretendard (SIL OFL 1.1, unmodified; licence in assets/licenses). */
 val Pretendard = FontFamily(
+    Font(R.font.pretendard_extralight, FontWeight.ExtraLight),
+    Font(R.font.pretendard_light, FontWeight.Light),
     Font(R.font.pretendard_regular, FontWeight.Normal),
+    Font(R.font.pretendard_medium, FontWeight.Medium),
+    Font(R.font.pretendard_semibold, FontWeight.SemiBold),
     Font(R.font.pretendard_bold, FontWeight.Bold),
 )
 
 // The look the app shipped with (v2.0.1). Every text colour keeps WCAG 4.5:1 (AA) on background, surface, surfaceVariant
 // and on its own tint.
-private val CurrentNight = ColorRoles(
+internal val CurrentNight = ColorRoles(
     background = Color(0xFF0A0C10), surface = Color(0xFF11151C), surfaceVariant = Color(0xFF181E27), surfaceRaised = Color(0xFF11151C),
     outline = Color(0xFF252E3D), hairline = Color(0xFF252E3D).copy(alpha = 0.45f),
     textPrimary = Color(0xFFF2F5F9), textSecondary = Color(0xFF9AA6B8), textTertiary = Color(0xFF9AA6B8),
@@ -39,7 +43,7 @@ private val CurrentNight = ColorRoles(
     tintAlpha = 0.16f, emphasisBorderAlpha = 0.55f, chipBorderAlpha = 0.45f, tonalBorderAlpha = 0.65f, outlinedFillAlpha = 0.5f,
 )
 
-private val CurrentDay = ColorRoles(
+internal val CurrentDay = ColorRoles(
     background = Color(0xFFF3F5F8), surface = Color(0xFFFFFFFF), surfaceVariant = Color(0xFFE8ECF2), surfaceRaised = Color(0xFFFFFFFF),
     outline = Color(0xFFCBD2DE), hairline = Color(0xFFCBD2DE).copy(alpha = 0.45f),
     textPrimary = Color(0xFF0E131B), textSecondary = Color(0xFF4A5568), textTertiary = Color(0xFF4A5568),
@@ -73,6 +77,7 @@ private val CurrentTokens = AutoBriefTokens(
     ),
     chipStyle = ChipStyle.LEADING_BAR,
     cardStyle = CardStyle.OUTLINE,
+    detail = DetailStyle.BOXED,
 )
 
 /**
@@ -83,14 +88,14 @@ enum class ThemeVariant(val tokens: AutoBriefTokens) {
     /** The look the app shipped with. */
     CURRENT(CurrentTokens),
 
-    /** Placeholder: the same as CURRENT until its token set is filled in. */
-    A(CurrentTokens),
+    /** Midnight navy and sand (ui/ThemeVariants.kt). */
+    A(VariantATokens),
 
-    /** Placeholder: the same as CURRENT until its token set is filled in. */
-    B(CurrentTokens),
+    /** White minimal and deep navy. */
+    B(VariantBTokens),
 
-    /** Placeholder: the same as CURRENT until its token set is filled in. */
-    C(CurrentTokens);
+    /** Glass HUD. */
+    C(VariantCTokens);
 
     companion object {
         /** The variant this build draws with. */
@@ -115,6 +120,10 @@ object AutoBriefTheme {
 
     val shape: ShapeTokens
         @Composable @ReadOnlyComposable get() = LocalAutoBriefTokens.current.shape
+
+    /** True in a variant drawn with [DetailStyle.QUIET]. */
+    val quiet: Boolean
+        @Composable @ReadOnlyComposable get() = LocalAutoBriefTokens.current.detail == DetailStyle.QUIET
 }
 
 /** The active variant's [TypeScale], by name (`Type.body`). */
