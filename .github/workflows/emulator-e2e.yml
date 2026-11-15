@@ -142,9 +142,13 @@ jobs:
             > e2e-out/screenrecord.log 2>&1 < /dev/null &
 
       - name: Play the scenarios and verify
+        # a wedged emulator must not hold the job: the step ends and the uploads still run
+        timeout-minutes: 20
         run: python3 demo/director.py --scenario all --mode auto --fast --verify --out e2e-out
 
       - name: Play the optional family and fuel scenes and verify
+        # a wedged emulator must not hold the job: the step ends and the uploads still run
+        timeout-minutes: 12
         # docs/DEMO.md scenes 8 and 9; they go on from the odometer where `all` ends
         run: |
           adb shell pkill -SIGINT screenrecord || true
@@ -159,6 +163,8 @@ jobs:
         run: python3 demo/navmain_check.py --front navigation --fast --out e2e-out/navmain
 
       - name: Collect the recording, logcat and fleet state
+        # a wedged emulator must not hold the job: the step ends and the uploads still run
+        timeout-minutes: 6
         if: always()
         # Best effort: when an earlier step failed the emulator or the console may not exist.
         run: |
@@ -192,6 +198,8 @@ jobs:
           done
 
       - name: Keep a bug report after a failure
+        # a wedged emulator must not hold the job: the step ends and the uploads still run
+        timeout-minutes: 8
         if: failure()
         # An ANR's VM traces (every thread's stack when Android declared it) stay on the device: /data/anr is not
         # readable on this user build, but the bug report carries it (FS/data/anr/*) with the CPU and event log of that
