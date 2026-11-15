@@ -113,6 +113,36 @@ class WindowDumpTests(unittest.TestCase):
         )
         self.assertFalse(windows[1].overlay)
 
+    def test_a_window_whose_first_frame_is_not_drawn_is_not_visible(self):
+        # what the Pleos image printed for the pill right after it was added (run 43699255160): nothing hid the
+        # window, and the screenshot taken then did not show it
+        animator = (
+            "    WindowStateAnimator{11f6431 AutoBriefHud}:\n"
+            "      mSurface=Surface(name=AutoBriefHud)/@0xd6c70dd\n"
+            "      Surface: shown=%s layer=0 alpha=1.0 rect=(0.0,0.0)  transform=(1.0, 0.0, 0.0, 1.0)\n"
+            "      mDrawState=%s       mLastHidden=%s\n"
+        )
+        pending = animator % ("false", "DRAW_PENDING", "true") + visibility(True)
+        drawn = animator % ("true", "HAS_DRAWN", "false") + visibility(True)
+        for extra, expected in ((pending, False), (drawn, True)):
+            dump = DUMP_HEAD + window(
+                2, "AutoBriefHud", APP, "APPLICATION_OVERLAY", extra=extra
+            )
+            self.assertEqual(
+                [w.visible for w in nm.app_overlays(nm.parse_windows(dump))], [expected]
+            )
+
+    def test_the_check_fails_while_the_pill_is_not_drawn(self):
+        pending = (
+            "      Surface: shown=false layer=0 alpha=1.0 rect=(0.0,0.0)\n"
+            "      mDrawState=DRAW_PENDING       mLastHidden=true\n"
+        ) + visibility(True)
+        dump = DUMP_HEAD + window(
+            2, "AutoBriefHud", APP, "APPLICATION_OVERLAY", extra=pending
+        )
+        overlays = nm.app_overlays(nm.parse_windows(dump))
+        self.assertEqual(nm.describe_windows(overlays), "AutoBriefHud(ty=APPLICATION_OVERLAY visible=false)")
+
     def test_only_the_apps_own_overlay_windows_count(self):
         dump = (
             DUMP_HEAD

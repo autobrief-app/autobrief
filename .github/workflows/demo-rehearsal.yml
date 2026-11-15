@@ -144,6 +144,7 @@ jobs:
 
       - name: Collect the recording, logcat and console state
         if: always()
+        timeout-minutes: 6
         run: |
           mkdir -p "$OUT"
           touch /tmp/stop-recording
@@ -169,6 +170,7 @@ jobs:
 
       - name: Keep a bug report after a failure
         if: failure()
+        timeout-minutes: 8
         # An ANR's VM traces (every thread's stack when Android declared it) stay on the device: /data/anr is not
         # readable on this user build, but the bug report carries it (FS/data/anr/*) with the CPU and event log of that
         # moment. The zip is kept as it is; the traces are also unpacked so they can be read without it.

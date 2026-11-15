@@ -77,6 +77,8 @@ from setup_emulator import (  # noqa: E402
 OVERLAY_OP = "SYSTEM_ALERT_WINDOW"
 # WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY: `ty=APPLICATION_OVERLAY` in the dump (the number on older images)
 OVERLAY_TYPES = ("APPLICATION_OVERLAY", "2038")
+# the wait for the pill's first frame, as a multiple of the kit's usual wait for one reading
+FIRST_FRAME_PATIENCE = 3.0
 FRONTS = ("navigation", "home")
 # after the optional scenes (director.OPTIONAL_SCENARIOS end at 45,259): 45,259 -> 45,264
 ODOMETER_START = 45259
@@ -146,7 +148,11 @@ def _flag(block: str, name: str) -> Optional[bool]:
 
 def window_visible(block: str) -> Optional[bool]:
     """`isVisible=` when the dump has it, else a surface that is ready for display; None when the
-    dump has neither field (unknown is not visible and not hidden)."""
+    dump has neither field (unknown is not visible and not hidden). A window whose surface is not
+    shown yet (`Surface: shown=false`: its first frame is not drawn) is not visible, whatever the
+    other fields say: `isVisible=true` only means that nothing hides the window."""
+    if _flag(block, "shown") is False:
+        return False
     visible = _flag(block, "isVisible")
     if visible is not None:
         return visible
@@ -504,9 +510,11 @@ class NavMainCheck:
             self.adb.logcat_dump,
             lambda text: shown_after_trip_start(log_events(text)) is not None,
         )
+        # a new window's first frame takes seconds on a software-rendered emulator: the shot is taken once it is drawn
         evidence.windows_drive = self.poll(
             self.windows,
             lambda dump: any(w.visible for w in app_overlays(parse_windows(dump))),
+            patience=FIRST_FRAME_PATIENCE,
         )
         self.screenshot(SHOT_DRIVE)
         self.keep("navmain_windows_drive.txt", evidence.windows_drive)
@@ -594,9 +602,11 @@ class NavMainCheck:
     def windows(self) -> str:
         return self.adb.shell("dumpsys", "window", "windows")
 
-    def poll(self, read: Callable[[], str], done: Callable[[str], bool]) -> str:
-        """Read until `done` or `wait` seconds passed; the last reading either way (judge decides)."""
-        deadline = self.clock() + self.wait
+    def poll(
+        self, read: Callable[[], str], done: Callable[[str], bool], patience: float = 1.0
+    ) -> str:
+        """Read until `done` or `wait` x `patience` seconds passed; the last reading either way (judge decides)."""
+        deadline = self.clock() + self.wait * patience
         while True:
             text = read()
             if done(text) or self.clock() >= deadline:
