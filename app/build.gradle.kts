@@ -12,8 +12,8 @@ android {
         applicationId = "app.autobrief.car"
         minSdk = 28
         targetSdk = 34
-        versionCode = 9
-        versionName = "2.1.0"
+        versionCode = 10
+        versionName = "2.2.0"
 
         // The look the UI draws with (ui/Theme.kt ThemeVariant): B, or -Pautobrief.themeVariant=CURRENT for the look up to 2.0.1
         val themeVariant = (project.findProperty("autobrief.themeVariant") as String?) ?: "B"
