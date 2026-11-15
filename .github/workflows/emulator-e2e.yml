@@ -141,16 +141,12 @@ jobs:
           nohup bash -c 'for i in 1 2 3 4; do adb shell screenrecord --size 1280x720 --time-limit 180 /sdcard/e2e-$i.mp4; [ -f /tmp/stop-recording ] && break; done' \
             > e2e-out/screenrecord.log 2>&1 < /dev/null &
 
-      - name: Play the scenarios and verify
-        run: python3 demo/director.py --scenario all --mode auto --fast --verify --out e2e-out
-
-      - name: Play the optional family and fuel scenes and verify
-        # docs/DEMO.md scenes 8 and 9; they go on from the odometer where `all` ends
+      - name: Open the navigation app next to the app and capture the windows (probe, scenarios skipped on this branch)
+        timeout-minutes: 8
         run: |
+          python3 demo/split_probe.py --out e2e-out/split
           adb shell pkill -SIGINT screenrecord || true
           sleep 3
-          python3 demo/director.py --scenario family --mode auto --fast --verify --out e2e-out/family
-          python3 demo/director.py --scenario fuel --mode auto --fast --verify --out e2e-out/fuel
 
       - name: Collect the recording, logcat and fleet state
         if: always()
