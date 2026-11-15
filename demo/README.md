@@ -9,6 +9,7 @@
 | `setup_emulator.py` | 이미지 내려받기(이어받기, 체크섬 확인), 설치, AVD 만들기, 콜드 부팅, APK 설치, 가상 콘솔 연결 |
 | `director.py` | 가상 콘솔 HTTP로 기어, 계기판, 속도, 좌석을 바꾸며 시나리오 재생. `--verify`로 앱 로그까지 확인 |
 | `rehearsal.py` | `docs/DEMO.md` 7분 대본 전체(장면 1~7)를 무인으로 리허설: 실제 탭(화면 글자로 찾음), 장면별 PASS/FAIL, 영상용 `scenes.json` |
+| `navmain_check.py` | 지도(또는 홈)를 주 화면으로 둔 채 운행 한 번을 재생하고, 앱이 뒤에서 기록하며 상태 표시(다른 앱 위에 표시)를 띄우는지 항목별 PASS/FAIL로 확인. `--front navigation\|home` |
 | `test_demo_kit.py` | 장치 없이 도는 단위 시험 (`python3 -m unittest discover -s demo -v`) |
 | `../.github/workflows/emulator-e2e.yml` | 같은 흐름을 GitHub 서버(KVM)에서 화면 없이 자동 시험하고 화면을 녹화 |
 | `../.github/workflows/demo-rehearsal.yml` | `rehearsal.py`로 7분 대본 전체를 GitHub 서버(KVM)에서 리허설하고 녹화 (손으로 실행할 때만) |

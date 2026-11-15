@@ -152,6 +152,12 @@ jobs:
           python3 demo/director.py --scenario family --mode auto --fast --verify --out e2e-out/family
           python3 demo/director.py --scenario fuel --mode auto --fast --verify --out e2e-out/fuel
 
+      - name: Check background recording with navigation as the main screen
+        # Navigation stays in front for a whole trip: the app records behind it and shows its status pill (a system
+        # overlay window) over the map. Six checks, each its own [PASS]/[FAIL] line; screenshots in e2e-out/navmain.
+        timeout-minutes: 10
+        run: python3 demo/navmain_check.py --front navigation --fast --out e2e-out/navmain
+
       - name: Collect the recording, logcat and fleet state
         if: always()
         # Best effort: when an earlier step failed the emulator or the console may not exist.
