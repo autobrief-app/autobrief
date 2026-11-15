@@ -59,8 +59,7 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
     // the form scrolls; the save bar under it stays on screen
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(24.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+            TwoColumns(start = {
                     Panel {
                         Txt("운행기록부 머리글", Type.title)
                         Field("법인명(상호)", entity, Modifier.fillMaxWidth()) { entity = it }
@@ -92,8 +91,7 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                         ChipRow { TaxRate.values().forEach { r -> Choice(TaxRate.pctText(r.ratePctFor(yearStart)), r == taxRate) { taxRate = r } } }
                         Muted("${taxRate.labelFor(yearStart)} · ${yearStart.year}년 ${yearStart.monthValue}월 시작 사업연도 세율")
                     }
-                }
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+            }, end = {
                     Panel {
                         ToggleRow("장소로 목적 자동 분류", autoClassify) { autoClassify = it }
                         Muted("내비게이션 목적지·즐겨찾기를 자동 연동해 일일이 누르지 않아도 출퇴근·일반 업무를 자동 반영합니다. 위치는 장소를 알아보는 데만 쓰고 운행기록에는 장소 이름만 남깁니다.")
@@ -192,8 +190,7 @@ fun SettingsScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                             }
                         }
                     }
-                }
-            }
+            })
             Muted("오픈소스: AndroidX, Jetpack Compose, Kotlin, kotlinx.coroutines, kotlinx.serialization (Apache 2.0), Pretendard (SIL OFL 1.1). Pleos Connect SDK는 Pleos Playground 이용 조건을 따릅니다.")
             Gap(24.dp)
         }

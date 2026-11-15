@@ -143,7 +143,7 @@ private fun InProgressCard(core: AutoBriefCore) {
     val o = open ?: return
     val delta = (v.odometerKm ?: o.startOdometerKm) - o.startOdometerKm
     Panel(border = if (o.family) p.purposePersonal else p.accent) {
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        CellRow(gap = 12.dp, verticalAlignment = Alignment.Top) {
             StatusPill("운행 기록 중", p.accent, filled = true)
             if (o.family) StatusPill(FAMILY_BADGE, p.purposePersonal, filled = true)
             else if (navi.destinationLabel != null) StatusPill("내비 목적지 · ${navi.destinationLabel}", p.positive, filled = true)
@@ -256,7 +256,7 @@ private fun ReadyCard(core: AutoBriefCore, last: TripRecord?, vehicleStalled: Bo
     val navi by core.navi.collectAsState()
     val ready = v.sdkConnected && v.gear != Gear.UNKNOWN && v.odometerKm != null
     Panel {
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        CellRow(gap = 12.dp, verticalAlignment = Alignment.Top) {
             StatusPill(if (ready) "기록 준비 완료" else "차량 연결을 기다리는 중", if (ready) p.positive else p.warning, filled = true)
             navi.destinationLabel?.let { dest ->
                 StatusPill("내비 목적지 연동 · $dest", p.accent, filled = true)

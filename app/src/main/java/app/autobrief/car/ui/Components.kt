@@ -29,6 +29,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -102,6 +103,65 @@ fun manwon(krw: Long): String {
     val sign = if (krw < 0) "-" else ""
     val a = kotlin.math.abs(krw)
     return if (a >= 10_000) "$sign${comma((a + 5_000) / 10_000)}만원" else "$sign${comma(a)}원"
+}
+
+/**
+ * True in the compact window: under [COMPACT_UNDER_DP] wide, which is what this app gets when the display shows two apps
+ * side by side (about 853dp of the 2560dp display). Set by the screen root from the window's measured width.
+ */
+val LocalCompact = compositionLocalOf { false }
+
+/** Two columns side by side, the first [startWeight] times as wide as the second; in the compact window the second follows under the first. */
+@Composable
+fun TwoColumns(startWeight: Float = 1f, gap: Dp = 24.dp, start: @Composable ColumnScope.() -> Unit, end: @Composable ColumnScope.() -> Unit) {
+    if (LocalCompact.current) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(gap)) {
+            start()
+            end()
+        }
+        return
+    }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(gap)) {
+        Column(Modifier.weight(startWeight), verticalArrangement = Arrangement.spacedBy(gap), content = start)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(gap), content = end)
+    }
+}
+
+/**
+ * A row of short cells. In the compact window the cells that do not fit move to the next line instead of being squeezed
+ * into the space that is left.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun CellRow(
+    modifier: Modifier = Modifier,
+    gap: Dp = 16.dp,
+    verticalAlignment: Alignment.Vertical = Alignment.CenterVertically,
+    content: @Composable RowScope.() -> Unit,
+) {
+    if (LocalCompact.current) {
+        FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(gap), verticalArrangement = Arrangement.spacedBy(10.dp)) { content() }
+    } else {
+        Row(modifier, verticalAlignment = verticalAlignment, horizontalArrangement = Arrangement.spacedBy(gap), content = content)
+    }
+}
+
+/** A label at the start of a line and its value at the end; in the compact window the value moves under the label when both do not fit. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun LabelValueRow(modifier: Modifier = Modifier, label: @Composable () -> Unit, value: @Composable () -> Unit) {
+    if (LocalCompact.current) {
+        FlowRow(modifier, horizontalArrangement = Arrangement.SpaceBetween) {
+            Box(Modifier.align(Alignment.CenterVertically)) { label() }
+            Box(Modifier.align(Alignment.CenterVertically)) { value() }
+        }
+    } else {
+        Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+            label()
+            Spacer(Modifier.weight(1f))
+            value()
+        }
+    }
 }
 
 @Composable
@@ -433,9 +493,7 @@ fun Field(label: String, value: String, modifier: Modifier = Modifier, numeric: 
 
 @Composable
 fun KeyValue(key: String, value: String, valueColor: Color = AutoBriefTheme.colors.textPrimary, strong: Boolean = false) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Muted(key, Type.body)
-        Spacer(Modifier.weight(1f))
+    LabelValueRow(Modifier.fillMaxWidth(), label = { Muted(key, Type.body) }) {
         Txt(value, if (strong) Type.title else Type.bodyStrong, valueColor)
     }
 }

@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
@@ -46,9 +47,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.autobrief.car.domain.AutoBriefCore
@@ -130,7 +134,15 @@ private fun Root(core: AutoBriefCore, tab: MutableState<Tab>, restricted: Boolea
     val p = AutoBriefTheme.colors
     val v by core.vehicle.collectAsState()
     val vehicleStalled = rememberVehicleStalled(v)
-    val wide = LocalConfiguration.current.screenWidthDp >= 1400
+    // The layout follows the window the app is given, not the display: beside the navigation app the platform hands this
+    // app half of the display, while the Configuration can still report all of it. The width class starts from the
+    // Configuration, so the first frame draws real content (no sub-composition), and the root's measured size corrects
+    // it: one more composition, and only when the class differs.
+    val density = LocalDensity.current
+    var measured by remember { mutableStateOf<WindowWidth?>(null) }
+    val width = measured ?: windowWidthOf(LocalConfiguration.current.screenWidthDp.toFloat())
+    val wide = width == WindowWidth.WIDE
+    val compact = width == WindowWidth.COMPACT
     var fieldWarmed by remember { mutableStateOf(false) }
     var warmingField by remember { mutableStateOf(false) }
     LaunchedEffect(v.sdkConnected) {
@@ -142,7 +154,16 @@ private fun Root(core: AutoBriefCore, tab: MutableState<Tab>, restricted: Boolea
             fieldWarmed = true
         }
     }
-    Box(Modifier.fillMaxSize().background(p.background)) {
+    val screen: @Composable () -> Unit = {
+        when (tab.value) {
+            Tab.HOME -> HomeScreen(core, wide, vehicleStalled, onOpen = { tab.value = it })
+            Tab.TRIPS -> TripsScreen(core)
+            Tab.REPORT -> ReportScreen(core, onFlush)
+            Tab.SETTINGS -> SettingsScreen(core, onFlush)
+        }
+    }
+    CompositionLocalProvider(LocalCompact provides compact) {
+    Box(Modifier.fillMaxSize().onSizeChanged { measured = windowWidthOf(it.width / density.density) }.background(p.background)) {
         if (drivingLayout(restricted, v.gear)) {
             DrivingView(core)
             return@Box
@@ -158,31 +179,47 @@ private fun Root(core: AutoBriefCore, tab: MutableState<Tab>, restricted: Boolea
                 }
             }
         }
+        if (compact) {
+            // the tabs along the bottom: a side rail would take a fifth of this window's width
+            Column(Modifier.fillMaxSize()) {
+                Column(Modifier.weight(1f).fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 20.dp)) {
+                    StatusBar(core)
+                    Gap(16.dp)
+                    Box(Modifier.fillMaxSize()) { screen() }
+                }
+                Box(Modifier.fillMaxWidth().height(AutoBriefTheme.shape.strokeHairline).background(p.outline))
+                NavBar(tab)
+            }
+            return@Box
+        }
         Row(Modifier.fillMaxSize()) {
             NavRail(tab)
             Box(Modifier.fillMaxHeight().width(AutoBriefTheme.shape.strokeHairline).background(p.outline))
             Column(Modifier.fillMaxSize().padding(start = 24.dp, end = 36.dp, top = 28.dp)) {
                 StatusBar(core)
                 Gap(20.dp)
-                Box(Modifier.fillMaxSize()) {
-                    when (tab.value) {
-                        Tab.HOME -> HomeScreen(core, wide, vehicleStalled, onOpen = { tab.value = it })
-                        Tab.TRIPS -> TripsScreen(core)
-                        Tab.REPORT -> ReportScreen(core, onFlush)
-                        Tab.SETTINGS -> SettingsScreen(core, onFlush)
-                    }
-                }
+                Box(Modifier.fillMaxSize()) { screen() }
             }
         }
     }
+    }
+}
+
+/** The window's width class, from its real width: [WIDE] draws the home screen in two columns, [COMPACT] is half of a split display. */
+enum class WindowWidth { COMPACT, MEDIUM, WIDE }
+
+const val WIDE_FROM_DP = 1400
+const val COMPACT_UNDER_DP = 1000
+
+fun windowWidthOf(widthDp: Float): WindowWidth = when {
+    widthDp >= WIDE_FROM_DP -> WindowWidth.WIDE
+    widthDp < COMPACT_UNDER_DP -> WindowWidth.COMPACT
+    else -> WindowWidth.MEDIUM
 }
 
 @Composable
 private fun NavRail(tab: MutableState<Tab>) {
     val p = AutoBriefTheme.colors
-    val s = AutoBriefTheme.shape
-    // QUIET: no rim round a tab and line icons; the selected tab is told by its tint alone
-    val quiet = AutoBriefTheme.quiet
     Column(
         Modifier.fillMaxHeight().width(152.dp).background(p.surface).padding(vertical = 28.dp, horizontal = 14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -190,25 +227,43 @@ private fun NavRail(tab: MutableState<Tab>) {
     ) {
         AppMark()
         Gap(18.dp)
-        Tab.values().forEach { t ->
-            val selected = tab.value == t
-            val shape = RoundedCornerShape(s.cornerMedium)
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(shape)
-                    .background(if (selected) p.primary.copy(alpha = p.tintAlpha) else if (quiet) Color.Transparent else p.surface)
-                    .then(if (quiet) Modifier else Modifier.border(s.strokeHairline, if (selected) p.primary.copy(alpha = p.emphasisBorderAlpha) else p.hairline, shape))
-                    .clickable(role = Role.Tab) { tab.value = t }
-                    .padding(vertical = 18.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                val tint = if (selected) p.primary else p.textSecondary
-                if (quiet) LineIcon(t, tint, Modifier.size(38.dp)) else Icon(t.icon, contentDescription = null, tint = tint, modifier = Modifier.size(38.dp))
-                Gap(6.dp)
-                Txt(t.label, Type.label, if (selected) p.primary else p.textSecondary)
-            }
-        }
+        Tab.values().forEach { t -> NavTab(t, tab, Modifier.fillMaxWidth(), 18.dp) }
+    }
+}
+
+/** The tabs of the compact window, in one row along the bottom. */
+@Composable
+private fun NavBar(tab: MutableState<Tab>) {
+    val p = AutoBriefTheme.colors
+    Row(
+        Modifier.fillMaxWidth().background(p.surface).padding(horizontal = 16.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Tab.values().forEach { t -> NavTab(t, tab, Modifier.weight(1f), 10.dp) }
+    }
+}
+
+@Composable
+private fun NavTab(t: Tab, tab: MutableState<Tab>, modifier: Modifier, padV: Dp) {
+    val p = AutoBriefTheme.colors
+    val s = AutoBriefTheme.shape
+    // QUIET: no rim round a tab and line icons; the selected tab is told by its tint alone
+    val quiet = AutoBriefTheme.quiet
+    val selected = tab.value == t
+    val shape = RoundedCornerShape(s.cornerMedium)
+    Column(
+        modifier
+            .clip(shape)
+            .background(if (selected) p.primary.copy(alpha = p.tintAlpha) else if (quiet) Color.Transparent else p.surface)
+            .then(if (quiet) Modifier else Modifier.border(s.strokeHairline, if (selected) p.primary.copy(alpha = p.emphasisBorderAlpha) else p.hairline, shape))
+            .clickable(role = Role.Tab) { tab.value = t }
+            .padding(vertical = padV),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        val tint = if (selected) p.primary else p.textSecondary
+        if (quiet) LineIcon(t, tint, Modifier.size(38.dp)) else Icon(t.icon, contentDescription = null, tint = tint, modifier = Modifier.size(38.dp))
+        Gap(6.dp)
+        Txt(t.label, Type.label, if (selected) p.primary else p.textSecondary)
     }
 }
 
@@ -368,8 +423,10 @@ fun DrivingView(core: AutoBriefCore) {
     val s = AutoBriefTheme.shape
     val cardShape = RoundedCornerShape(s.cornerHero)
     val noteShape = RoundedCornerShape(s.cornerMedium)
+    // the compact window keeps its width for the figures
+    val compact = LocalCompact.current
     Column(
-        Modifier.fillMaxSize().padding(64.dp),
+        Modifier.fillMaxSize().padding(if (compact) 28.dp else 64.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -377,7 +434,7 @@ fun DrivingView(core: AutoBriefCore) {
             Modifier
                 .widthIn(min = 960.dp, max = 1280.dp)
                 .cardFrame(cardShape)
-                .padding(horizontal = 64.dp, vertical = 48.dp),
+                .padding(horizontal = if (compact) 36.dp else 64.dp, vertical = 48.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             AppMark(88)

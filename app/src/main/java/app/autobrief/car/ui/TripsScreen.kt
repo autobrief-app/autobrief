@@ -48,17 +48,25 @@ fun TripsScreen(core: AutoBriefCore) {
     }
     val s = remember(rows) { TripLogbook.summarize(rows) }
 
+    val compact = LocalCompact.current
+    val totals: @Composable (Alignment.Horizontal) -> Unit = { side ->
+        Column(horizontalAlignment = side) {
+            Txt("${s.rowCount}건 · ${km1(s.totalKm)} km · 업무 ${pct(s.businessUseRatio)}", Type.title)
+            Muted("미분류 ${s.unclassifiedCount}건 · 자동 분류 ${s.autoCount}건 · 음성 ${s.voiceCount}건")
+        }
+    }
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             BigButton("◀", outlined = true, height = 76.dp) { month = month.minusMonths(1) }
             Txt("${month.year}년 ${month.monthValue}월", Type.headline, modifier = Modifier.widthIn(min = 260.dp).padding(horizontal = 8.dp))
             BigButton("▶", outlined = true, height = 76.dp) { month = month.plusMonths(1) }
-            Spring()
-            Column(horizontalAlignment = Alignment.End) {
-                Txt("${s.rowCount}건 · ${km1(s.totalKm)} km · 업무 ${pct(s.businessUseRatio)}", Type.title)
-                Muted("미분류 ${s.unclassifiedCount}건 · 자동 분류 ${s.autoCount}건 · 음성 ${s.voiceCount}건")
+            if (!compact) {
+                Spring()
+                totals(Alignment.End)
             }
         }
+        // the compact window has no room beside the month: the month's totals go under it
+        if (compact) totals(Alignment.Start)
         if (rows.isEmpty()) {
             Panel(Modifier.fillMaxWidth()) { Muted("이 달의 운행이 없습니다.", Type.body) }
         }
@@ -73,32 +81,47 @@ fun TripsScreen(core: AutoBriefCore) {
 private fun TripRow(t: TripRecord, onClick: () -> Unit) {
     val p = AutoBriefTheme.colors
     val shape = RoundedCornerShape(AutoBriefTheme.shape.cornerRow)
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .heightIn(min = 88.dp)
-            .cardFrame(shape)
-            .clickable(role = Role.Button, onClick = onClick)
-            .padding(horizontal = 26.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(22.dp),
-    ) {
-        Column(Modifier.width(210.dp)) {
-            Txt(LogbookExport.dateWithWeekday(TripLogbook.localDate(t.startEpochMs)), Type.bodyStrong)
-            Muted("${hm(t.startEpochMs)}~${hm(t.endEpochMs)}")
+    val day: @Composable () -> Unit = {
+        Txt(LogbookExport.dateWithWeekday(TripLogbook.localDate(t.startEpochMs)), Type.bodyStrong)
+        Muted("${hm(t.startEpochMs)}~${hm(t.endEpochMs)}")
+    }
+    val odometer: @Composable () -> Unit = {
+        Txt("${km1(t.startOdometerKm)} → ${km1(t.endOdometerKm)}", Type.body)
+        Muted(listOfNotNull(t.startPlace, t.endPlace).joinToString(" → ").ifBlank { if (t.family) "위치 기록 안 함" else "장소 미등록" })
+    }
+    val who: @Composable () -> Unit = {
+        if (t.purpose == TripPurpose.UNCLASSIFIED) Txt("목적 정하기 ›", Type.bodyStrong, p.primary)
+        else Txt(t.user?.let { "${it.name}(${it.department})" } ?: "-", Type.body)
+        marks(t).ifBlank { t.memo }.takeIf { it.isNotBlank() }?.let { Muted(it) }
+    }
+    val frame = Modifier
+        .fillMaxWidth()
+        .heightIn(min = 88.dp)
+        .cardFrame(shape)
+        .clickable(role = Role.Button, onClick = onClick)
+        .padding(horizontal = 26.dp, vertical = 14.dp)
+    if (LocalCompact.current) {
+        // the five cells do not fit one line of the compact window: day, distance and purpose, then the odometer and the user
+        Column(frame, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(22.dp)) {
+                Column(Modifier.weight(1f)) { day() }
+                Txt("${km1(TripLogbook.printedKm(t))} km", Type.title)
+                Box(Modifier.width(PURPOSE_COLUMN)) { PurposeChip(t.purpose) }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(22.dp)) {
+                Column(Modifier.weight(1f)) { odometer() }
+                Column(Modifier.weight(1f)) { who() }
+            }
         }
-        Column(Modifier.width(320.dp)) {
-            Txt("${km1(t.startOdometerKm)} → ${km1(t.endOdometerKm)}", Type.body)
-            Muted(listOfNotNull(t.startPlace, t.endPlace).joinToString(" → ").ifBlank { if (t.family) "위치 기록 안 함" else "장소 미등록" })
-        }
+        return
+    }
+    Row(frame, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(22.dp)) {
+        Column(Modifier.width(210.dp)) { day() }
+        Column(Modifier.width(320.dp)) { odometer() }
         Txt("${km1(TripLogbook.printedKm(t))} km", Type.title, modifier = Modifier.width(170.dp))
         // a fixed box, so the user column starts at the same x whatever the chip says
         Box(Modifier.width(PURPOSE_COLUMN)) { PurposeChip(t.purpose) }
-        Column(Modifier.weight(1f)) {
-            if (t.purpose == TripPurpose.UNCLASSIFIED) Txt("목적 정하기 ›", Type.bodyStrong, p.primary)
-            else Txt(t.user?.let { "${it.name}(${it.department})" } ?: "-", Type.body)
-            marks(t).ifBlank { t.memo }.takeIf { it.isNotBlank() }?.let { Muted(it) }
-        }
+        Column(Modifier.weight(1f)) { who() }
     }
 }
 
@@ -130,11 +153,12 @@ private fun TripDialog(core: AutoBriefCore, t: TripRecord, onClose: () -> Unit) 
     var message by remember(t.id) { mutableStateOf<String?>(null) }
     val correcting = t.purpose.isUserPurpose
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Panel(Modifier.widthIn(max = 1500.dp).fillMaxWidth(0.9f).verticalScroll(rememberScrollState())) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        val compact = LocalCompact.current
+        Panel(Modifier.widthIn(max = 1500.dp).fillMaxWidth(if (compact) 0.96f else 0.9f).verticalScroll(rememberScrollState())) {
+            CellRow {
                 Txt("${LogbookExport.dateWithWeekday(TripLogbook.localDate(t.startEpochMs))} ${hm(t.startEpochMs)}~${hm(t.endEpochMs)}", Type.headline)
                 PurposeChip(t.purpose)
-                Spring()
+                if (!compact) Spring()
                 BigButton("닫기", outlined = true, height = 76.dp, onClick = onClose)
             }
             KeyValue("⑤ 주행 전 계기판", "${km1(t.startOdometerKm)} km")
@@ -177,7 +201,7 @@ private fun TripDialog(core: AutoBriefCore, t: TripRecord, onClose: () -> Unit) 
             Gap(6.dp)
             Txt("기록 원장", Type.title)
             core.ledgerFor(t.id).forEach { e ->
-                Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                CellRow(gap = 18.dp, verticalAlignment = Alignment.Top) {
                     Txt("#${e.seq}", Type.bodyStrong, modifier = Modifier.width(110.dp))
                     Txt(mdhm(e.epochMs), Type.body, modifier = Modifier.width(240.dp))
                     Txt(kindLabel(e.kind), Type.body, modifier = Modifier.width(170.dp))

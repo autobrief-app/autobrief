@@ -81,8 +81,8 @@ fun ReportScreen(core: AutoBriefCore, onFlush: () -> Unit) {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(SECTION_GAP)) {
             Column(Modifier.onSizeChanged { topHeight = with(density) { it.height.toDp() } }, verticalArrangement = Arrangement.spacedBy(SECTION_GAP)) {
                 ChipRow { options.forEachIndexed { i, o -> Choice(o.label, i == choice) { choice = i; core.dismissWorkbook() } } }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                    Panel(Modifier.weight(1.2f)) {
+                TwoColumns(startWeight = 1.2f, start = {
+                    Panel {
                         Txt("업무용승용차 운행기록부", Type.headline)
                         Muted("$unit ${opt.range.start} ~ ${opt.range.endInclusive} · ${settings.entityName.ifBlank { "법인명 미입력" }} · ${settings.plateNumber.ifBlank { "등록번호 미입력" }}", Type.body)
                         Gap(4.dp)
@@ -113,7 +113,7 @@ fun ReportScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                             Txt(workbookMessage(w), Type.body, if (w is AutoBriefCore.WorkbookRequest.Failed) p.critical else p.accent)
                         }
                     }
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+                }, end = {
                         Panel(border = if (check.ok) null else p.critical) {
                             Txt("기록 원장", Type.title)
                             Txt(if (check.ok) "정상" else "확인 필요", Type.display, if (check.ok) p.positive else p.critical)
@@ -134,8 +134,7 @@ fun ReportScreen(core: AutoBriefCore, onFlush: () -> Unit) {
                             KeyValue("대기 / 최근 완료", "${pending}건 / ${delivered}건")
                             outbox.lastOrNull { it.lastError != null && it.deliveredEpochMs == null }?.lastError?.let { Muted("마지막 오류: $it") }
                         }
-                    }
-                }
+                })
             }
             if (rows.isNotEmpty()) {
                 // whole rows only: as many as fit under the panels on this display, at least 3 (then the page scrolls)
@@ -204,31 +203,27 @@ private fun FormRow(label: String, value: String, strong: Boolean = false) {
     val s = AutoBriefTheme.shape
     if (AutoBriefTheme.quiet) {
         // a ledger line: no box, one hairline under the row
-        Row(
+        LabelValueRow(
             Modifier
                 .fillMaxWidth()
                 .drawBehind { drawRect(p.hairline, Offset(0f, size.height - s.strokeHairline.toPx()), Size(size.width, s.strokeHairline.toPx())) }
                 .padding(vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            label = { Txt(label, Type.body) },
         ) {
-            Txt(label, Type.body)
-            Spring()
             Txt(value, if (strong) Type.headline else Type.title, if (strong) p.accent else p.textPrimary)
         }
         return
     }
     val shape = RoundedCornerShape(s.cornerControl)
-    Row(
+    LabelValueRow(
         Modifier
             .fillMaxWidth()
             .clip(shape)
             .background(p.surfaceVariant)
             .border(s.strokeHairline, if (strong) p.accent.copy(alpha = p.emphasisBorderAlpha) else p.outline, shape)
             .padding(horizontal = 20.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        label = { Txt(label, Type.body) },
     ) {
-        Txt(label, Type.body)
-        Spring()
         Txt(value, if (strong) Type.headline else Type.title, if (strong) p.accent else p.textPrimary)
     }
 }

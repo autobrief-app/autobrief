@@ -1,16 +1,19 @@
 package app.autobrief.car
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.isDialog
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.unit.dp
 import app.autobrief.car.domain.AutoBriefCore
-import app.autobrief.car.domain.NaviEvent
-import app.autobrief.car.domain.SampleHistory
-import app.autobrief.car.domain.VehicleEvent
-import app.autobrief.car.model.CarUse
-import app.autobrief.car.model.Gear
-import app.autobrief.car.model.GeoPoint
 import app.autobrief.car.ui.AutoBriefScreen
 import app.autobrief.car.ui.LocalThemeVariant
 import app.autobrief.car.ui.Tab
@@ -23,7 +26,6 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
-import java.time.LocalDate
 
 /**
  * Renders the real Compose screens on a car-display-sized canvas (2560x1440 at 160 dpi, the Pleos Connect
@@ -38,21 +40,9 @@ class ScreenshotTest {
     @get:Rule(order = 0) val stalePleosBinds = RefuseStalePleosBinds()
     @get:Rule(order = 1) val compose = createComposeRule()
 
-    private val ptDay = LocalDate.of(2026, 12, 3)
+    private val ptDay = Scenes.ptDay
 
-    /** Demo space with the fictional year, parked at home at 45,200 km on the presentation day. */
-    private fun demoHarness(): Harness {
-        val h = Harness(startAt = Harness.at(ptDay, 8, 5))
-        h.core.setDemoModeNow(true, null)
-        h.core.loadSampleHistoryNow()
-        h.core.onVehicle(VehicleEvent.Connection(true))
-        h.core.onVehicle(VehicleEvent.Vin(SampleHistory.SAMPLE_VIN))
-        h.core.onNavi(NaviEvent.Ready(true))
-        h.at(SampleHistory.HOME.point)
-        h.odo(45_200.0)
-        h.gear(Gear.PARK)
-        return h
-    }
+    private fun demoHarness(): Harness = Scenes.demo()
 
     /** The variants the key screens are drawn in: -Pautobrief.variants=CURRENT,A (or =all); unset, the build's own. */
     private val variants: List<ThemeVariant> = System.getProperty("autobrief.variants").orEmpty().trim().let { prop ->
@@ -94,40 +84,17 @@ class ScreenshotTest {
     @Test fun homeReady() = shoot(demoHarness().core, Tab.HOME, "01_home_ready")
 
     /** Just shifted into D, still standing (no UX restrictions yet): the screen is already the driving view. */
-    @Test fun homeDriving() {
-        val h = demoHarness()
-        h.core.onNavi(NaviEvent.RouteStarted("회사", 1_200))
-        h.advance(60_000); h.gear(Gear.DRIVE)
-        shoot(h.core, Tab.HOME, "02_home_trip_in_progress", inVariants = true)
-    }
+    @Test fun homeDriving() = shoot(Scenes.driving().core, Tab.HOME, "02_home_trip_in_progress", inVariants = true)
 
-    @Test fun drivingRestrictedView() {
-        val h = demoHarness()
-        h.core.onNavi(NaviEvent.RouteStarted("회사", 1_200))
-        h.advance(60_000); h.gear(Gear.DRIVE); h.advance(12 * 60_000); h.odo(45_212.0)
-        h.core.setRestricted(true)
-        shoot(h.core, Tab.HOME, "03_driving_restricted", inVariants = true)
-    }
+    @Test fun drivingRestrictedView() = shoot(Scenes.restricted().core, Tab.HOME, "03_driving_restricted", inVariants = true)
 
-    private fun commuted(): Harness {
-        val h = demoHarness()
-        h.advance(60_000); h.gear(Gear.DRIVE); h.advance(38 * 60_000); h.odo(45_218.0)
-        h.at(SampleHistory.OFFICE.point); h.gear(Gear.PARK)
-        return h
-    }
+    private fun commuted(): Harness = Scenes.commuted()
 
     @Test fun homeAutoCommute() = shoot(commuted().core, Tab.HOME, "04_home_auto_commute", inVariants = true)
 
     @Test fun homeAutoCommuteDay() = shoot(commuted().core, Tab.HOME, "05_home_auto_commute_day", night = false)
 
-    private fun unknownPlace(): Harness {
-        val h = commuted()
-        h.core.dismissLastClosed()
-        h.advance(5 * 3_600_000)
-        h.gear(Gear.DRIVE); h.advance(25 * 60_000); h.odo(45_225.0)
-        h.at(GeoPoint(37.5665, 126.9780)); h.gear(Gear.PARK)
-        return h
-    }
+    private fun unknownPlace(): Harness = Scenes.unknownPlace()
 
     @Test fun homeAskPurpose() = shoot(unknownPlace().core, Tab.HOME, "06_home_ask_purpose")
 
@@ -140,26 +107,57 @@ class ScreenshotTest {
      * The report on the documents' sample day (DocsSample, 2026-10-23 23:06), so it shows the totals and code the text quotes,
      * with the company address set and every queued entry delivered, as the fleet console screenshots show it received.
      */
-    @Test fun report() {
-        val h = DocsSample.build(webhook = "https://fleet.example.com/hook")
-        h.core.onVehicle(VehicleEvent.Connection(true))
-        h.core.onNavi(NaviEvent.Ready(true))
-        h.core.markDeliveries(h.core.outbox.value.map { AutoBriefCore.Delivery(it.key, delivered = true, error = null) })
-        shoot(h.core, Tab.REPORT, "09_report", inVariants = true)
+    @Test fun report() = shoot(Scenes.report().core, Tab.REPORT, "09_report", inVariants = true)
+
+    @Test fun settings() = shoot(Scenes.settings().core, Tab.SETTINGS, "10_settings", inVariants = true)
+
+    // The split window: the platform shows the navigation app and this app side by side, so this app gets a portrait
+    // window of about 853 x 1210 dp. Day look, into build/outputs/roborazzi/portrait/.
+
+    @Config(qualifiers = SPLIT_WINDOW)
+    @Test fun splitHomeAutoCommute() = shoot(Scenes.commuted().core, Tab.HOME, "portrait/01_home_auto_commute", night = false)
+
+    @Config(qualifiers = SPLIT_WINDOW)
+    @Test fun splitHomeAskPurpose() = shoot(Scenes.unknownPlace().core, Tab.HOME, "portrait/02_home_ask_purpose", night = false)
+
+    @Config(qualifiers = SPLIT_WINDOW)
+    @Test fun splitHomeTripInProgress() = shoot(Scenes.driving().core, Tab.HOME, "portrait/03_home_trip_in_progress", night = false)
+
+    @Config(qualifiers = SPLIT_WINDOW)
+    @Test fun splitDrivingRestricted() = shoot(Scenes.restricted().core, Tab.HOME, "portrait/04_driving_restricted", night = false)
+
+    @Config(qualifiers = SPLIT_WINDOW)
+    @Test fun splitTrips() = shoot(Scenes.unknownPlace().core, Tab.TRIPS, "portrait/05_trips", night = false)
+
+    @Config(qualifiers = SPLIT_WINDOW)
+    @Test fun splitReport() = shoot(Scenes.report().core, Tab.REPORT, "portrait/06_report", night = false)
+
+    @Config(qualifiers = SPLIT_WINDOW)
+    @Test fun splitSettings() = shoot(Scenes.settings().core, Tab.SETTINGS, "portrait/07_settings", night = false)
+
+    /**
+     * The Configuration still says 2560 x 1440 (the whole display) while the app is drawn into an 853 x 1210 dp window:
+     * the layout has to follow the window it is given, not the Configuration.
+     */
+    @Test fun splitWindowInsideTheWideConfiguration() {
+        val core = Scenes.unknownPlace().core
+        val tab = mutableStateOf(Tab.HOME)
+        compose.setContent {
+            Box(Modifier.requiredSize(SPLIT_WIDTH_DP.dp, SPLIT_HEIGHT_DP.dp).testTag(WINDOW_TAG)) { AutoBriefScreen(core, tab, onFlush = {}, night = false) }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithTag(WINDOW_TAG).captureRoboImage("build/outputs/roborazzi/portrait/08_home_ask_purpose_window_in_wide_configuration.png")
     }
 
-    @Test fun settings() {
-        val h = commuted()
-        h.core.onNavi(
-            NaviEvent.Bookmarks(
-                listOf(
-                    app.autobrief.car.domain.NaviBookmark(app.autobrief.car.model.PlaceKind.HOME, "우리집", SampleHistory.HOME.point),
-                    app.autobrief.car.domain.NaviBookmark(app.autobrief.car.model.PlaceKind.OFFICE, "회사", SampleHistory.OFFICE.point),
-                    app.autobrief.car.domain.NaviBookmark(app.autobrief.car.model.PlaceKind.CLIENT, "한빛정밀", GeoPoint(37.2056, 127.0715)),
-                ),
-            ),
-        )
-        shoot(h.core, Tab.SETTINGS, "10_settings", inVariants = true)
+    /** A row of the trips list opened in the split window: the trip's detail, where its purpose is set. */
+    @Config(qualifiers = SPLIT_WINDOW)
+    @Test fun splitTripDetail() {
+        val core = Scenes.unknownPlace().core
+        val tab = mutableStateOf(Tab.TRIPS)
+        compose.setContent { AutoBriefScreen(core, tab, onFlush = {}, night = false) }
+        compose.onNodeWithText("목적 정하기 ›", useUnmergedTree = true).performClick()
+        compose.waitForIdle()
+        compose.onNode(isDialog()).captureRoboImage("build/outputs/roborazzi/portrait/09_trip_detail.png")
     }
 
     @Test fun liveFirstRun() {
@@ -167,16 +165,5 @@ class ScreenshotTest {
         shoot(Harness(startAt = Harness.at(ptDay, 8, 0)).core, Tab.HOME, "11_live_first_run", waitMs = VEHICLE_WAIT_MS + 1_000)
     }
 
-    @Test fun homeFamilyAndFuel() {
-        val h = commuted()
-        h.core.saveSettings(
-            h.core.settings.value.copy(carUse = CarUse.OWN, manualKmPerLiter = 12.1, fuelPriceKrwPerLiter = 1_650),
-            null,
-            null,
-        )
-        h.core.startFamilyDrive()
-        h.advance(3 * 3_600_000)
-        h.gear(Gear.DRIVE); h.advance(22 * 60_000); h.odo(45_230.0); h.gear(Gear.PARK)
-        shoot(h.core, Tab.HOME, "12_home_family_and_fuel")
-    }
+    @Test fun homeFamilyAndFuel() = shoot(Scenes.familyAndFuel().core, Tab.HOME, "12_home_family_and_fuel")
 }
