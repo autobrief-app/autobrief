@@ -1,10 +1,12 @@
 package app.autobrief.car
 
+import android.app.Activity
 import android.app.Application
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
 import app.autobrief.car.data.JsonFiles
@@ -40,6 +42,15 @@ open class AutoBriefApp : Application() {
     /** The core once the stored logbook is read; null while it is being read. */
     val coreState: StateFlow<AutoBriefCore?> = loaded.asStateFlow()
 
+    private var startedScreens = 0
+    private val screenStarted = MutableStateFlow(false)
+
+    /**
+     * A screen of the app is started (MainActivity between onStart and onStop): the monitor's status pill over other apps
+     * hides then.
+     */
+    val appVisible: StateFlow<Boolean> = screenStarted.asStateFlow()
+
     /** The core, once the stored logbook is read. */
     suspend fun awaitCore(): AutoBriefCore = loaded.filterNotNull().first()
 
@@ -52,6 +63,7 @@ open class AutoBriefApp : Application() {
     override fun onCreate() {
         super.onCreate()
         flushOnExit()
+        watchScreens()
         val store = logbookStore()
         storeRef = store
         val future = CompletableFuture<LoadedInit>()
@@ -85,6 +97,27 @@ open class AutoBriefApp : Application() {
             return
         }
         installCore(store, init)
+    }
+
+    /** Counts the started activities (a counter and a flag: nothing is done at the start of the process). */
+    private fun watchScreens() {
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            override fun onActivityStarted(activity: Activity) {
+                startedScreens++
+                screenStarted.value = true
+            }
+
+            override fun onActivityStopped(activity: Activity) {
+                startedScreens = (startedScreens - 1).coerceAtLeast(0)
+                screenStarted.value = startedScreens > 0
+            }
+
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
+            override fun onActivityResumed(activity: Activity) = Unit
+            override fun onActivityPaused(activity: Activity) = Unit
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+            override fun onActivityDestroyed(activity: Activity) = Unit
+        })
     }
 
     private fun installCore(store: AutoBriefCore.Store, init: LoadedInit) {

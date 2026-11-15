@@ -10,11 +10,13 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import app.autobrief.car.AutoBriefApp
 import app.autobrief.car.R
 import app.autobrief.car.autoBrief
 import app.autobrief.car.domain.AutoBriefCore
 import app.autobrief.car.domain.VehicleEvent
 import app.autobrief.car.model.Gear
+import app.autobrief.car.model.VehicleSnapshot
 import app.autobrief.car.navi.PleosNaviSource
 import app.autobrief.car.notify.WebhookSender
 import app.autobrief.car.vehicle.CarServices
@@ -26,7 +28,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.launch
 
 /**
@@ -34,6 +38,9 @@ import kotlinx.coroutines.launch
  * Pleos Vehicle and NaviHelper SDKs, ticks the time-based rules, asks navigation for the position while a
  * trip is open, and sends queued ledger entries and workbooks on its own I/O loop. Started at boot and when
  * the app opens. One bad event, tick or send round is logged and dropped; it never ends the process.
+ *
+ * Navigation is the car's main screen: while a trip is recorded and the app's own screen is not shown, the monitor says so
+ * in its notification and, where the user allowed drawing over other apps, in a small status pill ([DriveHud]).
  *
  * The links start at once, while the process may still be reading the stored logbook (AutoBriefApp): what they report
  * until the core is there waits in [inputs] and goes in first, in arrival order ([attach]).
@@ -52,6 +59,12 @@ class VehicleMonitorService : Service() {
     private lateinit var gps: PleosFusedLocationSource
     private lateinit var sender: WebhookSender
     private lateinit var loops: MonitorLoops
+
+    /** The status pill over the front app; made with the core, its window only when the first pill is drawn. */
+    private lateinit var hud: DriveHud
+
+    /** The text the ongoing notification shows now. */
+    private var notificationText: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -87,8 +100,15 @@ class VehicleMonitorService : Service() {
         c.naviControl = AutoBriefCore.NaviControl { navi.requestLocation() }
         // the car's fuel economy again after every trip (off the main thread, on the vehicle source's own)
         c.energyControl = AutoBriefCore.EnergyControl { vehicle.requestEnergy() }
+        hud = DriveHud(this, log = { line -> Log.i(AutoBriefApp.LOG_TAG, line) })
         inputs.open(c)
         loops.start()
+        scope.launch {
+            // the pill and the notification follow the trip, its printed distance and whether the app's own screen shows
+            combine(c.openTrip, c.vehicle, autoBrief.appVisible) { open, v, visible -> statusOf(open, v, visible) }
+                .distinctUntilChangedBy { it.printed }
+                .collect { showStatus(it) }
+        }
         scope.launch {
             // 가족 운행: navigation is asked for no position and the GNSS updates stop until the family trip closes
             c.locationPaused.collect { paused ->
@@ -104,8 +124,33 @@ class VehicleMonitorService : Service() {
         }
     }
 
+    /** What the pill and the notification are drawn from; a trip is being recorded while the core holds an open one. */
+    private data class Status(val recording: Boolean, val distanceKm: Double, val family: Boolean, val appVisible: Boolean) {
+        /** Odometer readings that print the same distance are one status. */
+        val printed: Any get() = copy(distanceKm = 0.0) to recordingState(recording, distanceKm, family)
+    }
+
+    /** The distance so far is the home card's: the last odometer reading less the trip's first. */
+    private fun statusOf(open: AutoBriefCore.OpenTripView?, v: VehicleSnapshot, appVisible: Boolean) = Status(
+        recording = open != null,
+        distanceKm = if (open != null) (v.odometerKm ?: open.startOdometerKm) - open.startOdometerKm else 0.0,
+        family = open?.family == true,
+        appVisible = appVisible,
+    )
+
+    private fun showStatus(s: Status) {
+        hud.update(s.recording, s.distanceKm, s.family, s.appVisible)
+        val text = recordingState(s.recording, s.distanceKm, s.family)?.let { recordingLine(recordingLabel(it.family), it.distance) }
+            ?: getString(R.string.monitor_text)
+        if (text == notificationText) return
+        notificationText = text
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(text))
+    }
+
     private fun onTick(n: Int) {
         core.tick()
+        // drawing over other apps may have been allowed or taken back since the last look
+        showStatus(statusOf(core.openTrip.value, core.vehicle.value, autoBrief.appVisible.value))
         // SDK links that went quiet while the car is out of P are made again
         vehicle.checkQuiet()
         navi.checkQuiet(core.vehicle.value.gear)
@@ -145,6 +190,7 @@ class VehicleMonitorService : Service() {
         navi.stop()
         car.stop()
         gps.stop()
+        if (::hud.isInitialized) hud.destroy()
         if (::core.isInitialized) {
             // the vehicle link is gone with the service: its last gear no longer tells the screen the car is parked
             core.onVehicle(VehicleEvent.Connection(false, "monitor stopped"))
@@ -158,12 +204,9 @@ class VehicleMonitorService : Service() {
     private fun startAsForeground() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, getString(R.string.monitor_channel), NotificationManager.IMPORTANCE_MIN))
-        val notification = Notification.Builder(this, CHANNEL)
-            .setSmallIcon(R.drawable.ic_stat_logbook)
-            .setContentTitle(getString(R.string.app_name))
-            .setContentText(getString(R.string.monitor_text))
-            .setOngoing(true)
-            .build()
+        val text = getString(R.string.monitor_text)
+        notificationText = text
+        val notification = notification(text)
         // special use only: the car's position comes from the Pleos FusedLocation Service over its SDK binding, not from
         // Android's location providers, so the service needs no location type (nor Android's location permissions)
         if (Build.VERSION.SDK_INT >= 34) {
@@ -172,6 +215,13 @@ class VehicleMonitorService : Service() {
             startForeground(NOTIFICATION_ID, notification) // the manifest's type
         }
     }
+
+    private fun notification(text: String): Notification = Notification.Builder(this, CHANNEL)
+        .setSmallIcon(R.drawable.ic_stat_logbook)
+        .setContentTitle(getString(R.string.app_name))
+        .setContentText(text)
+        .setOngoing(true)
+        .build()
 
     companion object {
         const val ACTION_FLUSH = "app.autobrief.car.FLUSH"

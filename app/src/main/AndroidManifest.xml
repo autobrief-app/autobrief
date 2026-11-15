@@ -20,6 +20,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- The status pill over the front app (navigation) while a trip is recorded. Off until the user allows
+         "display over other apps" for the app in the system settings; the app never asks and has no setting of its own -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!-- package visibility (Android 11+): Gleo replies are addressed to the Gleo app itself -->
     <queries>
